@@ -90,7 +90,7 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("常用前缀：") {
 		t.Fatal("expected commit prefixes after expanding commit options")
 	}
-	for _, label := range []string{"修正上一次提交 (--amend)", "贮藏全部改动", "恢复全部贮藏", "仅已暂存"} {
+	for _, label := range []string{"修正上一次提交 (--amend)", "仅已暂存", "Stash ▾"} {
 		if !tt.HasText(label) {
 			t.Fatalf("expected %q in commit options", label)
 		}
@@ -103,6 +103,42 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	}
 	if !strings.Contains(app.commitMessage, "修改 2") {
 		t.Fatalf("expected generated message to count modified files, got %q", app.commitMessage)
+	}
+	tt.Frame()
+	if !tt.HasText("逐仓说明 · 1") {
+		t.Fatal("expected per-repository message badge after generating")
+	}
+
+	// Search filters the tree without changing the checked set.
+	app.changesFilterQuery = "中文"
+	filtered := app.filterChangeFiles("cloud-caring", app.statusByID["cloud-caring"].Files)
+	if len(filtered) != 1 || !strings.Contains(filtered[0].Path, "中文模块.go") {
+		t.Fatalf("expected search to narrow the file list, got %+v", filtered)
+	}
+	app.changesFilterQuery = ""
+
+	if !app.perRepoMessagesActive() {
+		t.Fatal("generated per-repository messages should match the current selection")
+	}
+	firstKey := "cloud-caring::main.go"
+	app.checkedChanges[firstKey] = false
+	if app.perRepoMessagesActive() {
+		t.Fatal("per-repository messages must be invalidated when the selection changes")
+	}
+	app.checkedChanges[firstKey] = true
+
+	// Keyboard selection: Space toggles the checkbox, arrows move the diff selection.
+	selectedKey := app.selectedChangeKey
+	before := app.checkedChanges[selectedKey]
+	tt.Key(0, ui.KeySpace)
+	tt.Frame()
+	if app.checkedChanges[selectedKey] == before {
+		t.Fatal("Space should toggle the selected file checkbox")
+	}
+	tt.Key(0, ui.KeyDown)
+	tt.Frame()
+	if app.selectedChangeKey == selectedKey {
+		t.Fatal("Down should move the diff selection")
 	}
 
 	// 2. Navigate to Files / Code view (文件) and verify hierarchical file tree + compacted folders + Chinese filename
@@ -155,6 +191,24 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	}
 	if !tt.HasText("一周前无变更分支 (1)") {
 		t.Fatal("expected stale branch (>7 days) to be collapsed under 一周前无变更分支 (1)")
+	}
+	if !tt.HasText("有未提交改动 · 将跳过") {
+		t.Fatal("expected dirty repository warning in branch modal")
+	}
+	if !tt.HasText("新建并切换 (2)") {
+		t.Fatal("expected an explicit create-and-switch action")
+	}
+
+	// Global shortcuts must not fire behind a dialog.
+	tabBefore := app.activeTab
+	tt.Key(ui.Cmd, ui.Key1)
+	tt.Key(ui.Cmd, ui.KeyEnter)
+	tt.Frame()
+	if app.activeTab != tabBefore {
+		t.Fatal("dialog should own the keyboard: view changed behind the branch modal")
+	}
+	if app.busyLabel != "" {
+		t.Fatal("dialog should own the keyboard: commit started behind the branch modal")
 	}
 	// Verify fuzzy branch matching (subsequence + segment boundary)
 	cands := app.BranchCandidatesForRepo("cloud-caring")

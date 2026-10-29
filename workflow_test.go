@@ -168,3 +168,82 @@ func TestMergePresetPersistence(t *testing.T) {
 		t.Fatalf("merge preset should be deletable, got %+v", loaded.MergePresets)
 	}
 }
+
+func TestCommitAvailabilityByScope(t *testing.T) {
+	app := NewApp(config.Default())
+	app.commitScope = "checked"
+	if ok, _ := app.commitAvailability(0, 0); ok {
+		t.Fatal("checked scope with no files must be unavailable")
+	}
+	if ok, _ := app.commitAvailability(3, 0); !ok {
+		t.Fatal("checked scope with files must be available")
+	}
+	app.commitScope = "staged"
+	if ok, hint := app.commitAvailability(3, 0); ok || !strings.Contains(hint, "暂存") {
+		t.Fatalf("staged scope without staged files must explain why, got %v %q", ok, hint)
+	}
+	if ok, _ := app.commitAvailability(3, 1); !ok {
+		t.Fatal("staged scope with staged files must be available")
+	}
+	app.commitScope = "current"
+	if ok, _ := app.commitAvailability(3, 1); ok {
+		t.Fatal("current-repository scope needs a selected file")
+	}
+}
+
+func TestShiftRangeSelection(t *testing.T) {
+	app := NewApp(config.Default())
+	ordered := []gitops.ChangedFile{
+		{RepoID: "r", Path: "a.go"},
+		{RepoID: "r", Path: "b.go"},
+		{RepoID: "r", Path: "c.go"},
+	}
+	app.checkedChanges = map[string]bool{"r::a.go": true, "r::b.go": false, "r::c.go": false}
+	app.lastCheckedKey = "r::a.go"
+
+	app.toggleChangeRange(ordered, "r::c.go")
+	for _, key := range []string{"r::a.go", "r::b.go", "r::c.go"} {
+		if !app.checkedChanges[key] {
+			t.Fatalf("shift range should check every file in between, %s is unchecked", key)
+		}
+	}
+
+	app.toggleChangeRange(ordered, "r::a.go")
+	for _, key := range []string{"r::a.go", "r::b.go", "r::c.go"} {
+		if app.checkedChanges[key] {
+			t.Fatalf("reverse shift range should uncheck every file, %s is checked", key)
+		}
+	}
+}
+
+func TestBranchCoverageCountsRepositories(t *testing.T) {
+	app := NewApp(config.Default())
+	app.statuses = []gitops.RepoStatus{
+		{Repo: mani.DiscoveredRepo{ID: "a"}, BranchInfos: []gitops.BranchInfo{{Name: "feat/login"}, {Name: "main"}}},
+		{Repo: mani.DiscoveredRepo{ID: "b"}, BranchInfos: []gitops.BranchInfo{{Name: "feat/login"}}},
+		{Repo: mani.DiscoveredRepo{ID: "c"}, BranchInfos: []gitops.BranchInfo{{Name: "main"}}},
+	}
+	if got := app.branchCoverage("feat/login"); got != "2/3" {
+		t.Fatalf("expected 2/3 coverage, got %q", got)
+	}
+	if got := app.branchCoverage("missing"); got != "0/3" {
+		t.Fatalf("expected 0/3 coverage, got %q", got)
+	}
+}
+
+func TestRenderedChangeFilesSkipsCollapsedDirs(t *testing.T) {
+	app := NewApp(config.Default())
+	tree := buildChangeTree([]gitops.ChangedFile{
+		{RepoID: "r", Path: "src/main.go"},
+		{RepoID: "r", Path: "README.md"},
+	})
+	app.collapsedChangeDirs["r::src"] = true
+	visible := app.renderedChangeFiles("r", tree)
+	if len(visible) != 1 || visible[0].Path != "README.md" {
+		t.Fatalf("collapsed folders must not contribute to ranges or arrow navigation, got %+v", visible)
+	}
+	delete(app.collapsedChangeDirs, "r::src")
+	if visible := app.renderedChangeFiles("r", tree); len(visible) != 2 {
+		t.Fatalf("expanded folders should expose all files, got %+v", visible)
+	}
+}

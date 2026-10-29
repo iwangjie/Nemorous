@@ -282,6 +282,41 @@ func ExecuteCleanMerge(ctx context.Context, plan RepoMergePlan, pushRemote bool)
 	}
 }
 
+// PrepareManualMerge creates an isolated worktree at the target branch and starts
+// the merge there, leaving conflicts in place for manual resolution. It never
+// touches the user's working tree and never pushes.
+func PrepareManualMerge(ctx context.Context, plan RepoMergePlan) (worktree string, conflicts []string, err error) {
+	r := plan.Repo
+	tmpDir, err := os.MkdirTemp("", "nemorous-manual-"+r.Name+"-*")
+	if err != nil {
+		return "", nil, err
+	}
+	_ = os.RemoveAll(tmpDir)
+	if _, err := gitops.RunGit(ctx, r.AbsPath, "worktree", "add", "--detach", "--quiet", tmpDir, plan.TargetRef); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return "", nil, fmt.Errorf("创建临时 worktree 失败: %w", err)
+	}
+	mergeMsg := fmt.Sprintf("Merge branch '%s' into %s", plan.SourceBranch, plan.TargetBranch)
+	if _, err := gitops.RunGit(ctx, tmpDir, "merge", "--no-edit", "-m", mergeMsg, plan.SourceBranch); err != nil {
+		out, _ := gitops.RunGit(ctx, tmpDir, "diff", "--name-only", "--diff-filter=U")
+		for _, line := range strings.Split(out, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				conflicts = append(conflicts, line)
+			}
+		}
+		// Conflicts are the expected outcome of a manual merge; leave them in place.
+		return tmpDir, conflicts, nil
+	}
+	return tmpDir, nil, nil
+}
+
+// CleanupManualMerge removes a manual merge worktree and its temporary directory.
+func CleanupManualMerge(ctx context.Context, repoPath, worktree string) error {
+	_, err := gitops.RunGit(ctx, repoPath, "worktree", "remove", "--force", worktree)
+	_ = os.RemoveAll(worktree)
+	return err
+}
+
 // ResolveConflictWithAI performs a controlled merge of sourceBranch into targetBranch, invokes the AI Agent
 // to resolve conflicts, streams progress via onLog, and runs strict machine verification (VerifyAIMerge).
 // It NEVER auto-pushes: the human user always reviews the VerificationReport and diff before confirming push or rollback.

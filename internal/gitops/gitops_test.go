@@ -297,8 +297,6 @@ func TestChineseFilenamesAndMultiRepoBranchPlan(t *testing.T) {
 	}
 }
 
-
-
 func TestAmendCommitAndStashRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	repoDir := filepath.Join(t.TempDir(), "alpha")
@@ -378,5 +376,101 @@ func TestBatchCommitUsesPerRepoMessages(t *testing.T) {
 	}
 	if strings.TrimSpace(subjB) != "shared message" {
 		t.Fatalf("expected shared message for beta, got %q", subjB)
+	}
+}
+
+func TestUndoLastCommitAndFileHistory(t *testing.T) {
+	ctx := context.Background()
+	repoDir := filepath.Join(t.TempDir(), "alpha")
+	initTestRepo(t, repoDir, "main", map[string]string{"app.go": "package app\n// v1\n"})
+	write := func(v string) {
+		if err := os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("package app\n// "+v+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := gitops.RunGit(ctx, repoDir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write("v2")
+	run("commit", "-am", "feat: v2")
+	write("v3")
+	run("commit", "-am", "feat: v3")
+
+	history := gitops.FileHistory(ctx, repoDir, "app.go", 5)
+	if len(history) < 3 || history[0].Subject != "feat: v3" {
+		t.Fatalf("expected newest-first file history, got %+v", history)
+	}
+
+	msg, err := gitops.UndoLastCommit(ctx, repoDir)
+	if err != nil {
+		t.Fatalf("undo failed: %v", err)
+	}
+	if !strings.Contains(msg, "撤销") {
+		t.Fatalf("unexpected undo message %q", msg)
+	}
+	count, _ := gitops.RunGit(ctx, repoDir, "rev-list", "--count", "HEAD")
+	if strings.TrimSpace(count) != "2" {
+		t.Fatalf("expected two commits after undo, got %s", strings.TrimSpace(count))
+	}
+	status, _ := gitops.RunGit(ctx, repoDir, "status", "--porcelain")
+	if !strings.Contains(status, "M  app.go") {
+		t.Fatalf("undo should keep changes staged, got %q", status)
+	}
+
+	run("reset", "--hard")
+	if _, err := gitops.UndoLastCommit(ctx, repoDir); err != nil {
+		t.Fatalf("second undo should succeed: %v", err)
+	}
+	if _, err := gitops.UndoLastCommit(ctx, repoDir); err == nil {
+		t.Fatal("undoing the root commit must fail")
+	}
+}
+
+func TestPrepareManualMergeLeavesConflicts(t *testing.T) {
+	ctx := context.Background()
+	repoDir := filepath.Join(t.TempDir(), "risk")
+	initTestRepo(t, repoDir, "main", map[string]string{"risk.go": "package risk\n\nfunc Score(base int) int {\n\treturn base\n}\n"})
+	run := func(args ...string) {
+		t.Helper()
+		if _, err := gitops.RunGit(ctx, repoDir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	run("checkout", "-b", "test")
+	if err := os.WriteFile(filepath.Join(repoDir, "risk.go"), []byte("package risk\n\nfunc Score(base int) int {\n\treturn base + 10\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-am", "test: threshold")
+	run("checkout", "main")
+	run("checkout", "-b", "feat/login")
+	if err := os.WriteFile(filepath.Join(repoDir, "risk.go"), []byte("package risk\n\nfunc Score(base int) int {\n\treturn base + 20\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "-am", "feat: login")
+
+	repo := mani.DiscoveredRepo{ID: "risk", Name: "risk", AbsPath: repoDir}
+	plans := aimerge.PreflightMergeAll(ctx, []mani.DiscoveredRepo{repo}, "test", false, nil, 1)
+	if len(plans) != 1 || plans[0].Kind != aimerge.PlanConflict {
+		t.Fatalf("expected a conflict plan, got %+v", plans)
+	}
+	worktree, conflicts, err := aimerge.PrepareManualMerge(ctx, plans[0])
+	if err != nil {
+		t.Fatalf("manual merge failed: %v", err)
+	}
+	if len(conflicts) != 1 || conflicts[0] != "risk.go" {
+		t.Fatalf("expected risk.go conflict, got %+v", conflicts)
+	}
+	data, err := os.ReadFile(filepath.Join(worktree, "risk.go"))
+	if err != nil || !strings.Contains(string(data), "<<<<<<<") {
+		t.Fatalf("worktree should contain conflict markers, got %q err=%v", data, err)
+	}
+	if err := aimerge.CleanupManualMerge(ctx, repoDir, worktree); err != nil {
+		t.Fatalf("cleanup failed: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree directory should be removed, stat err=%v", err)
 	}
 }

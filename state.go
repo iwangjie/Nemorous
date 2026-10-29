@@ -39,6 +39,28 @@ type PendingDiscard struct {
 	Untracked bool
 }
 
+// PendingUndo represents a repository whose last commit may be undone.
+type PendingUndo struct {
+	RepoPath string
+	RepoName string
+}
+
+// ManualMerge holds the temporary worktree prepared for a hand-resolved merge.
+type ManualMerge struct {
+	RepoPath  string
+	Path      string
+	Conflicts []string
+}
+
+// FileHistoryState backs the per-file history dialog.
+type FileHistoryState struct {
+	RepoPath string
+	RepoName string
+	RelPath  string
+	Entries  []gitops.CommitInfo
+	Loaded   bool
+}
+
 // App holds the reactive application state for Nemorous.
 // Strictly follows MyGo lifetime rules: never stores ui.Element or *ui.Context.
 type App struct {
@@ -103,33 +125,41 @@ type App struct {
 	commitAmend           bool
 	generatedCommitRoot   string
 	generatedCommitByRepo map[string]string
+	generatedCommitKeys   string
 	lastBatchResults      []gitops.OpResult
 	pendingClipboard      string
 	changesKindFilter     string // "", "A", "M", "D", "U"
+	changesFilterQuery    string
+	changesFilterHandle   ui.Handle
+	lastCheckedKey        string
+	showCommitPreview     bool
 	collapsedChangeRepos  map[string]bool
 	collapsedChangeDirs   map[string]bool // "repoID::dirRelPath" -> collapsed
 
 	// Multi-Project Branch Switch & Presets State
 	branchInput         string
-	branchCreateMissing bool
 	branchCheckedRepos  map[string]bool    // repoID -> checked for multi-project branch switch
 	branchPerRepoTarget map[string]*string // repoID -> target branch string pointer for per-repo input
-	presetNameInput     string             // e.g. "AAA 需求"
+	branchSwitchResults []gitops.OpResult
+	presetNameInput     string // e.g. "AAA 需求"
 
 	// Branches & AI Merge State
-	mergeTargetBranch   string
-	mergeFetchFirst     bool
-	mergePlans          []aimerge.RepoMergePlan
-	mergeCheckedRepos   map[string]bool
-	mergePresetInput    string
-	mergeRunning        bool
-	selectedMergeRepoID string
-	mdOpts              markdown.Options
-	aiStreamRaw         strings.Builder
-	aiVerifyReport      *aimerge.VerificationReport
-	aiVerifyRepo        *mani.DiscoveredRepo
-	aiAgentName         string
-	aiAgentBin          string
+	mergeTargetBranch       string
+	mergeFetchFirst         bool
+	mergePlans              []aimerge.RepoMergePlan
+	mergeCheckedRepos       map[string]bool
+	mergePresetInput        string
+	mergeRunning            bool
+	mergePreflightAttempted bool
+	manualMerges            map[string]ManualMerge
+	manualMergeRunning      bool
+	selectedMergeRepoID     string
+	mdOpts                  markdown.Options
+	aiStreamRaw             strings.Builder
+	aiVerifyReport          *aimerge.VerificationReport
+	aiVerifyRepo            *mani.DiscoveredRepo
+	aiAgentName             string
+	aiAgentBin              string
 
 	// Code Explorer State
 	codeFilterQuery  string
@@ -150,7 +180,10 @@ type App struct {
 	cmdPaletteQuery string
 	showSettings    bool
 	showBranchModal bool
+	showOpLog       bool
 	pendingDiscard  *PendingDiscard
+	pendingUndo     *PendingUndo
+	fileHistory     *FileHistoryState
 	toastMessage    string
 	toastKind       string // "ok", "warn", "err"
 	toastExpires    time.Time
@@ -178,6 +211,7 @@ func NewApp(cfg config.Config) *App {
 		branchCheckedRepos:   make(map[string]bool),
 		branchPerRepoTarget:  make(map[string]*string),
 		mergeCheckedRepos:    make(map[string]bool),
+		manualMerges:         make(map[string]ManualMerge),
 		collapsedChangeRepos: make(map[string]bool),
 		collapsedChangeDirs:  make(map[string]bool),
 		repoBranchTrees:      make(map[string]*branchNode),
@@ -253,6 +287,134 @@ func (a *App) showToast(kind, msg string) {
 	a.toastExpires = time.Now().Add(4 * time.Second)
 }
 
+// overlayOpen reports whether a dialog owns the keyboard.
+func (a *App) overlayOpen() bool {
+	return a.showCmdPalette || a.showSettings || a.showBranchModal || a.showOpLog ||
+		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil
+}
+
+// commitAvailability explains why the commit buttons can or cannot run.
+func (a *App) commitAvailability(checkedFiles, stagedTotal int) (bool, string) {
+	switch a.commitScope {
+	case "staged":
+		if stagedTotal == 0 {
+			return false, "暂存区为空：先暂存文件"
+		}
+	case "current":
+		if a.selectedChangeFile == nil {
+			return false, "先选择一个文件或仓库"
+		}
+	default:
+		if checkedFiles == 0 {
+			return false, "勾选文件后可提交"
+		}
+	}
+	return true, ""
+}
+
+// branchCoverage reports how many repositories contain a local branch.
+func (a *App) branchCoverage(name string) string {
+	if len(a.statuses) == 0 || name == "" {
+		return ""
+	}
+	found := 0
+	for _, st := range a.statuses {
+		for _, bi := range st.BranchInfos {
+			if !bi.IsRemote && bi.Name == name {
+				found++
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("%d/%d", found, len(a.statuses))
+}
+
+// triggerManualMerge prepares an isolated worktree with conflicts left in place.
+func (a *App) triggerManualMerge(plan aimerge.RepoMergePlan) {
+	if a.manualMergeRunning {
+		return
+	}
+	if _, ok := a.manualMerges[plan.Repo.ID]; ok {
+		a.showToast("warn", "已有临时合并工作区，请先清理再重试")
+		return
+	}
+	a.manualMergeRunning = true
+	a.busyLabel = "正在准备手动合并工作区..."
+	go func() {
+		path, conflicts, err := aimerge.PrepareManualMerge(context.Background(), plan)
+		a.runUI(func() {
+			a.manualMergeRunning = false
+			a.busyLabel = ""
+			if err != nil {
+				a.showToast("err", err.Error())
+				return
+			}
+			a.manualMerges[plan.Repo.ID] = ManualMerge{
+				RepoPath:  plan.Repo.AbsPath,
+				Path:      path,
+				Conflicts: conflicts,
+			}
+			if len(conflicts) == 0 {
+				a.showToast("ok", fmt.Sprintf("%s 已合并到临时工作区，可检查后再提交", plan.Repo.Name))
+			} else {
+				a.showToast("warn", fmt.Sprintf("%s 有 %d 个冲突，已保留在临时工作区", plan.Repo.Name, len(conflicts)))
+			}
+		})
+	}()
+}
+
+// cleanupManualMerge removes a temporary manual merge worktree.
+func (a *App) cleanupManualMerge(repoID string) {
+	mm, ok := a.manualMerges[repoID]
+	if !ok {
+		return
+	}
+	delete(a.manualMerges, repoID)
+	go func() {
+		_ = aimerge.CleanupManualMerge(context.Background(), mm.RepoPath, mm.Path)
+	}()
+	a.showToast("ok", "已清理临时合并工作区")
+}
+
+// openFileHistory loads and shows recent commits for one file.
+func (a *App) openFileHistory(cf gitops.ChangedFile) {
+	state := &FileHistoryState{
+		RepoPath: cf.RepoPath,
+		RepoName: cf.RepoName,
+		RelPath:  cf.Path,
+	}
+	a.fileHistory = state
+	go func() {
+		entries := gitops.FileHistory(context.Background(), cf.RepoPath, cf.Path, 30)
+		a.runUI(func() {
+			if a.fileHistory == state {
+				a.fileHistory.Entries = entries
+				a.fileHistory.Loaded = true
+			}
+		})
+	}()
+}
+
+// confirmUndoLastCommit soft-resets the pending repository one commit back.
+func (a *App) confirmUndoLastCommit() {
+	if a.pendingUndo == nil {
+		return
+	}
+	pending := *a.pendingUndo
+	a.pendingUndo = nil
+	go func() {
+		msg, err := gitops.UndoLastCommit(context.Background(), pending.RepoPath)
+		a.runUI(func() {
+			if err != nil {
+				a.showToast("err", pending.RepoName+": "+err.Error())
+				return
+			}
+			a.showToast("ok", pending.RepoName+": "+msg)
+			a.RefreshAsync()
+		})
+	}()
+}
+
 // LoadWorkspaceSync synchronously discovers repos and inspects status.
 func (a *App) LoadWorkspaceSync(wsPath string) {
 	wsPath = filepath.Clean(wsPath)
@@ -264,11 +426,36 @@ func (a *App) LoadWorkspaceSync(wsPath string) {
 
 	a.applySnapshot(repos, maniCfg, statuses, wsFiles)
 	a.lastFullRefresh = time.Now()
-	plans := aimerge.PreflightMergeAll(ctx, repos, a.mergeTargetBranch, false, a.cfg.ProtectedBranches, a.cfg.Concurrency)
-	a.mergePlans = plans
-	if len(plans) > 0 && a.selectedMergeRepoID == "" {
-		a.selectedMergeRepoID = plans[0].Repo.ID
+	a.mergePlans = nil
+	a.mergePreflightAttempted = false
+}
+
+// LoadWorkspaceAsync discovers and inspects a workspace off the UI thread so the
+// window paints immediately. Merge preflight is deferred to the merge view.
+func (a *App) LoadWorkspaceAsync(wsPath string) {
+	wsPath = filepath.Clean(wsPath)
+	if wsPath == "" {
+		return
 	}
+	a.cfg.AddRecentWorkspace(wsPath)
+	a.busyLabel = "正在载入工作区..."
+	a.isRefreshing = true
+	a.mergePlans = nil
+	a.mergePreflightAttempted = false
+	incRoot := a.cfg.IncludeRootRepo
+	conc := a.cfg.Concurrency
+	go func() {
+		ctx := context.Background()
+		repos, maniCfg := mani.DiscoverRepos(wsPath, incRoot)
+		statuses := gitops.InspectRepos(ctx, repos, conc)
+		wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
+		a.runUI(func() {
+			a.isRefreshing = false
+			a.busyLabel = ""
+			a.applySnapshot(repos, maniCfg, statuses, wsFiles)
+			a.lastFullRefresh = time.Now()
+		})
+	}()
 }
 
 // RefreshAsync refreshes all repository statuses with a visible status label.
@@ -286,9 +473,9 @@ func (a *App) refreshInternal(showBusy bool) {
 		return
 	}
 	// Silent refreshes only re-inspect repository status. Scanning every file and
-	// running merge preflights on a 2.5s poll would burn CPU for no visible gain.
+	// running merge preflights on every poll would burn CPU for no visible gain.
 	full := showBusy || a.lastFullRefresh.IsZero() || time.Since(a.lastFullRefresh) > 30*time.Second
-	mergeVisible := full && (a.activeTab == TabMerge || len(a.mergePlans) == 0)
+	mergeVisible := full && a.activeTab == TabMerge
 
 	a.isRefreshing = true
 	if showBusy {
@@ -429,6 +616,9 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 		}
 	}
 
+	if len(a.mergePlans) == 0 {
+		a.mergePreflightAttempted = false
+	}
 	a.rebuildBranchCaches()
 }
 
@@ -437,6 +627,9 @@ func (a *App) selectChangedFile(cf gitops.ChangedFile) {
 	cfCopy := cf
 	a.selectedChangeFile = &cfCopy
 	a.diffModified = false
+	if a.diffStagedOnly && !cf.Staged {
+		a.diffStagedOnly = false
+	}
 
 	ctx := context.Background()
 	oldTxt, newTxt, _, err := gitops.GetFileDiff(ctx, cf.RepoPath, cf.Path, a.diffStagedOnly)
@@ -789,6 +982,7 @@ func (a *App) BranchCandidatesForRepo(repoID string) []gitops.BranchInfo {
 
 func (a *App) openBranchSwitchModal() {
 	a.branchInput = ""
+	a.branchSwitchResults = nil
 	for _, st := range a.statuses {
 		if _, ok := a.branchCheckedRepos[st.Repo.ID]; !ok {
 			a.branchCheckedRepos[st.Repo.ID] = true
@@ -871,6 +1065,16 @@ func (a *App) ApplyBranchPreset(preset config.BranchPreset, executeNow bool) {
 
 // TriggerCheckedBranchSwitch switches all checked repositories in the modal to their respective target branches.
 func (a *App) TriggerCheckedBranchSwitch() {
+	a.triggerCheckedBranchSwitch(false)
+}
+
+// TriggerCheckedBranchCreate switches the checked repositories, creating the
+// target branch from the current commit where it does not exist yet.
+func (a *App) TriggerCheckedBranchCreate() {
+	a.triggerCheckedBranchSwitch(true)
+}
+
+func (a *App) triggerCheckedBranchSwitch(createMissing bool) {
 	var targets []gitops.RepoBranchTarget
 	for _, st := range a.statuses {
 		if !a.branchCheckedRepos[st.Repo.ID] {
@@ -893,7 +1097,7 @@ func (a *App) TriggerCheckedBranchSwitch() {
 	}
 
 	a.busyLabel = fmt.Sprintf("正在切换 %d 个仓库的分支...", len(targets))
-	createMissing := a.branchCreateMissing
+	a.branchSwitchResults = nil
 	conc := a.cfg.Concurrency
 	go func() {
 		ctx := context.Background()
@@ -901,7 +1105,8 @@ func (a *App) TriggerCheckedBranchSwitch() {
 		okCnt, skipCnt, failCnt := countOpResults(res)
 		a.runUI(func() {
 			a.lastBatchResults = res
-			a.showBranchModal = false
+			a.branchSwitchResults = res
+			a.busyLabel = ""
 			a.showToast("ok", fmt.Sprintf("分支切换完成：%d 成功，%d 跳过，%d 失败", okCnt, skipCnt, failCnt))
 			a.RefreshAsync()
 		})
@@ -1055,7 +1260,7 @@ func (a *App) commitTargets() []gitops.BatchCommitTarget {
 		byRepo[f.RepoID] = append(byRepo[f.RepoID], f)
 	}
 	perRepo := a.generatedCommitByRepo
-	if a.generatedCommitRoot == "" || a.commitMessage != a.generatedCommitRoot {
+	if !a.perRepoMessagesActive() {
 		perRepo = nil
 	}
 	targets := make([]gitops.BatchCommitTarget, 0, len(order))
@@ -1095,10 +1300,30 @@ func (a *App) generateCommitMessage() {
 	a.commitMessage = set.root
 	a.generatedCommitRoot = set.root
 	a.generatedCommitByRepo = set.byRepo
+	a.generatedCommitKeys = commitSelectionSignature(files)
 	a.showToast("ok", fmt.Sprintf("已根据 %d 个文件生成提交说明", len(files)))
 }
 
 // stageChangeFiles stages or unstages every given file, then refreshes statuses.
+// commitSelectionSignature fingerprints the files a generated message describes.
+func commitSelectionSignature(files []gitops.ChangedFile) string {
+	parts := make([]string, 0, len(files))
+	for _, f := range files {
+		parts = append(parts, fmt.Sprintf("%s:%s:%d:%d", f.Key(), f.Kind, f.AddedLines, f.DeletedLines))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
+}
+
+// perRepoMessagesActive reports whether the visible text still matches the
+// generated per-repository messages for the current selection.
+func (a *App) perRepoMessagesActive() bool {
+	if a.generatedCommitRoot == "" || a.commitMessage != a.generatedCommitRoot || len(a.generatedCommitByRepo) == 0 {
+		return false
+	}
+	return a.generatedCommitKeys == commitSelectionSignature(a.commitFilesForScope())
+}
+
 func (a *App) stageChangeFiles(files []gitops.ChangedFile, stage bool) {
 	if len(files) == 0 {
 		return
@@ -1280,6 +1505,7 @@ func (a *App) TriggerCommit(pushAfter bool) {
 				a.commitMessage = ""
 				a.generatedCommitRoot = ""
 				a.generatedCommitByRepo = nil
+				a.generatedCommitKeys = ""
 				a.commitAmend = false
 				a.showToast("ok", fmt.Sprintf("已提交 %d 个仓库", okCnt))
 			} else {
@@ -1318,6 +1544,7 @@ func (a *App) TriggerPushAllAhead() {
 
 // TriggerMergePreflight runs non-destructive git merge-tree conflict checks across all repos.
 func (a *App) TriggerMergePreflight(fetchFirst bool) {
+	a.mergePreflightAttempted = true
 	target := strings.TrimSpace(a.mergeTargetBranch)
 	if target == "" {
 		a.showToast("warn", "请输入目标分支（如 test 或 main）")

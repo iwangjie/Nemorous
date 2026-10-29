@@ -290,3 +290,29 @@ func badgeBox(c *ui.Context, text string, fg, bg, border ui.Color, fontSize floa
 		}
 	})
 }
+
+// menuPill renders a compact pill that opens a popover menu.
+func menuPill(c *ui.Context, p Palette, label string, active bool, build func(m *ui.Menu)) {
+	bg := p.Surface2
+	fg := p.TextControl
+	if active {
+		bg = p.AccentSoft
+		fg = p.Accent
+	}
+	el := ui.Row(c).Padding(4, 9).Gap(4).Radius(5).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
+	if el.Hovered() {
+		el.Background(p.SurfaceHover)
+	}
+	el.PopoverMenuButton(build)
+	el.Children(func() {
+		ui.Text(c, label).FontSize(11.5).FontWeight(weightMedium).TextColor(fg).SingleLine()
+	})
+}
+
+// pillDisabled renders a control that is visibly unavailable.
+func pillDisabled(c *ui.Context, p Palette, label string) {
+	el := ui.Row(c).Padding(5, 11).Radius(6).Background(p.Surface2).AlignItems(ui.Center).Shrink(0)
+	el.Children(func() {
+		ui.Text(c, label).FontSize(12).FontWeight(weightMedium).TextColor(p.TextMuted).SingleLine()
+	})
+}

@@ -112,10 +112,15 @@ func sortBranchNode(n *branchNode) {
 // renderBranchMenu fills a menu with the hierarchy. A node that is a branch and
 // also a namespace ("release" plus "release/2.0") gets both an item and a
 // submenu, the submenu labeled with a trailing slash.
-func renderBranchMenu(m *ui.Menu, n *branchNode, current string, onPick func(string)) {
+func renderBranchMenu(m *ui.Menu, n *branchNode, current string, coverage func(string) string, onPick func(string)) {
 	for _, child := range n.children {
 		if child.leaf {
 			label := child.name
+			if coverage != nil {
+				if cov := coverage(child.full); cov != "" {
+					label += "  ·  " + cov
+				}
+			}
 			if age := branchAge(child.recent); age != "" {
 				label += "  ·  " + age
 			}
@@ -127,7 +132,7 @@ func renderBranchMenu(m *ui.Menu, n *branchNode, current string, onPick func(str
 		}
 		if len(child.children) > 0 {
 			m.Submenu(child.name+"/", func(sub *ui.Menu) {
-				renderBranchMenu(sub, child, current, onPick)
+				renderBranchMenu(sub, child, current, coverage, onPick)
 			})
 		}
 	}

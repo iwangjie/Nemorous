@@ -11,10 +11,6 @@ import (
 )
 
 func (a *App) buildChangesView(c *ui.Context, p Palette) {
-	if a.pendingClipboard != "" {
-		c.Services().WriteClipboard(a.pendingClipboard)
-		a.pendingClipboard = ""
-	}
 	ui.Split(c, &a.changesSplit,
 		func() { a.buildChangesLeftPane(c, p) },
 		func() { a.buildDiffRightPane(c, p) },
@@ -135,9 +131,10 @@ func kindChipBg(kind string, p Palette) ui.Color {
 // collapse, files carry status and stage badges, right-click offers staging,
 // discarding and per-file selection.
 func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
-	totalFiles := 0
+	allTotal := 0
 	checkedFiles := 0
 	checkedRepos := 0
+	visibleTotal := 0
 	kindCounts := make(map[string]int)
 	var dirtyStatuses []gitops.RepoStatus
 	var cleanStatuses []gitops.RepoStatus
@@ -152,34 +149,51 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			continue
 		}
 		dirtyStatuses = append(dirtyStatuses, st)
-		filteredByRepo[st.Repo.ID] = a.filterChangeFiles(st.Files)
-		totalFiles += len(st.Files)
+		allTotal += len(st.Files)
 		repoHasChecked := false
 		for _, f := range st.Files {
+			if a.checkedChanges[f.Key()] {
+				checkedFiles++
+				repoHasChecked = true
+			}
+			if !a.changeFileMatchesQuery(st.Repo.Name, f) {
+				continue
+			}
 			kind := f.Kind
 			if kind == "?" {
 				kind = "A"
 			}
 			kindCounts[kind]++
-			if a.checkedChanges[f.Key()] {
-				checkedFiles++
-				repoHasChecked = true
-			}
 		}
 		if repoHasChecked {
 			checkedRepos++
+		}
+		files := a.filterChangeFiles(st.Repo.Name, st.Files)
+		filteredByRepo[st.Repo.ID] = files
+		visibleTotal += len(files)
+	}
+	filtered := a.changesKindFilter != "" || strings.TrimSpace(a.changesFilterQuery) != ""
+	aheadRepos := 0
+	for _, st := range a.statuses {
+		if st.Ahead > 0 {
+			aheadRepos++
 		}
 	}
 
 	ui.Column(c).Fill().Padding(12).Gap(10).Background(p.RailBg).Children(func() {
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			title := "本地变更"
-			if totalFiles > 0 {
-				title = fmt.Sprintf("本地变更 (%d/%d)", checkedFiles, totalFiles)
+			if allTotal > 0 {
+				title = fmt.Sprintf("本地变更 (%d/%d)", checkedFiles, allTotal)
 			}
-			ui.Text(c, title).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-			if totalFiles > 0 {
-				ui.Row(c).Gap(4).Children(func() {
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, title).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+				if filtered {
+					badgeBox(c, fmt.Sprintf("筛出 %d", visibleTotal), p.Accent, p.AccentSoft, ui.Color{}, 10, false)
+				}
+			})
+			if allTotal > 0 {
+				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 					miniBtn(c, p, "全选", func() {
 						for _, st := range dirtyStatuses {
 							for _, f := range filteredByRepo[st.Repo.ID] {
@@ -192,11 +206,40 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 							a.checkedChanges[k] = false
 						}
 					})
+					menuPill(c, p, "Stash ▾", false, func(m *ui.Menu) {
+						if m.Item("贮藏全部改动 (Stash)").Chosen() {
+							a.TriggerStashAll()
+						}
+						if m.Item("恢复最近贮藏 (Stash Pop)").Chosen() {
+							a.TriggerStashPopAll()
+						}
+					})
 				})
 			}
 		})
 
-		if totalFiles > 0 {
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.SearchField(c.Key("changes-search"), &a.changesFilterQuery).Bind(&a.changesFilterHandle).Placeholder("搜索改动文件...").Grow(1)
+			repoLabel := "全部仓库"
+			if a.repoFilterID != "" {
+				if st, ok := a.statusByID[a.repoFilterID]; ok {
+					repoLabel = st.Repo.Name
+				}
+			}
+			menuPill(c, p, repoLabel+" ▾", a.repoFilterID != "", func(m *ui.Menu) {
+				if m.Item("全部仓库").Checked(a.repoFilterID == "").Chosen() {
+					a.repoFilterID = ""
+				}
+				for _, st := range a.statuses {
+					stCopy := st
+					if m.Item(stCopy.Repo.Name).Checked(a.repoFilterID == stCopy.Repo.ID).Chosen() {
+						a.repoFilterID = stCopy.Repo.ID
+					}
+				}
+			})
+		})
+
+		if allTotal > 0 {
 			a.buildChangeFilterRow(c, p, kindCounts)
 		}
 
@@ -206,9 +249,34 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			}
 
 			if len(dirtyStatuses) == 0 {
-				ui.Column(c).Padding(16).Gap(6).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
+				ui.Column(c).Padding(16).Gap(8).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
 					ui.Text(c, "所有仓库均无未提交改动").FontSize(13).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-					ui.Text(c, "工作区保持干净。你可以随时切换分支、拉取最新代码或浏览文件。").FontSize(11.5).TextColor(p.TextMuted)
+					ui.Text(c, "工作区保持干净。可以继续合并到 test，或回到开发分支。").FontSize(11.5).TextColor(p.TextMuted)
+					ui.Row(c).Wrap().Gap(6).Children(func() {
+						if aheadRepos > 0 {
+							pill(c, p, fmt.Sprintf("推送待推送仓库 (%d)", aheadRepos), false, func() {
+								a.TriggerPushAllAhead()
+							})
+						}
+						pill(c, p, "合并到 "+a.mergeTargetBranch, true, func() {
+							a.activeTab = TabMerge
+							a.TriggerMergePreflight(false)
+						})
+						if len(a.lastBatchResults) > 0 {
+							miniBtn(c, p, "操作记录", func() {
+								a.showOpLog = true
+							})
+						}
+					})
+				})
+			} else if visibleTotal == 0 {
+				ui.Column(c).Padding(16).Gap(8).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
+					ui.Text(c, "没有匹配的改动文件").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+					miniBtn(c, p, "清除筛选", func() {
+						a.changesKindFilter = ""
+						a.changesFilterQuery = ""
+						a.repoFilterID = ""
+					})
 				})
 			}
 
@@ -221,21 +289,38 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 	})
 }
 
-func (a *App) filterChangeFiles(files []gitops.ChangedFile) []gitops.ChangedFile {
-	if a.changesKindFilter == "" {
-		return files
+func (a *App) changeFileMatchesQuery(repoName string, f gitops.ChangedFile) bool {
+	query := strings.ToLower(strings.TrimSpace(a.changesFilterQuery))
+	if query == "" {
+		return true
 	}
+	hay := strings.ToLower(repoName + "/" + f.Path)
+	return strings.Contains(hay, query)
+}
+
+func (a *App) filterChangeFiles(repoName string, files []gitops.ChangedFile) []gitops.ChangedFile {
 	out := make([]gitops.ChangedFile, 0, len(files))
 	for _, f := range files {
-		kind := f.Kind
-		if kind == "?" {
-			kind = "A"
+		if !a.changeFileMatchesQuery(repoName, f) {
+			continue
 		}
-		if kind == a.changesKindFilter {
-			out = append(out, f)
+		if a.changesKindFilter != "" {
+			kind := f.Kind
+			if kind == "?" {
+				kind = "A"
+			}
+			if kind != a.changesKindFilter {
+				continue
+			}
 		}
+		out = append(out, f)
 	}
 	return out
+}
+
+// changeFilterKey identifies the cached tree for the active kind + text filters.
+func (a *App) changeFilterKey(repoID string) string {
+	return repoID + "|" + a.changesKindFilter + "|" + strings.ToLower(strings.TrimSpace(a.changesFilterQuery))
 }
 
 func (a *App) buildChangeFilterRow(c *ui.Context, p Palette, counts map[string]int) {
@@ -332,6 +417,13 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 			if m.Item("恢复本仓贮藏").Chosen() {
 				a.stashRepo(stCopy.Repo, true)
 			}
+			m.Separator()
+			if m.Item("在文件管理器中显示").Chosen() {
+				_ = revealPath(stCopy.Repo.AbsPath)
+			}
+			if m.Item("撤销上一次提交…").Chosen() {
+				a.pendingUndo = &PendingUndo{RepoPath: stCopy.Repo.AbsPath, RepoName: stCopy.Repo.Name}
+			}
 		}
 		hdr.PopoverMenu(repoMenu)
 		hdr.Children(func() {
@@ -389,19 +481,20 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 					ui.Text(gkc, "当前筛选无匹配文件").FontSize(11).TextColor(p.TextMuted)
 				})
 			} else {
-				treeKey := stCopy.Repo.ID + "|" + a.changesKindFilter
+				treeKey := a.changeFilterKey(stCopy.Repo.ID)
 				tree, ok := a.changeTreeCache[treeKey]
 				if !ok {
 					tree = buildChangeTree(visible)
 					a.changeTreeCache[treeKey] = tree
 				}
-				a.renderChangeTreeNode(c, p, stCopy.Repo.ID, tree, 0)
+				ordered := a.renderedChangeFiles(stCopy.Repo.ID, tree)
+				a.renderChangeTreeNode(c, p, stCopy.Repo.ID, tree, 0, ordered)
 			}
 		}
 	})
 }
 
-func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node *changeTreeNode, depth int) {
+func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node *changeTreeNode, depth int, ordered []gitops.ChangedFile) {
 	indent := float32(10 + depth*14)
 	for _, dir := range node.dirs {
 		dirCopy := dir
@@ -448,15 +541,15 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node
 		})
 
 		if !collapsed {
-			a.renderChangeTreeNode(c, p, repoID, dirCopy, depth+1)
+			a.renderChangeTreeNode(c, p, repoID, dirCopy, depth+1, ordered)
 		}
 	}
 	for _, cf := range node.files {
-		a.buildChangeFileRow(c, p, cf, indent+14)
+		a.buildChangeFileRow(c, p, cf, indent+14, ordered)
 	}
 }
 
-func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile, indent float32) {
+func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile, indent float32, ordered []gitops.ChangedFile) {
 	cfCopy := cf
 	key := cfCopy.Key()
 	isSelected := a.selectedChangeKey == key
@@ -508,6 +601,22 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 		if m.Item("复制相对路径").Chosen() {
 			a.pendingClipboard = cfCopy.Path
 		}
+		if m.Item("查看文件历史").Chosen() {
+			a.openFileHistory(cfCopy)
+		}
+		absPath := filepath.Join(cfCopy.RepoPath, cfCopy.Path)
+		if m.Item("在文件管理器中显示").Chosen() {
+			target := absPath
+			if cfCopy.Kind == "D" {
+				target = filepath.Join(cfCopy.RepoPath, filepath.Dir(cfCopy.Path))
+			}
+			_ = revealPath(target)
+		}
+		if cfCopy.Kind != "D" {
+			if m.Item("用默认应用打开").Chosen() {
+				_ = openPath(absPath)
+			}
+		}
 		m.Separator()
 		if m.Item("还原更改").Chosen() {
 			a.pendingDiscard = &PendingDiscard{
@@ -526,7 +635,12 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 			fChk.Background(p.Surface2).Border(1, p.BorderStrong)
 		}
 		if fChk.Clicked() {
-			a.checkedChanges[key] = !a.checkedChanges[key]
+			if fChk.ClickModifiers()&ui.Shift != 0 {
+				a.toggleChangeRange(ordered, key)
+			} else {
+				a.checkedChanges[key] = !a.checkedChanges[key]
+				a.lastCheckedKey = key
+			}
 		}
 		fChk.Children(func() {
 			if isChecked {
@@ -543,7 +657,11 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 
 		info := ui.Row(fkc).Grow(1).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 		if info.Clicked() {
-			a.selectChangedFile(cfCopy)
+			if info.ClickModifiers()&ui.Shift != 0 {
+				a.toggleChangeRange(ordered, key)
+			} else {
+				a.selectChangedFile(cfCopy)
+			}
 		}
 		info.Children(func() {
 			ui.Text(fkc, baseName).FontSize(12).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxLines(1)
@@ -669,18 +787,31 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 		}
 	}
 
+	canCommit, commitHint := a.commitAvailability(checkedFiles, stagedTotal)
+	perRepoActive := a.perRepoMessagesActive()
+
 	ui.Column(c).Padding(10).Gap(8).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
-		if ui.TextInput(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明，或点「生成说明」...").FillWidth().Submitted() {
-			a.TriggerCommit(false)
-		}
+		ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明，或点「生成说明」...").Lines(2, 6).FillWidth()
 
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				miniBtn(c, p, "生成说明 ⌘G", func() {
 					a.generateCommitMessage()
 				})
-				if a.generatedCommitRoot != "" && a.commitMessage == a.generatedCommitRoot {
-					badgeBox(c, "已生成", p.Green, p.GreenSoft, ui.Color{}, 10, true)
+				switch {
+				case perRepoActive:
+					badgeBox(c, fmt.Sprintf("逐仓说明 · %d", len(a.generatedCommitByRepo)), p.Green, p.GreenSoft, ui.Color{}, 10, true)
+					previewLabel := "预览"
+					if a.showCommitPreview {
+						previewLabel = "收起预览"
+					}
+					miniBtn(c, p, previewLabel, func() {
+						a.showCommitPreview = !a.showCommitPreview
+					})
+				case a.generatedCommitRoot != "" && a.commitMessage != a.generatedCommitRoot:
+					badgeBox(c, "统一说明（已手动编辑）", p.Amber, p.AmberSoft, ui.Color{}, 10, false)
+				case a.generatedCommitRoot != "":
+					badgeBox(c, "选择已变化 · 重新生成", p.Amber, p.AmberSoft, ui.Color{}, 10, false)
 				}
 			})
 			optToggle := ui.Row(c.Key("commit-opt-toggle")).Padding(2, 4).Gap(4).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
@@ -697,15 +828,40 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 			})
 		})
 
+		if perRepoActive && a.showCommitPreview {
+			ui.Column(c).Padding(8).Gap(6).Radius(6).Background(p.RailBg).Children(func() {
+				for _, st := range a.statuses {
+					msg, ok := a.generatedCommitByRepo[st.Repo.ID]
+					if !ok {
+						continue
+					}
+					kc := c.Key("cmp-" + st.Repo.ID)
+					ui.Column(kc).Gap(2).Children(func() {
+						ui.Text(kc, st.Repo.Name).FontSize(10.5).FontWeight(weightSemibold).TextColor(p.Accent)
+						ui.Text(kc, msg).FontSize(10.5).TextColor(p.TextSecondary).MaxLines(4)
+					})
+				}
+			})
+		}
+
 		ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
-			pill(c, p, commitBtnLabel, true, func() {
-				a.TriggerCommit(false)
-			})
-			pill(c, p, "提交并推送", false, func() {
-				a.TriggerCommit(true)
-			})
-			ui.Text(c, "⌘⏎ / ⌘⇧⏎").FontSize(10.5).TextColor(p.TextMuted).SingleLine()
+			if canCommit {
+				pill(c, p, commitBtnLabel, true, func() {
+					a.TriggerCommit(false)
+				})
+				pill(c, p, "提交并推送", false, func() {
+					a.TriggerCommit(true)
+				})
+				ui.Text(c, "⌘Enter / ⌘⇧Enter").FontSize(10.5).TextColor(p.TextMuted).SingleLine()
+			} else {
+				pillDisabled(c, p, commitBtnLabel)
+				pillDisabled(c, p, "提交并推送")
+				ui.Text(c, "⌘Enter / ⌘⇧Enter").FontSize(10.5).TextColor(p.TextMuted).SingleLine()
+			}
 		})
+		if !canCommit && commitHint != "" {
+			ui.Text(c, commitHint).FontSize(10.5).TextColor(p.TextMuted)
+		}
 
 		if a.showCommitOptions {
 			ui.Column(c).Padding(6, 0, 0, 0).Gap(6).BorderWidth(1, 0, 0, 0).BorderColor(p.BorderSubtle).Children(func() {
@@ -734,12 +890,6 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 				})
 				ui.Row(c).Wrap().Gap(10).AlignItems(ui.Center).Children(func() {
 					ui.Checkbox(c, &a.commitAmend, "修正上一次提交 (--amend)")
-					miniBtn(c, p, "贮藏全部改动", func() {
-						a.TriggerStashAll()
-					})
-					miniBtn(c, p, "恢复全部贮藏", func() {
-						a.TriggerStashPopAll()
-					})
 				})
 			})
 		}
@@ -771,7 +921,11 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
 				badgeBox(c, cf.RepoName, p.Accent, p.AccentSoft, ui.Color{}, 11, true)
-				ui.Text(c, cf.Path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+				if cf.OrigPath != "" {
+					ui.Text(c, cf.OrigPath+" → "+cf.Path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+				} else {
+					ui.Text(c, cf.Path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+				}
 				ui.Text(c, fmt.Sprintf("+%d  -%d", cf.AddedLines, cf.DeletedLines)).FontSize(11.5).TextColor(p.TextMuted).SingleLine()
 				if isDirty {
 					badgeBox(c, "未保存", p.Amber, p.AmberSoft, ui.Color{}, 10.5, true)
@@ -779,6 +933,33 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 			})
 
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				if cf.Staged || a.diffStagedOnly {
+					ui.Row(c).Padding(2).Gap(2).Radius(6).Background(p.Surface3).Children(func() {
+						diffScope := func(staged bool, label string) {
+							active := a.diffStagedOnly == staged
+							bg := ui.Transparent
+							fg := p.TextControl
+							if active {
+								bg = p.Surface
+								if p.IsDark {
+									bg = p.Surface2
+								}
+								fg = p.TextPrimary
+							}
+							el := ui.Row(c.Key("dscope-"+label)).Padding(3, 8).Radius(4).Background(bg).Cursor(ui.CursorPointer)
+							if el.Clicked() && a.diffStagedOnly != staged {
+								a.diffStagedOnly = staged
+								a.selectChangedFile(cf)
+							}
+							el.Children(func() {
+								ui.Text(c, label).FontSize(11.5).FontWeight(weightMedium).TextColor(fg)
+							})
+						}
+						diffScope(false, "工作区")
+						diffScope(true, "暂存区")
+					})
+				}
+
 				// Split vs Unified switch
 				ui.Row(c).Padding(2).Gap(2).Radius(6).Background(p.Surface3).Children(func() {
 					splitBtn := func(sideBySide bool, label string) {
@@ -891,4 +1072,122 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 		// DiffView
 		editor.DiffView(c, a.diffState).Grow(1).FillWidth()
 	})
+}
+
+// renderedChangeFiles walks directories before files, skipping collapsed folders,
+// so shift ranges and arrow keys only touch what is on screen.
+func (a *App) renderedChangeFiles(repoID string, node *changeTreeNode) []gitops.ChangedFile {
+	var out []gitops.ChangedFile
+	for _, dir := range node.dirs {
+		if a.collapsedChangeDirs[repoID+"::"+dir.relPath] {
+			continue
+		}
+		out = append(out, a.renderedChangeFiles(repoID, dir)...)
+	}
+	out = append(out, node.files...)
+	return out
+}
+
+// visibleChangeFilesFor returns one repository's visible files in render order.
+func (a *App) visibleChangeFilesFor(repoID string) []gitops.ChangedFile {
+	st, ok := a.statusByID[repoID]
+	if !ok || len(st.Files) == 0 {
+		return nil
+	}
+	files := a.filterChangeFiles(st.Repo.Name, st.Files)
+	if len(files) == 0 {
+		return nil
+	}
+	tree, ok := a.changeTreeCache[a.changeFilterKey(repoID)]
+	if !ok {
+		tree = buildChangeTree(files)
+	}
+	return a.renderedChangeFiles(repoID, tree)
+}
+
+// visibleChangeFileList flattens every visible repository tree in display order.
+func (a *App) visibleChangeFileList() []gitops.ChangedFile {
+	var out []gitops.ChangedFile
+	for _, st := range a.statuses {
+		if a.repoFilterID != "" && st.Repo.ID != a.repoFilterID {
+			continue
+		}
+		if a.collapsedChangeRepos[st.Repo.ID] {
+			continue
+		}
+		out = append(out, a.visibleChangeFilesFor(st.Repo.ID)...)
+	}
+	return out
+}
+
+// toggleChangeRange applies a Shift-click across the visible rows of one repository.
+func (a *App) toggleChangeRange(ordered []gitops.ChangedFile, targetKey string) {
+	from, to := -1, -1
+	for i, f := range ordered {
+		if f.Key() == a.lastCheckedKey {
+			from = i
+		}
+		if f.Key() == targetKey {
+			to = i
+		}
+	}
+	if from < 0 || to < 0 || from == to {
+		a.checkedChanges[targetKey] = !a.checkedChanges[targetKey]
+		a.lastCheckedKey = targetKey
+		return
+	}
+	if from > to {
+		from, to = to, from
+	}
+	value := !a.checkedChanges[targetKey]
+	for i := from; i <= to; i++ {
+		a.checkedChanges[ordered[i].Key()] = value
+	}
+	a.lastCheckedKey = targetKey
+}
+
+// moveChangeSelection moves the diff selection with the arrow keys.
+func (a *App) moveChangeSelection(delta int) {
+	list := a.visibleChangeFileList()
+	if len(list) == 0 {
+		return
+	}
+	idx := -1
+	for i, f := range list {
+		if f.Key() == a.selectedChangeKey {
+			idx = i
+			break
+		}
+	}
+	next := 0
+	switch {
+	case idx < 0 && delta < 0:
+		next = len(list) - 1
+	case idx >= 0:
+		next = (idx + delta + len(list)) % len(list)
+	}
+	a.selectChangedFile(list[next])
+}
+
+// toggleSelectedChange flips the commit checkbox of the selected file.
+func (a *App) toggleSelectedChange() {
+	if a.selectedChangeFile == nil {
+		return
+	}
+	key := a.selectedChangeFile.Key()
+	a.checkedChanges[key] = !a.checkedChanges[key]
+	a.lastCheckedKey = key
+}
+
+// stageSelectedChange stages or unstages the selected file.
+func (a *App) stageSelectedChange(stage bool) {
+	if a.selectedChangeFile == nil {
+		return
+	}
+	a.stageChangeFiles([]gitops.ChangedFile{*a.selectedChangeFile}, stage)
+}
+
+// textFocusActive reports whether a text field owns typing in the main view.
+func (a *App) textFocusActive(c *ui.Context) bool {
+	return a.diffEditable || a.commitInputHandle.Focused(c) || a.changesFilterHandle.Focused(c) || a.codeFilterHandle.Focused(c)
 }

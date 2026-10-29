@@ -18,9 +18,6 @@ import (
 func main() {
 	cfg := config.Load()
 	app := NewApp(cfg)
-	if cfg.WorkspacePath != "" {
-		app.LoadWorkspaceSync(cfg.WorkspacePath)
-	}
 
 	mygo.App.WhenReady(func() {
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
@@ -37,6 +34,9 @@ func main() {
 			TitleBarStyle: mygo.TitleBarHidden,
 			Content:       ui.View(app.BuildUI),
 		})
+		if cfg.WorkspacePath != "" {
+			app.LoadWorkspaceAsync(cfg.WorkspacePath)
+		}
 		app.startWorkspaceWatcher()
 	})
 
@@ -97,7 +97,7 @@ func (a *App) startWorkspaceWatcher() {
 
 	// 2. Fallback lightweight real-time polling every 2.5s to catch external git/IDE operations
 	go func() {
-		ticker := time.NewTicker(2500 * time.Millisecond)
+		ticker := time.NewTicker(8 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -114,6 +114,10 @@ func (a *App) startWorkspaceWatcher() {
 
 // BuildUI constructs the complete immediate-mode UI tree for Nemorous.
 func (a *App) BuildUI(c *ui.Context) {
+	if a.pendingClipboard != "" {
+		c.Services().WriteClipboard(a.pendingClipboard)
+		a.pendingClipboard = ""
+	}
 	p := a.palette()
 	t := *ui.LightTheme()
 	if p.IsDark {
@@ -162,10 +166,17 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildBranchSwitchModal(c, p)
 		a.buildSettingsModal(c, p)
 		a.buildDiscardConfirmModal(c, p)
+		a.buildUndoConfirmModal(c, p)
+		a.buildFileHistoryModal(c, p)
+		a.buildOpLogModal(c, p)
 	})
 }
 
 func (a *App) registerShortcuts(c *ui.Context) {
+	// Dialogs own the keyboard: global actions must not fire behind them.
+	if a.overlayOpen() {
+		return
+	}
 	if c.Shortcut(ui.Cmd, ui.KeyK) || c.Shortcut(ui.Cmd, ui.KeyP) {
 		a.showCmdPalette = !a.showCmdPalette
 		a.cmdPaletteQuery = ""
@@ -201,6 +212,23 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			a.TriggerCommit(true)
 		} else if c.Shortcut(ui.Cmd, ui.KeyEnter) {
 			a.TriggerCommit(false)
+		}
+		if !a.textFocusActive(c) {
+			if c.Shortcut(0, ui.KeyDown) {
+				a.moveChangeSelection(1)
+			}
+			if c.Shortcut(0, ui.KeyUp) {
+				a.moveChangeSelection(-1)
+			}
+			if c.Shortcut(0, ui.KeySpace) {
+				a.toggleSelectedChange()
+			}
+			if c.Shortcut(0, ui.KeyS) {
+				a.stageSelectedChange(true)
+			}
+			if c.Shortcut(0, ui.KeyU) {
+				a.stageSelectedChange(false)
+			}
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.Key1) {
@@ -265,12 +293,12 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 				brBtn.Background(p.SurfaceHover)
 			}
 			brBtn.PopoverMenuButton(func(m *ui.Menu) {
-				renderBranchMenu(m, recentTree, domBranch, func(target string) {
+				renderBranchMenu(m, recentTree, domBranch, a.branchCoverage, func(target string) {
 					a.TriggerBatchSwitch(target, false)
 				})
 				if len(staleTree.children) > 0 {
 					m.Submenu("更早的分支", func(sub *ui.Menu) {
-						renderBranchMenu(sub, staleTree, domBranch, func(target string) {
+						renderBranchMenu(sub, staleTree, domBranch, a.branchCoverage, func(target string) {
 							a.TriggerBatchSwitch(target, false)
 						})
 					})
@@ -462,8 +490,17 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 		ui.Text(c, statusMsg).FontSize(11).FontWeight(weightMedium).TextColor(msgColor)
 		ui.Spacer(c)
 
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "⌘1-4 切换视图 · ⌘K 搜索 · ⌘B 切换分支 · ⌘G 生成说明 · ⌘⏎ 提交 · ⌘S 保存").FontSize(10.5).TextColor(p.TextMuted)
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			if len(a.lastBatchResults) > 0 {
+				miniBtn(c, p, fmt.Sprintf("操作记录 (%d)", len(a.lastBatchResults)), func() {
+					a.showOpLog = true
+				})
+			}
+			hint := "⌘1-4 切换视图 · ⌘K 搜索 · ⌘B 切换分支 · ⌘G 生成说明 · ⌘Enter 提交 · ⌘S 保存"
+			if a.activeTab == TabChanges {
+				hint = "↑↓ 选择 · 空格勾选 · S/U 暂存 · ⌘G 说明 · ⌘Enter 提交"
+			}
+			ui.Text(c, hint).FontSize(10.5).TextColor(p.TextMuted)
 		})
 	})
 }

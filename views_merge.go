@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -12,6 +13,11 @@ import (
 )
 
 func (a *App) buildMergeView(c *ui.Context, p Palette) {
+	// Preflight is deferred until the merge view is actually opened.
+	if len(a.mergePlans) == 0 && !a.mergeRunning && !a.mergePreflightAttempted {
+		a.mergePreflightAttempted = true
+		a.TriggerMergePreflight(false)
+	}
 	conflictCnt := 0
 	selectedClean := 0
 	selectedAny := 0
@@ -65,12 +71,17 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 					iconPill(c, p, icoBranch, "回到开发分支", false, func() {
 						a.TriggerReturnToDevelopmentBranches()
 					})
-					pill(c, p, fmt.Sprintf("合并选中 (%d)", selectedClean), false, func() {
-						a.TriggerExecuteCleanMerges(false)
-					})
-					pill(c, p, fmt.Sprintf("合并并推送 (%d)", selectedClean), true, func() {
-						a.TriggerExecuteCleanMerges(true)
-					})
+					if selectedClean > 0 {
+						pill(c, p, fmt.Sprintf("合并选中 (%d)", selectedClean), false, func() {
+							a.TriggerExecuteCleanMerges(false)
+						})
+						pill(c, p, fmt.Sprintf("合并并推送 (%d)", selectedClean), true, func() {
+							a.TriggerExecuteCleanMerges(true)
+						})
+					} else {
+						pillDisabled(c, p, "合并选中 (0)")
+						pillDisabled(c, p, "合并并推送 (0)")
+					}
 					ghostBtn(c, p, icoMore, "", a.showMergeAdvanced, func() {
 						a.showMergeAdvanced = !a.showMergeAdvanced
 					})
@@ -193,7 +204,7 @@ func (a *App) buildMergePlanList(c *ui.Context, p Palette, conflictCnt int) {
 			ui.Box(c).Grow(1).Children(func() {
 				ui.Text(c, "状态说明").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
 			})
-			ui.Box(c).Width(180).AlignItems(ui.End).Children(func() {
+			ui.Box(c).Width(230).AlignItems(ui.End).Children(func() {
 				ui.Text(c, "操作").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
 			})
 		})
@@ -261,7 +272,7 @@ func (a *App) buildMergePlanList(c *ui.Context, p Palette, conflictCnt int) {
 					})
 
 					// Status & Action
-					ui.Row(kc).Width(180).Justify(ui.End).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
+					ui.Row(kc).Width(230).Justify(ui.End).Gap(8).AlignItems(ui.Center).Shrink(0).Children(func() {
 						switch plCopy.Kind {
 						case aimerge.PlanClean:
 							badgeBox(kc, fmt.Sprintf("可合并 (%d)", plCopy.AheadCommits), p.Green, p.GreenSoft, ui.Color{}, 11, true)
@@ -277,6 +288,9 @@ func (a *App) buildMergePlanList(c *ui.Context, p Palette, conflictCnt int) {
 							})
 						case aimerge.PlanConflict:
 							badgeBox(kc, fmt.Sprintf("冲突 (%d)", len(plCopy.ConflictFiles)), p.Danger, p.DangerSoft, ui.Color{}, 11, true)
+							miniBtn(kc, p, "手动", func() {
+								a.triggerManualMerge(plCopy)
+							})
 							iconPill(kc, p, icoSparkles, "AI 解决冲突", true, func() {
 								a.TriggerAIMergeConflict(plCopy)
 							})
@@ -303,6 +317,9 @@ func (a *App) buildAIMergeRightPane(c *ui.Context, p Palette, plan *aimerge.Repo
 						badgeBox(c, fmt.Sprintf("%s → %s", plCopy.SourceBranch, plCopy.TargetBranch), p.Accent, p.AccentSoft, ui.Color{}, 11, true)
 					})
 					if plCopy.Kind == aimerge.PlanConflict {
+						miniBtn(c, p, "手动合并", func() {
+							a.triggerManualMerge(plCopy)
+						})
 						iconPill(c, p, icoSparkles, "AI 解决冲突", true, func() {
 							a.TriggerAIMergeConflict(plCopy)
 						})
@@ -324,6 +341,29 @@ func (a *App) buildAIMergeRightPane(c *ui.Context, p Palette, plan *aimerge.Repo
 					ui.Column(c).Padding(8, 10).Gap(4).Radius(6).Background(p.DangerSoft).Children(func() {
 						ui.Text(c, "冲突文件：").FontSize(11).FontWeight(weightSemibold).TextColor(p.Danger)
 						ui.Text(c, strings.Join(plCopy.ConflictFiles, "\n")).FontSize(11.5).TextColor(p.TextPrimary)
+					})
+				}
+
+				if mm, ok := a.manualMerges[plCopy.Repo.ID]; ok {
+					ui.Column(c).Padding(8, 10).Gap(6).Radius(6).Background(p.RailBg).Children(func() {
+						ui.Text(c, "手动合并工作区").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+						ui.Text(c, mm.Path).FontSize(10.5).TextColor(p.TextMuted).MaxLines(2)
+						ui.Row(c).Wrap().Gap(6).Children(func() {
+							miniBtn(c, p, "打开目录", func() { _ = revealPath(mm.Path) })
+							miniBtn(c, p, "复制路径", func() { a.pendingClipboard = mm.Path })
+							miniBtn(c, p, "清理工作区", func() { a.cleanupManualMerge(plCopy.Repo.ID) })
+						})
+						for _, rel := range mm.Conflicts {
+							relCopy := rel
+							ck := c.Key("mc-" + plCopy.Repo.ID + "-" + relCopy)
+							ui.Row(ck).Gap(6).AlignItems(ui.Center).Children(func() {
+								ui.Text(ck, relCopy).FontSize(11).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
+								miniBtn(ck, p, "打开", func() {
+									_ = openPath(filepath.Join(mm.Path, relCopy))
+								})
+							})
+						}
+						ui.Text(c, "解决冲突后在该工作区提交即可；这里不会自动推送。").FontSize(10.5).TextColor(p.TextMuted)
 					})
 				}
 

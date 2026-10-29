@@ -350,7 +350,7 @@ func formatPresetSummary(repoBranches map[string]string) string {
 func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showBranchModal, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(660).Padding(18).Gap(12).Radius(12).Background(p.Surface).Border(1, p.Border)
+		panel.Width(760).Padding(18).Gap(12).Radius(12).Background(p.Surface).Border(1, p.Border)
 
 		checkedCount := 0
 		for _, st := range a.statuses {
@@ -424,7 +424,7 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 					ui.Text(c, fmt.Sprintf("近 7 天活跃 (%d)：", len(recentBrs))).FontSize(11).TextColor(p.TextMuted)
 					recentTree, _ := a.workspaceBranchTrees()
 					branchMenuPill(c, p, "按层级选择近期分支", false, func(m *ui.Menu) {
-						renderBranchMenu(m, recentTree, a.branchInput, func(target string) {
+						renderBranchMenu(m, recentTree, a.branchInput, a.branchCoverage, func(target string) {
 							a.SetUnifiedBranchForChecked(target)
 						})
 					})
@@ -449,7 +449,7 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 				if a.showStaleBranchesInModal {
 					_, staleTree := a.workspaceBranchTrees()
 					branchMenuPill(c, p, fmt.Sprintf("按层级选择更早分支 (%d)", len(staleBrs)), false, func(m *ui.Menu) {
-						renderBranchMenu(m, staleTree, a.branchInput, func(target string) {
+						renderBranchMenu(m, staleTree, a.branchInput, a.branchCoverage, func(target string) {
 							a.SetUnifiedBranchForChecked(target)
 						})
 					})
@@ -513,8 +513,11 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 						})
 						ui.Text(rkc, stCopy.Repo.Name).FontSize(12.5).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(130).MaxLines(1)
 						badgeBox(rkc, "当前: "+stCopy.Branch, p.TextControl, p.Surface2, ui.Color{}, 10.5, false)
+						if len(stCopy.Files) > 0 {
+							badgeBox(rkc, "有未提交改动 · 将跳过", p.Amber, p.AmberSoft, ui.Color{}, 10, true)
+						}
 						ui.Spacer(rkc)
-						ui.Text(rkc, "目标分支：").FontSize(11).TextColor(p.TextMuted)
+						ui.Text(rkc, "目标分支：").FontSize(11).TextColor(p.TextMuted).SingleLine().Shrink(0)
 						repoCandidates := a.BranchCandidatesForRepo(repoID)
 						branchFuzzyInput(
 							rkc.Key("in"),
@@ -535,7 +538,29 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 			})
 		})
 
-		ui.Checkbox(c, &a.branchCreateMissing, "如果目标分支不存在，自动基于当前提交新建分支")
+		if len(a.branchSwitchResults) > 0 {
+			ui.Column(c).Padding(8, 10).Gap(4).Radius(6).Background(p.RailBg).Children(func() {
+				ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "上次切换结果").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+					miniBtn(c, p, "收起", func() { a.branchSwitchResults = nil })
+				})
+				for _, res := range a.branchSwitchResults {
+					resCopy := res
+					col, bg := p.Green, p.GreenSoft
+					if resCopy.Status == "SKIP" {
+						col, bg = p.Amber, p.AmberSoft
+					} else if resCopy.Status == "FAIL" {
+						col, bg = p.Danger, p.DangerSoft
+					}
+					rk := c.Key("bsr-" + resCopy.RepoID + "-" + resCopy.Message)
+					ui.Row(rk).Gap(8).AlignItems(ui.Center).Children(func() {
+						badgeBox(rk, resCopy.Status, col, bg, ui.Color{}, 10, true)
+						ui.Text(rk, resCopy.RepoName).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(120).MaxLines(1)
+						ui.Text(rk, resCopy.Message).FontSize(11).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+					})
+				}
+			})
+		}
 
 		// 4. Bottom Bar: Save Preset ("记住分支组合") & Execute Switch
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Gap(8).Children(func() {
@@ -550,8 +575,11 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 				pill(c, p, "取消", false, func() {
 					a.showBranchModal = false
 				})
-				pill(c, p, fmt.Sprintf("切换勾选仓库 (%d)", checkedCount), true, func() {
+				pill(c, p, fmt.Sprintf("切换 (%d)", checkedCount), false, func() {
 					a.TriggerCheckedBranchSwitch()
+				})
+				pill(c, p, fmt.Sprintf("新建并切换 (%d)", checkedCount), true, func() {
+					a.TriggerCheckedBranchCreate()
 				})
 			})
 		})
@@ -585,14 +613,14 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 						})
 						if err == nil && len(paths) > 0 {
 							a.runUI(func() {
-								a.LoadWorkspaceSync(paths[0])
+								a.LoadWorkspaceAsync(paths[0])
 								_ = a.cfg.Save()
 							})
 						}
 					}()
 				})
 				pill(c, p, "加载", true, func() {
-					a.LoadWorkspaceSync(a.cfg.WorkspacePath)
+					a.LoadWorkspaceAsync(a.cfg.WorkspacePath)
 					_ = a.cfg.Save()
 				})
 			})
@@ -609,7 +637,7 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 					ui.Row(kc).Padding(4, 8).Gap(8).Radius(5).Background(p.Surface).AlignItems(ui.Center).Children(func() {
 						ui.Text(kc, wsCopy).FontSize(11.5).TextColor(p.TextSecondary).Grow(1)
 						miniBtn(kc, p, "切换", func() {
-							a.LoadWorkspaceSync(wsCopy)
+							a.LoadWorkspaceAsync(wsCopy)
 							_ = a.cfg.Save()
 						})
 					})
@@ -721,4 +749,118 @@ func (a *App) toggleTheme() {
 func (a *App) setTheme(t string) {
 	a.cfg.Theme = t
 	_ = a.cfg.Save()
+}
+
+func (a *App) buildUndoConfirmModal(c *ui.Context, p Palette) {
+	open := a.pendingUndo != nil
+	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
+		if !open || a.pendingUndo == nil {
+			return
+		}
+		pending := *a.pendingUndo
+		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
+		panel.Width(460).Padding(18).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
+		ui.Text(c, "撤销上一次提交？").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
+		ui.Text(c, fmt.Sprintf("将对 %s 执行 git reset --soft HEAD~1，改动保留在暂存区。", pending.RepoName)).FontSize(12.5).TextColor(p.TextPrimary)
+		ui.Text(c, "已推送到远端的提交会被安全拒绝。").FontSize(11.5).TextColor(p.TextMuted)
+		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+			pill(c, p, "取消", false, func() {
+				a.pendingUndo = nil
+			})
+			pill(c, p, "确认撤销", true, func() {
+				a.confirmUndoLastCommit()
+			})
+		})
+	})
+	if !open {
+		a.pendingUndo = nil
+	}
+}
+
+func (a *App) buildFileHistoryModal(c *ui.Context, p Palette) {
+	open := a.fileHistory != nil
+	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
+		if !open || a.fileHistory == nil {
+			return
+		}
+		state := *a.fileHistory
+		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
+		panel.Width(720).Padding(18).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
+		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Gap(2).Children(func() {
+				ui.Text(c, "文件历史").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
+				ui.Text(c, state.RepoName+" / "+state.RelPath).FontSize(11.5).TextColor(p.TextMuted).SingleLine()
+			})
+			miniBtn(c, p, "关闭", func() { a.fileHistory = nil })
+		})
+		if !state.Loaded {
+			ui.Text(c, "正在读取历史…").FontSize(12).TextColor(p.TextMuted)
+		} else if len(state.Entries) == 0 {
+			ui.Text(c, "没有历史提交").FontSize(12).TextColor(p.TextMuted)
+		} else {
+			ui.Scroll(c).MaxHeight(400).Gap(6).Children(func() {
+				for _, cm := range state.Entries {
+					cmCopy := cm
+					kc := c.Key("fh-" + cmCopy.Hash)
+					ui.Column(kc).Padding(8, 10).Gap(3).Radius(6).Background(p.RailBg).Children(func() {
+						ui.Text(kc, cmCopy.Subject).FontSize(12.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxLines(2)
+						ui.Row(kc).Justify(ui.SpaceBetween).Children(func() {
+							ui.Text(kc, cmCopy.Author).FontSize(10.5).TextColor(p.TextMuted)
+							ui.Text(kc, cmCopy.Hash+" · "+cmCopy.RelTime).FontSize(10.5).TextColor(p.TextMuted)
+						})
+					})
+				}
+			})
+		}
+	})
+	if !open {
+		a.fileHistory = nil
+	}
+}
+
+func (a *App) buildOpLogModal(c *ui.Context, p Palette) {
+	open := a.showOpLog
+	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
+		if !open {
+			return
+		}
+		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
+		panel.Width(720).Padding(18).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
+		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "操作记录").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
+			ui.Row(c).Gap(6).Children(func() {
+				miniBtn(c, p, "清空", func() {
+					a.lastBatchResults = nil
+					a.showOpLog = false
+				})
+				miniBtn(c, p, "关闭", func() { a.showOpLog = false })
+			})
+		})
+		if len(a.lastBatchResults) == 0 {
+			ui.Text(c, "暂无操作记录").FontSize(12).TextColor(p.TextMuted)
+			return
+		}
+		ui.Scroll(c).MaxHeight(400).Gap(6).Children(func() {
+			for idx, res := range a.lastBatchResults {
+				resCopy := res
+				statusCol := p.Green
+				statusBg := p.GreenSoft
+				if resCopy.Status == "SKIP" {
+					statusCol, statusBg = p.Amber, p.AmberSoft
+				} else if resCopy.Status == "FAIL" {
+					statusCol, statusBg = p.Danger, p.DangerSoft
+				}
+				rc := c.Key(fmt.Sprintf("op-%d-%s", idx, resCopy.RepoID))
+				ui.Row(rc).Padding(8, 10).Gap(10).Radius(6).Background(p.RailBg).AlignItems(ui.Center).Children(func() {
+					badgeBox(rc, resCopy.Status, statusCol, statusBg, ui.Color{}, 10.5, true)
+					ui.Text(rc, resCopy.RepoName).FontSize(12).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(140).MaxLines(1)
+					ui.Text(rc, resCopy.Message).FontSize(11.5).TextColor(p.TextSecondary).Grow(1).MaxLines(3)
+					ui.Text(rc, fmt.Sprintf("%dms", resCopy.Duration.Milliseconds())).FontSize(10.5).TextColor(p.TextMuted)
+				})
+			}
+		})
+	})
+	if !open {
+		a.showOpLog = false
+	}
 }

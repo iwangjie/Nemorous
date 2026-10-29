@@ -642,6 +642,56 @@ func BatchCommit(ctx context.Context, targets []BatchCommitTarget, message strin
 	return results
 }
 
+// UndoLastCommit soft-resets the branch one commit back, keeping the changes
+// staged. It refuses to rewrite commits that already exist on the upstream.
+func UndoLastCommit(ctx context.Context, repoPath string) (string, error) {
+	branch, err := RunGit(ctx, repoPath, "branch", "--show-current")
+	if err != nil || strings.TrimSpace(branch) == "" {
+		return "", errors.New("detached HEAD 无法撤销提交")
+	}
+	count, err := RunGit(ctx, repoPath, "rev-list", "--count", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(count) == "1" {
+		return "", errors.New("这是首个提交，无法撤销")
+	}
+	if _, err := RunGit(ctx, repoPath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil {
+		ahead, _ := RunGit(ctx, repoPath, "rev-list", "--count", "@{u}..HEAD")
+		if strings.TrimSpace(ahead) == "0" {
+			return "", errors.New("该提交已存在于远端，为安全起见未撤销")
+		}
+	}
+	if _, err := RunGit(ctx, repoPath, "reset", "--soft", "HEAD~1"); err != nil {
+		return "", err
+	}
+	return "已撤销上一次提交，改动保留在暂存区", nil
+}
+
+// FileHistory lists recent commits touching relPath, following renames.
+func FileHistory(ctx context.Context, repoPath, relPath string, limit int) []CommitInfo {
+	if limit <= 0 {
+		limit = 30
+	}
+	out, err := RunGit(ctx, repoPath, "log", "--follow", fmt.Sprintf("-n%d", limit), "--pretty=format:%h|%s|%cr|%an", "--", relPath)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	var commits []CommitInfo
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) == 4 {
+			commits = append(commits, CommitInfo{
+				Hash:    parts[0],
+				Subject: parts[1],
+				RelTime: parts[2],
+				Author:  parts[3],
+			})
+		}
+	}
+	return commits
+}
+
 // PushRepo safely pushes the current branch to origin (never force-pushes).
 func PushRepo(ctx context.Context, repoPath string) (string, error) {
 	branch, err := RunGit(ctx, repoPath, "branch", "--show-current")
@@ -697,7 +747,7 @@ func BatchStashPop(ctx context.Context, repos []mani.DiscoveredRepo, concurrency
 			return "SKIP", "没有贮藏", nil
 		}
 		if _, err := RunGit(ctx, r.AbsPath, "stash", "pop"); err != nil {
-			return "FAIL", firstLine(err.Error()), err
+			return "FAIL", "恢复贮藏失败（可能冲突）：解决后执行 git stash drop 清理", err
 		}
 		return "OK", "已恢复贮藏", nil
 	})

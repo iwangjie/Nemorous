@@ -368,7 +368,7 @@ func (a *App) buildRightInspector(c *ui.Context, p Palette, st *gitops.RepoStatu
 						tree = buildBranchTree(stCopy.BranchInfos)
 					}
 					branchMenuPill(c, p, stCopy.Branch, true, func(m *ui.Menu) {
-						renderBranchMenu(m, tree, stCopy.Branch, func(target string) {
+						renderBranchMenu(m, tree, stCopy.Branch, nil, func(target string) {
 							a.switchRepoBranch(stCopy.Repo, target)
 						})
 						m.Separator()
