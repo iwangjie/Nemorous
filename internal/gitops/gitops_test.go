@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iwangjie/nemorous/internal/aimerge"
@@ -297,3 +298,85 @@ func TestChineseFilenamesAndMultiRepoBranchPlan(t *testing.T) {
 }
 
 
+
+func TestAmendCommitAndStashRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	repoDir := filepath.Join(t.TempDir(), "alpha")
+	initTestRepo(t, repoDir, "main", map[string]string{"app.go": "package app\n"})
+	repo := mani.DiscoveredRepo{ID: "alpha", Name: "alpha", AbsPath: repoDir}
+
+	if err := os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("package app\n// v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := gitops.BatchCommit(ctx, []gitops.BatchCommitTarget{{
+		Repo:  repo,
+		Files: []string{"app.go"},
+		Amend: true,
+	}}, "feat: v2", false, 1)
+	if res[0].Status != "OK" {
+		t.Fatalf("amend failed: %+v", res[0])
+	}
+	count, _ := gitops.RunGit(ctx, repoDir, "rev-list", "--count", "HEAD")
+	if strings.TrimSpace(count) != "1" {
+		t.Fatalf("amend should rewrite the only commit, got %s commits", strings.TrimSpace(count))
+	}
+	subject, _ := gitops.RunGit(ctx, repoDir, "log", "-1", "--pretty=%s")
+	if strings.TrimSpace(subject) != "feat: v2" {
+		t.Fatalf("expected amended subject, got %q", strings.TrimSpace(subject))
+	}
+
+	if err := os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("package app\n// v3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res = gitops.BatchStash(ctx, []mani.DiscoveredRepo{repo}, "test stash", 1)
+	if res[0].Status != "OK" {
+		t.Fatalf("stash failed: %+v", res[0])
+	}
+	if status, _ := gitops.RunGit(ctx, repoDir, "status", "--porcelain"); strings.TrimSpace(status) != "" {
+		t.Fatalf("worktree should be clean after stash, got %q", status)
+	}
+
+	res = gitops.BatchStashPop(ctx, []mani.DiscoveredRepo{repo}, 1)
+	if res[0].Status != "OK" {
+		t.Fatalf("stash pop failed: %+v", res[0])
+	}
+	data, err := os.ReadFile(filepath.Join(repoDir, "new.txt"))
+	if err != nil || string(data) != "new\n" {
+		t.Fatalf("untracked file should return from stash, got %q err=%v", data, err)
+	}
+}
+
+func TestBatchCommitUsesPerRepoMessages(t *testing.T) {
+	ctx := context.Background()
+	wsDir := t.TempDir()
+	dirA := filepath.Join(wsDir, "alpha")
+	dirB := filepath.Join(wsDir, "beta")
+	initTestRepo(t, dirA, "main", map[string]string{"a.go": "package a\n"})
+	initTestRepo(t, dirB, "main", map[string]string{"b.go": "package b\n"})
+	if err := os.WriteFile(filepath.Join(dirA, "a.go"), []byte("package a\n// changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirB, "b.go"), []byte("package b\n// changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := gitops.BatchCommit(ctx, []gitops.BatchCommitTarget{
+		{Repo: mani.DiscoveredRepo{ID: "alpha", Name: "alpha", AbsPath: dirA}, Files: []string{"a.go"}, Message: "alpha only"},
+		{Repo: mani.DiscoveredRepo{ID: "beta", Name: "beta", AbsPath: dirB}, Files: []string{"b.go"}},
+	}, "shared message", false, 2)
+	for _, r := range res {
+		if r.Status != "OK" {
+			t.Fatalf("commit failed: %+v", r)
+		}
+	}
+	subjA, _ := gitops.RunGit(ctx, dirA, "log", "-1", "--pretty=%s")
+	subjB, _ := gitops.RunGit(ctx, dirB, "log", "-1", "--pretty=%s")
+	if strings.TrimSpace(subjA) != "alpha only" {
+		t.Fatalf("expected per-repo message for alpha, got %q", subjA)
+	}
+	if strings.TrimSpace(subjB) != "shared message" {
+		t.Fatalf("expected shared message for beta, got %q", subjB)
+	}
+}

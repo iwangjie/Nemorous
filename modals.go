@@ -420,17 +420,13 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 
 			// Recent Active Branches (within 7 days) — show top 8 directly, scroll if more
 			if len(recentBrs) > 0 {
-				ui.Scroll(c).MaxHeight(62).Children(func() {
-					ui.Row(c).Wrap().Gap(5).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, fmt.Sprintf("近 7 天活跃 (%d)：", len(recentBrs))).FontSize(11).TextColor(p.TextMuted)
-						limit := min(len(recentBrs), 16)
-						for _, bi := range recentBrs[:limit] {
-							bCopy := bi.Name
-							active := a.branchInput == bCopy
-							pill(c.Key("br-rec-"+bCopy), p, bCopy, active, func() {
-								a.SetUnifiedBranchForChecked(bCopy)
-							})
-						}
+				ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, fmt.Sprintf("近 7 天活跃 (%d)：", len(recentBrs))).FontSize(11).TextColor(p.TextMuted)
+					recentTree, _ := a.workspaceBranchTrees()
+					branchMenuPill(c, p, "按层级选择近期分支", false, func(m *ui.Menu) {
+						renderBranchMenu(m, recentTree, a.branchInput, func(target string) {
+							a.SetUnifiedBranchForChecked(target)
+						})
 					})
 				})
 			}
@@ -451,15 +447,10 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 				})
 
 				if a.showStaleBranchesInModal {
-					ui.Scroll(c).MaxHeight(80).Children(func() {
-						ui.Row(c).Wrap().Gap(5).Children(func() {
-							for _, bi := range staleBrs {
-								bCopy := bi.Name
-								active := a.branchInput == bCopy
-								pill(c.Key("br-stale-"+bCopy), p, bCopy, active, func() {
-									a.SetUnifiedBranchForChecked(bCopy)
-								})
-							}
+					_, staleTree := a.workspaceBranchTrees()
+					branchMenuPill(c, p, fmt.Sprintf("按层级选择更早分支 (%d)", len(staleBrs)), false, func(m *ui.Menu) {
+						renderBranchMenu(m, staleTree, a.branchInput, func(target string) {
+							a.SetUnifiedBranchForChecked(target)
 						})
 					})
 				}

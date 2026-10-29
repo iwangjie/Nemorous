@@ -79,17 +79,23 @@ func (a *App) buildCodeView(c *ui.Context, p Palette) {
 	).Grow(1).Fill()
 }
 
-func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
-	query := strings.ToLower(strings.TrimSpace(a.codeFilterQuery))
+// codeRepoGroup is one repository's slice of the code explorer tree.
+type codeRepoGroup struct {
+	repoID   string
+	repoName string
+	monogram string
+	colorIdx int
+	files    []gitops.WorkspaceFile
+}
 
-	type repoFileGroup struct {
-		repoID   string
-		repoName string
-		monogram string
-		colorIdx int
-		files    []gitops.WorkspaceFile
+// codeRepoGroups filters the workspace file list by repository and query. The
+// result is cached per query so typing does not scan every file each frame.
+func (a *App) codeRepoGroups(query string) []codeRepoGroup {
+	key := a.repoFilterID + "|" + query
+	if a.codeGroupsKey == key {
+		return a.codeGroups
 	}
-	var groups []repoFileGroup
+	var groups []codeRepoGroup
 	groupIdx := make(map[string]int)
 
 	for _, wf := range a.workspaceFiles {
@@ -106,7 +112,7 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 		if !ok {
 			idx = len(groups)
 			groupIdx[wf.RepoID] = idx
-			groups = append(groups, repoFileGroup{
+			groups = append(groups, codeRepoGroup{
 				repoID:   wf.RepoID,
 				repoName: wf.RepoName,
 				monogram: wf.Monogram,
@@ -117,6 +123,14 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 			groups[idx].files = append(groups[idx].files, wf)
 		}
 	}
+	a.codeGroupsKey = key
+	a.codeGroups = groups
+	return groups
+}
+
+func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
+	query := strings.ToLower(strings.TrimSpace(a.codeFilterQuery))
+	groups := a.codeRepoGroups(query)
 
 	ui.Column(c).Fill().Padding(12).Gap(8).Background(p.RailBg).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -152,7 +166,12 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 				grpCopy := grp
 				collapsed := a.collapsedCodeRepos[grpCopy.repoID] && query == ""
 				badge := repoBadgeColors(grpCopy.colorIdx, p.IsDark)
-				treeRoot := buildRepoCodeTree(grpCopy.files)
+				treeKey := grpCopy.repoID + "|" + query
+				treeRoot, cached := a.codeTreeCache[treeKey]
+				if !cached {
+					treeRoot = buildRepoCodeTree(grpCopy.files)
+					a.codeTreeCache[treeKey] = treeRoot
+				}
 
 				gkc := c.Key("cgrp-" + grpCopy.repoID)
 				ui.Column(gkc).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {

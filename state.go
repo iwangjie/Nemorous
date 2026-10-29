@@ -51,44 +51,62 @@ type App struct {
 	selectedRepoID string // selected repo for detail inspection
 
 	// Collapsible UI States (Progressive Disclosure)
-	showCleanReposInChanges   bool
-	showCommitOptions         bool
-	showDiffOptions           bool
-	showCodeOptions           bool
-	showTopMoreMenu           bool
-	showMergeAdvanced         bool
-	showMergeCheckDetails     bool
-	showRepoDetailDrawer      bool
-	showStaleBranchesInModal  bool
-	showStaleBranchesInDrawer bool
-	collapsedCodeRepos        map[string]bool
-	expandedCodeDirs          map[string]bool // "repoID::dirRelPath" -> expanded in file tree
+	showCleanReposInChanges  bool
+	showCommitOptions        bool
+	showDiffOptions          bool
+	showCodeOptions          bool
+	showTopMoreMenu          bool
+	showMergeAdvanced        bool
+	showMergeCheckDetails    bool
+	showRepoDetailDrawer     bool
+	showStaleBranchesInModal bool
+	collapsedCodeRepos       map[string]bool
+	expandedCodeDirs         map[string]bool // "repoID::dirRelPath" -> expanded in file tree
 
 	// Resizable Split Widths (in DIPs)
 	changesSplit float32
 	codeSplit    float32
 
 	// Discovered Workspace Data
-	repos          []mani.DiscoveredRepo
-	maniCfg        *mani.Config
-	statuses       []gitops.RepoStatus
-	statusByID     map[string]gitops.RepoStatus
-	workspaceFiles []gitops.WorkspaceFile
-	lastRefresh    time.Time
-	isRefreshing   bool
-	busyLabel      string
+	repos           []mani.DiscoveredRepo
+	maniCfg         *mani.Config
+	statuses        []gitops.RepoStatus
+	statusByID      map[string]gitops.RepoStatus
+	workspaceFiles  []gitops.WorkspaceFile
+	lastRefresh     time.Time
+	lastFullRefresh time.Time
+	isRefreshing    bool
+	busyLabel       string
+
+	// Derived caches, rebuilt on every snapshot so per-frame work stays small.
+	recentBranches      []gitops.BranchInfo
+	staleBranches       []gitops.BranchInfo
+	workspaceBranchTree *branchNode
+	workspaceStaleTree  *branchNode
+	repoBranchTrees     map[string]*branchNode
+	changeTreeCache     map[string]*changeTreeNode
+	codeTreeCache       map[string]*codeTreeDir
+	codeGroupsKey       string
+	codeGroups          []codeRepoGroup
 
 	// Changes & Diff View State
-	selectedChangeKey  string
-	selectedChangeFile *gitops.ChangedFile
-	checkedChanges     map[string]bool // ChangeFile.Key() -> selected for batch commit
-	diffState          *editor.DiffState
-	diffStagedOnly     bool
-	diffEditable       bool
-	diffModified       bool
-	commitMessage      string
-	commitScope        string // "checked" (提交所有勾选), "current" (仅提交当前仓库)
-	lastBatchResults   []gitops.OpResult
+	selectedChangeKey     string
+	selectedChangeFile    *gitops.ChangedFile
+	checkedChanges        map[string]bool // ChangeFile.Key() -> selected for batch commit
+	diffState             *editor.DiffState
+	diffStagedOnly        bool
+	diffEditable          bool
+	diffModified          bool
+	commitMessage         string
+	commitScope           string // "checked" (勾选文件), "current" (当前仓库), "staged" (仅已暂存)
+	commitAmend           bool
+	generatedCommitRoot   string
+	generatedCommitByRepo map[string]string
+	lastBatchResults      []gitops.OpResult
+	pendingClipboard      string
+	changesKindFilter     string // "", "A", "M", "D", "U"
+	collapsedChangeRepos  map[string]bool
+	collapsedChangeDirs   map[string]bool // "repoID::dirRelPath" -> collapsed
 
 	// Multi-Project Branch Switch & Presets State
 	branchInput         string
@@ -101,6 +119,8 @@ type App struct {
 	mergeTargetBranch   string
 	mergeFetchFirst     bool
 	mergePlans          []aimerge.RepoMergePlan
+	mergeCheckedRepos   map[string]bool
+	mergePresetInput    string
 	mergeRunning        bool
 	selectedMergeRepoID string
 	mdOpts              markdown.Options
@@ -147,23 +167,29 @@ type App struct {
 func NewApp(cfg config.Config) *App {
 	agentName, agentBin := cfg.ResolvedAIAgent()
 	a := &App{
-		cfg:                 cfg,
-		activeTab:           TabChanges,
-		overviewFilter:      "all",
-		statusByID:          make(map[string]gitops.RepoStatus),
-		checkedChanges:      make(map[string]bool),
-		collapsedCodeRepos:  make(map[string]bool),
-		expandedCodeDirs:    make(map[string]bool),
-		branchCheckedRepos:  make(map[string]bool),
-		branchPerRepoTarget: make(map[string]*string),
-		changesSplit:        320,
-		codeSplit:           290,
-		commitScope:         "checked",
-		mergeTargetBranch:   cfg.DefaultTargetBranch,
-		mergeFetchFirst:     false,
-		aiAgentName:         agentName,
-		aiAgentBin:          agentBin,
-		maniParamTarget:     cfg.DefaultTargetBranch,
+		cfg:                  cfg,
+		activeTab:            TabChanges,
+		overviewFilter:       "all",
+		statusByID:           make(map[string]gitops.RepoStatus),
+		checkedChanges:       make(map[string]bool),
+		collapsedCodeRepos:   make(map[string]bool),
+		expandedCodeDirs:     make(map[string]bool),
+		branchCheckedRepos:   make(map[string]bool),
+		branchPerRepoTarget:  make(map[string]*string),
+		mergeCheckedRepos:    make(map[string]bool),
+		collapsedChangeRepos: make(map[string]bool),
+		collapsedChangeDirs:  make(map[string]bool),
+		repoBranchTrees:      make(map[string]*branchNode),
+		changeTreeCache:      make(map[string]*changeTreeNode),
+		codeTreeCache:        make(map[string]*codeTreeDir),
+		changesSplit:         320,
+		codeSplit:            290,
+		commitScope:          "checked",
+		mergeTargetBranch:    cfg.DefaultTargetBranch,
+		mergeFetchFirst:      false,
+		aiAgentName:          agentName,
+		aiAgentBin:           agentBin,
+		maniParamTarget:      cfg.DefaultTargetBranch,
 	}
 	initBuf := editor.NewBuffer("// 从左侧文件树选择文件，或按 ⌘K 搜索文件浏览代码\n")
 	initBuf.SetLanguage(editor.LanguageFor("main.go"))
@@ -236,6 +262,7 @@ func (a *App) LoadWorkspaceSync(wsPath string) {
 	wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
 
 	a.applySnapshot(repos, maniCfg, statuses, wsFiles)
+	a.lastFullRefresh = time.Now()
 	plans := aimerge.PreflightMergeAll(ctx, repos, a.mergeTargetBranch, false, a.cfg.ProtectedBranches, a.cfg.Concurrency)
 	a.mergePlans = plans
 	if len(plans) > 0 && a.selectedMergeRepoID == "" {
@@ -257,6 +284,11 @@ func (a *App) refreshInternal(showBusy bool) {
 	if a.isRefreshing || a.cfg.WorkspacePath == "" {
 		return
 	}
+	// Silent refreshes only re-inspect repository status. Scanning every file and
+	// running merge preflights on a 2.5s poll would burn CPU for no visible gain.
+	full := showBusy || a.lastFullRefresh.IsZero() || time.Since(a.lastFullRefresh) > 30*time.Second
+	mergeVisible := full && (a.activeTab == TabMerge || len(a.mergePlans) == 0)
+
 	a.isRefreshing = true
 	if showBusy {
 		a.busyLabel = "正在刷新仓库状态..."
@@ -266,21 +298,33 @@ func (a *App) refreshInternal(showBusy bool) {
 	conc := a.cfg.Concurrency
 	targetBranch := a.mergeTargetBranch
 	prot := append([]string(nil), a.cfg.ProtectedBranches...)
+	cachedFiles := a.workspaceFiles
 
 	go func() {
 		ctx := context.Background()
 		repos, maniCfg := mani.DiscoverRepos(wsPath, incRoot)
 		statuses := gitops.InspectRepos(ctx, repos, conc)
-		wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
-		plans := aimerge.PreflightMergeAll(ctx, repos, targetBranch, false, prot, conc)
+		wsFiles := cachedFiles
+		if full {
+			wsFiles = gitops.ListWorkspaceFiles(ctx, repos, 2500)
+		}
+		var plans []aimerge.RepoMergePlan
+		if mergeVisible {
+			plans = aimerge.PreflightMergeAll(ctx, repos, targetBranch, false, prot, conc)
+		}
 
 		a.runUI(func() {
 			a.isRefreshing = false
 			if showBusy {
 				a.busyLabel = ""
 			}
+			if full {
+				a.lastFullRefresh = time.Now()
+			}
 			a.applySnapshot(repos, maniCfg, statuses, wsFiles)
-			a.mergePlans = plans
+			if plans != nil {
+				a.mergePlans = plans
+			}
 		})
 	}()
 }
@@ -383,6 +427,8 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 			}
 		}
 	}
+
+	a.rebuildBranchCaches()
 }
 
 func (a *App) selectChangedFile(cf gitops.ChangedFile) {
@@ -536,9 +582,18 @@ func (a *App) SummaryCounts() (dirtyRepos, totalChangedFiles, aheadRepos, behind
 	return
 }
 
-// BranchesByActivity aggregates unique branches across repositories, sorted by most recently active first,
-// and partitions them into recent (active within 7 days) vs stale (no changes in the last 7 days).
+// BranchesByActivity returns the cached recent/stale branch partitions; the
+// cache is rebuilt once per snapshot instead of once per frame.
 func (a *App) BranchesByActivity() (recent []gitops.BranchInfo, stale []gitops.BranchInfo) {
+	if a.recentBranches == nil && a.staleBranches == nil {
+		return a.computeBranchesByActivity()
+	}
+	return a.recentBranches, a.staleBranches
+}
+
+// computeBranchesByActivity aggregates unique branches across repositories, sorted by most recently active first,
+// and partitions them into recent (active within 7 days) vs stale (no changes in the last 7 days).
+func (a *App) computeBranchesByActivity() (recent []gitops.BranchInfo, stale []gitops.BranchInfo) {
 	byName := make(map[string]gitops.BranchInfo)
 	activeCheckedOut := make(map[string]bool)
 
@@ -547,6 +602,9 @@ func (a *App) BranchesByActivity() (recent []gitops.BranchInfo, stale []gitops.B
 			activeCheckedOut[st.Branch] = true
 		}
 		for _, bi := range st.BranchInfos {
+			if bi.IsRemote {
+				continue
+			}
 			existing, ok := byName[bi.Name]
 			if !ok || bi.CommitUnix > existing.CommitUnix {
 				byName[bi.Name] = bi
@@ -581,23 +639,107 @@ func (a *App) BranchesByActivity() (recent []gitops.BranchInfo, stale []gitops.B
 	return recent, stale
 }
 
-// RepoBranchesByActivity partitions a single repository's local branches into recent (<=7 days) and stale (>7 days),
-// ordered by most recently active first.
-func (a *App) RepoBranchesByActivity(st gitops.RepoStatus) (recent []gitops.BranchInfo, stale []gitops.BranchInfo) {
-	now := time.Now()
-	seen := make(map[string]bool)
-	for _, bi := range st.BranchInfos {
-		if bi.IsRemote || seen[bi.Name] {
-			continue
-		}
-		seen[bi.Name] = true
-		if bi.IsRecent(now) || bi.Name == st.Branch || bi.Name == st.DefaultBranch {
-			recent = append(recent, bi)
-		} else {
-			stale = append(stale, bi)
+// rebuildBranchCaches refreshes every derived tree once per snapshot instead of
+// rebuilding them during each frame.
+func (a *App) rebuildBranchCaches() {
+	a.recentBranches, a.staleBranches = a.computeBranchesByActivity()
+	a.workspaceBranchTree = buildBranchTree(a.recentBranches)
+	a.workspaceStaleTree = buildBranchTree(a.staleBranches)
+	a.repoBranchTrees = make(map[string]*branchNode, len(a.statuses))
+	for _, st := range a.statuses {
+		a.repoBranchTrees[st.Repo.ID] = buildBranchTree(st.BranchInfos)
+	}
+	a.changeTreeCache = make(map[string]*changeTreeNode)
+	a.codeTreeCache = make(map[string]*codeTreeDir)
+	a.codeGroupsKey = "\x00"
+	a.codeGroups = nil
+}
+
+// workspaceBranchTrees returns the cached hierarchy of recent and stale branches,
+// falling back to a direct build before the first snapshot.
+func (a *App) workspaceBranchTrees() (*branchNode, *branchNode) {
+	recentTree := a.workspaceBranchTree
+	if recentTree == nil {
+		recentTree = buildBranchTree(a.recentBranches)
+	}
+	staleTree := a.workspaceStaleTree
+	if staleTree == nil {
+		staleTree = buildBranchTree(a.staleBranches)
+	}
+	return recentTree, staleTree
+}
+
+// filteredRepos returns the repositories targeted by the current repository filter.
+func (a *App) filteredRepos() []mani.DiscoveredRepo {
+	if a.repoFilterID == "" {
+		return append([]mani.DiscoveredRepo(nil), a.repos...)
+	}
+	for _, st := range a.statuses {
+		if st.Repo.ID == a.repoFilterID {
+			return []mani.DiscoveredRepo{st.Repo}
 		}
 	}
-	return recent, stale
+	return nil
+}
+
+// TriggerStashAll stashes uncommitted changes (untracked included) in the visible repositories.
+func (a *App) TriggerStashAll() {
+	repos := a.filteredRepos()
+	if len(repos) == 0 {
+		a.showToast("warn", "没有可贮藏的仓库")
+		return
+	}
+	a.busyLabel = fmt.Sprintf("正在贮藏 %d 个仓库的改动...", len(repos))
+	message := "nemorous: 贮藏于 " + time.Now().Format("01-02 15:04")
+	conc := a.cfg.Concurrency
+	go func() {
+		res := gitops.BatchStash(context.Background(), repos, message, conc)
+		okCnt, skipCnt, failCnt := countOpResults(res)
+		a.runUI(func() {
+			a.busyLabel = ""
+			a.lastBatchResults = res
+			a.showToast("ok", fmt.Sprintf("贮藏完成：%d 成功，%d 跳过，%d 失败", okCnt, skipCnt, failCnt))
+			a.RefreshAsync()
+		})
+	}()
+}
+
+// TriggerStashPopAll restores the most recent stash in the visible repositories.
+func (a *App) TriggerStashPopAll() {
+	repos := a.filteredRepos()
+	if len(repos) == 0 {
+		a.showToast("warn", "没有可恢复贮藏的仓库")
+		return
+	}
+	a.busyLabel = fmt.Sprintf("正在恢复 %d 个仓库的贮藏...", len(repos))
+	conc := a.cfg.Concurrency
+	go func() {
+		res := gitops.BatchStashPop(context.Background(), repos, conc)
+		okCnt, skipCnt, failCnt := countOpResults(res)
+		a.runUI(func() {
+			a.busyLabel = ""
+			a.lastBatchResults = res
+			a.showToast("ok", fmt.Sprintf("恢复贮藏完成：%d 成功，%d 跳过，%d 失败", okCnt, skipCnt, failCnt))
+			a.RefreshAsync()
+		})
+	}()
+}
+
+// stashRepo stashes or restores one repository's changes.
+func (a *App) stashRepo(repo mani.DiscoveredRepo, pop bool) {
+	go func() {
+		ctx := context.Background()
+		var res []gitops.OpResult
+		if pop {
+			res = gitops.BatchStashPop(ctx, []mani.DiscoveredRepo{repo}, 1)
+		} else {
+			res = gitops.BatchStash(ctx, []mani.DiscoveredRepo{repo}, "nemorous: 贮藏于 "+time.Now().Format("01-02 15:04"), 1)
+		}
+		a.runUI(func() {
+			a.lastBatchResults = res
+			a.RefreshAsync()
+		})
+	}()
 }
 
 // BranchCandidatesForRepo returns deduplicated BranchInfo candidates for fuzzy autocomplete.
@@ -610,10 +752,11 @@ func (a *App) BranchCandidatesForRepo(repoID string) []gitops.BranchInfo {
 	if repoID != "" {
 		if st, ok := a.statusByID[repoID]; ok {
 			for _, bi := range st.BranchInfos {
-				if !seen[bi.Name] {
-					seen[bi.Name] = true
-					out = append(out, bi)
+				if bi.IsRemote || seen[bi.Name] {
+					continue
 				}
+				seen[bi.Name] = true
+				out = append(out, bi)
 			}
 		}
 	}
@@ -814,6 +957,17 @@ func (a *App) TriggerSwitchToMain() {
 	}()
 }
 
+// switchRepoBranch switches one repository to targetBranch off the UI thread.
+func (a *App) switchRepoBranch(repo mani.DiscoveredRepo, targetBranch string) {
+	go func() {
+		res := gitops.SwitchBranchAll(context.Background(), []mani.DiscoveredRepo{repo}, targetBranch, false, 1)
+		a.runUI(func() {
+			a.lastBatchResults = res
+			a.RefreshAsync()
+		})
+	}()
+}
+
 // TriggerBatchSwitch switches all repos to targetBranch.
 func (a *App) TriggerBatchSwitch(targetBranch string, createIfMissing bool) {
 	targetBranch = strings.TrimSpace(targetBranch)
@@ -837,6 +991,258 @@ func (a *App) TriggerBatchSwitch(targetBranch string, createIfMissing bool) {
 	}()
 }
 
+// commitFilesForScope returns the changed files covered by the active commit scope.
+func (a *App) commitFilesForScope() []gitops.ChangedFile {
+	var files []gitops.ChangedFile
+	if a.commitScope == "staged" {
+		for _, st := range a.statuses {
+			if a.repoFilterID != "" && st.Repo.ID != a.repoFilterID {
+				continue
+			}
+			for _, f := range st.Files {
+				if f.Staged {
+					files = append(files, f)
+				}
+			}
+		}
+		return files
+	}
+	if a.commitScope == "current" && a.selectedChangeFile != nil {
+		for _, st := range a.statuses {
+			if st.Repo.ID != a.selectedChangeFile.RepoID || len(st.Files) == 0 {
+				continue
+			}
+			var picked []gitops.ChangedFile
+			for _, f := range st.Files {
+				if a.checkedChanges[f.Key()] {
+					picked = append(picked, f)
+				}
+			}
+			if len(picked) == 0 {
+				picked = st.Files
+			}
+			return picked
+		}
+		return nil
+	}
+	for _, st := range a.statuses {
+		if a.repoFilterID != "" && st.Repo.ID != a.repoFilterID {
+			continue
+		}
+		for _, f := range st.Files {
+			if a.checkedChanges[f.Key()] {
+				files = append(files, f)
+			}
+		}
+	}
+	return files
+}
+
+// commitTargets groups the scoped files by repository. Each repository gets its
+// own generated message unless the user replaced the generated text.
+func (a *App) commitTargets() []gitops.BatchCommitTarget {
+	files := a.commitFilesForScope()
+	if len(files) == 0 {
+		return nil
+	}
+	order := make([]string, 0, len(a.statuses))
+	byRepo := make(map[string][]gitops.ChangedFile, len(a.statuses))
+	for _, f := range files {
+		if _, ok := byRepo[f.RepoID]; !ok {
+			order = append(order, f.RepoID)
+		}
+		byRepo[f.RepoID] = append(byRepo[f.RepoID], f)
+	}
+	perRepo := a.generatedCommitByRepo
+	if a.generatedCommitRoot == "" || a.commitMessage != a.generatedCommitRoot {
+		perRepo = nil
+	}
+	targets := make([]gitops.BatchCommitTarget, 0, len(order))
+	for _, repoID := range order {
+		repo, ok := a.statusByID[repoID]
+		if !ok {
+			continue
+		}
+		target := gitops.BatchCommitTarget{Repo: repo.Repo, Message: perRepo[repoID], Amend: a.commitAmend}
+		if a.commitScope != "staged" {
+			seen := make(map[string]bool, len(byRepo[repoID]))
+			for _, f := range byRepo[repoID] {
+				if !seen[f.Path] {
+					seen[f.Path] = true
+					target.Files = append(target.Files, f.Path)
+				}
+			}
+		}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+// generateCommitMessage fills the commit input from the selected files:
+// a summary title, per-kind counts and a compact file list per repository.
+func (a *App) generateCommitMessage() {
+	files := a.commitFilesForScope()
+	if len(files) == 0 {
+		if a.commitScope == "staged" {
+			a.showToast("warn", "暂存区没有可提交的文件")
+		} else {
+			a.showToast("warn", "请先勾选要提交的文件")
+		}
+		return
+	}
+	set := buildCommitMessages(files)
+	a.commitMessage = set.root
+	a.generatedCommitRoot = set.root
+	a.generatedCommitByRepo = set.byRepo
+	a.showToast("ok", fmt.Sprintf("已根据 %d 个文件生成提交说明", len(files)))
+}
+
+// stageChangeFiles stages or unstages every given file, then refreshes statuses.
+func (a *App) stageChangeFiles(files []gitops.ChangedFile, stage bool) {
+	if len(files) == 0 {
+		return
+	}
+	copied := append([]gitops.ChangedFile(nil), files...)
+	go func() {
+		ctx := context.Background()
+		seen := make(map[string]bool, len(copied))
+		for _, f := range copied {
+			key := f.RepoPath + "\x00" + f.Path
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if stage {
+				_ = gitops.StageFile(ctx, f.RepoPath, f.Path)
+			} else {
+				_ = gitops.UnstageFile(ctx, f.RepoPath, f.Path)
+			}
+		}
+		a.runUI(func() {
+			if stage {
+				a.showToast("ok", fmt.Sprintf("已暂存 %d 个文件", len(seen)))
+			} else {
+				a.showToast("ok", fmt.Sprintf("已取消暂存 %d 个文件", len(seen)))
+			}
+			a.RefreshAsync()
+		})
+	}()
+}
+
+// mergePlanChecked reports whether a repository is included in the merge batch.
+// Repositories without an explicit choice default to included.
+func (a *App) mergePlanChecked(repoID string) bool {
+	checked, ok := a.mergeCheckedRepos[repoID]
+	if !ok {
+		return true
+	}
+	return checked
+}
+
+// syncMergeSelection keeps the merge selection aligned with a fresh preflight:
+// mergeable repositories are included by default, stale entries are dropped.
+func (a *App) syncMergeSelection(plans []aimerge.RepoMergePlan) {
+	keep := make(map[string]bool, len(plans))
+	for _, plan := range plans {
+		keep[plan.Repo.ID] = true
+		if _, ok := a.mergeCheckedRepos[plan.Repo.ID]; !ok {
+			a.mergeCheckedRepos[plan.Repo.ID] = plan.Kind == aimerge.PlanClean || plan.Kind == aimerge.PlanConflict
+		}
+	}
+	for id := range a.mergeCheckedRepos {
+		if !keep[id] {
+			delete(a.mergeCheckedRepos, id)
+		}
+	}
+}
+
+// saveMergePreset stores the current target branch and checked repositories.
+func (a *App) saveMergePreset() {
+	name := strings.TrimSpace(a.mergePresetInput)
+	if name == "" {
+		a.showToast("warn", "请输入合并方案名称（如：合并到 test）")
+		return
+	}
+	target := strings.TrimSpace(a.mergeTargetBranch)
+	if target == "" {
+		a.showToast("warn", "请先选择目标分支")
+		return
+	}
+	var repoIDs []string
+	for _, pl := range a.mergePlans {
+		if a.mergePlanChecked(pl.Repo.ID) {
+			repoIDs = append(repoIDs, pl.Repo.ID)
+		}
+	}
+	if len(repoIDs) == 0 {
+		a.showToast("warn", "请至少勾选一个要合并的仓库")
+		return
+	}
+	a.cfg.SaveMergePreset(name, target, repoIDs)
+	_ = a.cfg.Save()
+	a.mergePresetInput = ""
+	a.showToast("ok", fmt.Sprintf("已保存合并方案「%s」（%d 个仓库 → %s）", name, len(repoIDs), target))
+}
+
+// applyMergePreset checks the preset's repositories, sets its target branch and
+// runs a fresh preflight so the user sees the outcome before merging.
+func (a *App) applyMergePreset(preset config.MergePreset) {
+	a.mergeTargetBranch = preset.TargetBranch
+	for _, st := range a.statuses {
+		a.mergeCheckedRepos[st.Repo.ID] = false
+	}
+	for _, id := range preset.RepoIDs {
+		a.mergeCheckedRepos[id] = true
+	}
+	a.TriggerMergePreflight(false)
+}
+
+// TriggerReturnToDevelopmentBranches switches merged repositories back to the
+// source branch recorded by the preflight (the branch the user was developing on).
+func (a *App) TriggerReturnToDevelopmentBranches() {
+	var targets []gitops.RepoBranchTarget
+	for _, st := range a.statuses {
+		if a.repoFilterID != "" && st.Repo.ID != a.repoFilterID {
+			continue
+		}
+		target := ""
+		for _, plan := range a.mergePlans {
+			if plan.Repo.ID != st.Repo.ID {
+				continue
+			}
+			if plan.SourceBranch != "" && plan.SourceBranch != plan.TargetBranch {
+				target = plan.SourceBranch
+			}
+			break
+		}
+		if target == "" || target == st.Branch {
+			continue
+		}
+		targets = append(targets, gitops.RepoBranchTarget{Repo: st.Repo, TargetBranch: target})
+	}
+	if len(targets) == 0 {
+		if len(a.mergePlans) == 0 {
+			a.showToast("warn", "先执行一次合并预演，工具才知道各仓库的开发分支")
+		} else {
+			a.showToast("ok", "所有仓库都已在开发分支上")
+		}
+		return
+	}
+	a.busyLabel = fmt.Sprintf("正在切回 %d 个仓库的开发分支...", len(targets))
+	conc := a.cfg.Concurrency
+	go func() {
+		ctx := context.Background()
+		res := gitops.SwitchBranchPlan(ctx, targets, false, conc)
+		okCnt, skipCnt, failCnt := countOpResults(res)
+		a.runUI(func() {
+			a.busyLabel = ""
+			a.lastBatchResults = res
+			a.showToast("ok", fmt.Sprintf("已切回开发分支：%d 成功，%d 跳过，%d 失败", okCnt, skipCnt, failCnt))
+			a.RefreshAsync()
+		})
+	}()
+}
+
 // TriggerCommit executes either a unified multi-repo commit or single-repo commit, optionally followed by push.
 func (a *App) TriggerCommit(pushAfter bool) {
 	msg := strings.TrimSpace(a.commitMessage)
@@ -845,44 +1251,13 @@ func (a *App) TriggerCommit(pushAfter bool) {
 		return
 	}
 
-	var targets []gitops.BatchCommitTarget
-	if a.commitScope == "current" && a.selectedChangeFile != nil {
-		for _, st := range a.statuses {
-			if st.Repo.ID == a.selectedChangeFile.RepoID && len(st.Files) > 0 {
-				var files []string
-				for _, f := range st.Files {
-					if a.checkedChanges[f.Key()] {
-						files = append(files, f.Path)
-					}
-				}
-				if len(files) == 0 {
-					for _, f := range st.Files {
-						files = append(files, f.Path)
-					}
-				}
-				targets = append(targets, gitops.BatchCommitTarget{Repo: st.Repo, Files: files})
-				break
-			}
-		}
-	} else {
-		for _, st := range a.statuses {
-			if a.repoFilterID != "" && st.Repo.ID != a.repoFilterID {
-				continue
-			}
-			var files []string
-			for _, f := range st.Files {
-				if a.checkedChanges[f.Key()] {
-					files = append(files, f.Path)
-				}
-			}
-			if len(files) > 0 {
-				targets = append(targets, gitops.BatchCommitTarget{Repo: st.Repo, Files: files})
-			}
-		}
-	}
-
+	targets := a.commitTargets()
 	if len(targets) == 0 {
-		a.showToast("warn", "请先勾选要提交的文件")
+		if a.commitScope == "staged" {
+			a.showToast("warn", "暂存区没有可提交的文件")
+		} else {
+			a.showToast("warn", "请先勾选要提交的文件")
+		}
 		return
 	}
 
@@ -896,6 +1271,9 @@ func (a *App) TriggerCommit(pushAfter bool) {
 			a.lastBatchResults = res
 			if failCnt == 0 {
 				a.commitMessage = ""
+				a.generatedCommitRoot = ""
+				a.generatedCommitByRepo = nil
+				a.commitAmend = false
 				a.showToast("ok", fmt.Sprintf("已提交 %d 个仓库", okCnt))
 			} else {
 				a.showToast("warn", fmt.Sprintf("提交完成：%d 成功，%d 失败", okCnt, failCnt))
@@ -951,6 +1329,7 @@ func (a *App) TriggerMergePreflight(fetchFirst bool) {
 			a.mergeRunning = false
 			a.busyLabel = ""
 			a.mergePlans = plans
+			a.syncMergeSelection(plans)
 			cleanCnt, conflictCnt := 0, 0
 			for _, p := range plans {
 				if p.Kind == aimerge.PlanClean {
@@ -968,12 +1347,12 @@ func (a *App) TriggerMergePreflight(fetchFirst bool) {
 func (a *App) TriggerExecuteCleanMerges(pushRemote bool) {
 	var cleanPlans []aimerge.RepoMergePlan
 	for _, p := range a.mergePlans {
-		if p.Kind == aimerge.PlanClean {
+		if p.Kind == aimerge.PlanClean && a.mergePlanChecked(p.Repo.ID) {
 			cleanPlans = append(cleanPlans, p)
 		}
 	}
 	if len(cleanPlans) == 0 {
-		a.showToast("warn", "当前没有可直接合并的仓库")
+		a.showToast("warn", "当前没有勾选可直接合并的仓库")
 		return
 	}
 	a.mergeRunning = true

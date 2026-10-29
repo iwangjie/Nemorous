@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -89,6 +90,20 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("常用前缀：") {
 		t.Fatal("expected commit prefixes after expanding commit options")
 	}
+	for _, label := range []string{"修正上一次提交 (--amend)", "贮藏全部改动", "恢复全部贮藏", "仅已暂存"} {
+		if !tt.HasText(label) {
+			t.Fatalf("expected %q in commit options", label)
+		}
+	}
+
+	// Generate a commit message from the checked changes without leaving the view.
+	app.generateCommitMessage()
+	if !strings.Contains(app.commitMessage, "cloud-caring") || !strings.Contains(app.commitMessage, "2 个文件") {
+		t.Fatalf("expected generated commit message to summarize the checked files, got %q", app.commitMessage)
+	}
+	if !strings.Contains(app.commitMessage, "修改 2") {
+		t.Fatalf("expected generated message to count modified files, got %q", app.commitMessage)
+	}
 
 	// 2. Navigate to Files / Code view (文件) and verify hierarchical file tree + compacted folders + Chinese filename
 	if err := tt.Click("文件"); err != nil {
@@ -117,12 +132,26 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("cloud-caring") || !tt.HasText("risk-cloud") {
 		t.Fatal("expected discovered repositories in Overview table")
 	}
+	// Repository inspector shows a recent-first branch dropdown instead of a flat pill wall.
+	app.selectedRepoID = "cloud-caring"
+	app.showRepoDetailDrawer = true
+	tt.Frame()
+	if !tt.HasText("最近提交优先") || !tt.HasText("切换分支") {
+		t.Fatal("expected recent-first branch dropdown in repository inspector")
+	}
+	if tt.HasText("近期活跃分支") {
+		t.Fatal("flat branch pill wall should be gone from the inspector")
+	}
+	app.showRepoDetailDrawer = false
 
 	// 4. Open Branch Switch Modal, verify stale branch folding (>7 days), fuzzy branch search & saving a multi-project branch preset ("AAA 需求")
 	app.openBranchSwitchModal()
 	tt.Frame()
 	if !tt.HasText("切换分支与分支组合") {
 		t.Fatal("expected multi-project branch switch modal")
+	}
+	if !tt.HasText("按层级选择近期分支") {
+		t.Fatal("expected hierarchical recent-branch dropdown in branch modal")
 	}
 	if !tt.HasText("一周前无变更分支 (1)") {
 		t.Fatal("expected stale branch (>7 days) to be collapsed under 一周前无变更分支 (1)")
@@ -159,6 +188,9 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	}
 	if !tt.HasText("合并到目标分支：") {
 		t.Fatal("expected merge target header in Merge view")
+	}
+	if !tt.HasText("回到开发分支") || !tt.HasText("合并方案") {
+		t.Fatal("expected repository selection, merge presets and return-to-development controls")
 	}
 
 	// 6. Navigate to Scripts view (脚本)

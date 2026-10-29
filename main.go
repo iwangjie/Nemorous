@@ -193,6 +193,16 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			a.saveCodeMicroEdit()
 		}
 	}
+	if a.activeTab == TabChanges {
+		if c.Shortcut(ui.Cmd, ui.KeyG) {
+			a.generateCommitMessage()
+		}
+		if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEnter) {
+			a.TriggerCommit(true)
+		} else if c.Shortcut(ui.Cmd, ui.KeyEnter) {
+			a.TriggerCommit(false)
+		}
+	}
 	if c.Shortcut(ui.Cmd, ui.Key1) {
 		a.activeTab = TabChanges
 	}
@@ -248,14 +258,27 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 				drawIcon(c, icoChevronDown, 11, p.TextMuted)
 			})
 
-			// Branch Switcher Pill
+			// Branch Switcher Pill: recent-first hierarchy, no flat branch wall.
+			recentTree, staleTree := a.workspaceBranchTrees()
 			brBtn := ui.Row(c).Padding(5, 10).Gap(6).Radius(6).Background(p.Surface2).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 			if brBtn.Hovered() {
 				brBtn.Background(p.SurfaceHover)
 			}
-			if brBtn.Clicked() {
-				a.openBranchSwitchModal()
-			}
+			brBtn.PopoverMenuButton(func(m *ui.Menu) {
+				renderBranchMenu(m, recentTree, domBranch, func(target string) {
+					a.TriggerBatchSwitch(target, false)
+				})
+				if len(staleTree.children) > 0 {
+					m.Submenu("更早的分支", func(sub *ui.Menu) {
+						renderBranchMenu(sub, staleTree, domBranch, func(target string) {
+							a.TriggerBatchSwitch(target, false)
+						})
+					})
+				}
+				if m.Item("切换全部仓库的分支…").Shortcut(ui.Cmd, ui.KeyB).Chosen() {
+					a.openBranchSwitchModal()
+				}
+			})
 			brBtn.Children(func() {
 				drawIcon(c, icoBranch, 13, p.Accent)
 				ui.Text(c, domBranch).FontSize(12.5).FontWeight(weightMedium).TextColor(p.TextPrimary).SingleLine()
@@ -440,7 +463,7 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 		ui.Spacer(c)
 
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "⌘1-4 切换视图 · ⌘K 搜索 · ⌘B 切换分支 · ⌘S 保存").FontSize(10.5).TextColor(p.TextMuted)
+			ui.Text(c, "⌘1-4 切换视图 · ⌘K 搜索 · ⌘B 切换分支 · ⌘G 生成说明 · ⌘⏎ 提交 · ⌘S 保存").FontSize(10.5).TextColor(p.TextMuted)
 		})
 	})
 }

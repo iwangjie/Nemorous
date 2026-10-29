@@ -547,6 +547,11 @@ func DiscardFile(ctx context.Context, repoPath, relPath string, untracked bool) 
 
 // CommitRepo commits staged changes (or stages selected files first if provided).
 func CommitRepo(ctx context.Context, repoPath string, message string, filesToStage []string) (string, error) {
+	return commitRepo(ctx, repoPath, message, filesToStage, false)
+}
+
+// commitRepo stages the given files, then commits; amend rewrites the previous commit.
+func commitRepo(ctx context.Context, repoPath string, message string, filesToStage []string, amend bool) (string, error) {
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return "", errors.New("commit message cannot be empty")
@@ -557,13 +562,20 @@ func CommitRepo(ctx context.Context, repoPath string, message string, filesToSta
 			return "", err
 		}
 	}
-	return RunGit(ctx, repoPath, "commit", "-m", message)
+	args := []string{"commit"}
+	if amend {
+		args = append(args, "--amend")
+	}
+	args = append(args, "-m", message)
+	return RunGit(ctx, repoPath, args...)
 }
 
 // BatchCommitTarget describes which files to commit in a repository during a unified multi-repo commit.
 type BatchCommitTarget struct {
-	Repo  mani.DiscoveredRepo
-	Files []string // if non-empty, stage these specific files before committing
+	Repo    mani.DiscoveredRepo
+	Files   []string // if non-empty, stage these specific files before committing
+	Message string   // per-repository message; the batch message is used when empty
+	Amend   bool     // rewrite the previous commit instead of adding one
 }
 
 // BatchCommit performs a unified commit across multiple repositories in parallel.
@@ -583,7 +595,11 @@ func BatchCommit(ctx context.Context, targets []BatchCommitTarget, message strin
 			defer func() { <-sem }()
 
 			start := time.Now()
-			out, err := CommitRepo(ctx, target.Repo.AbsPath, message, target.Files)
+			repoMessage := message
+			if strings.TrimSpace(target.Message) != "" {
+				repoMessage = target.Message
+			}
+			out, err := commitRepo(ctx, target.Repo.AbsPath, repoMessage, target.Files, target.Amend)
 			if err != nil {
 				results[idx] = OpResult{
 					RepoID:   target.Repo.ID,
@@ -650,6 +666,40 @@ func BatchPush(ctx context.Context, repos []mani.DiscoveredRepo, concurrency int
 			return "OK", "already up-to-date", nil
 		}
 		return "OK", firstLine(out), nil
+	})
+}
+
+// BatchStash stashes every repository's changes, untracked files included.
+func BatchStash(ctx context.Context, repos []mani.DiscoveredRepo, message string, concurrency int) []OpResult {
+	return runParallelOp(repos, concurrency, func(r mani.DiscoveredRepo) (string, string, error) {
+		porcelain, err := RunGit(ctx, r.AbsPath, "status", "--porcelain")
+		if err != nil {
+			return "FAIL", firstLine(err.Error()), err
+		}
+		if strings.TrimSpace(porcelain) == "" {
+			return "SKIP", "没有需要贮藏的改动", nil
+		}
+		if _, err := RunGit(ctx, r.AbsPath, "stash", "push", "--include-untracked", "-m", message); err != nil {
+			return "FAIL", firstLine(err.Error()), err
+		}
+		return "OK", "已贮藏改动", nil
+	})
+}
+
+// BatchStashPop restores the most recent stash in each repository.
+func BatchStashPop(ctx context.Context, repos []mani.DiscoveredRepo, concurrency int) []OpResult {
+	return runParallelOp(repos, concurrency, func(r mani.DiscoveredRepo) (string, string, error) {
+		list, err := RunGit(ctx, r.AbsPath, "stash", "list", "-n", "1")
+		if err != nil {
+			return "FAIL", firstLine(err.Error()), err
+		}
+		if strings.TrimSpace(list) == "" {
+			return "SKIP", "没有贮藏", nil
+		}
+		if _, err := RunGit(ctx, r.AbsPath, "stash", "pop"); err != nil {
+			return "FAIL", firstLine(err.Error()), err
+		}
+		return "OK", "已恢复贮藏", nil
 	})
 }
 

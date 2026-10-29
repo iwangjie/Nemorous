@@ -355,58 +355,29 @@ func (a *App) buildRightInspector(c *ui.Context, p Palette, st *gitops.RepoStatu
 			})
 		})
 
-		// Local branch quick switch (sorted by recent activity, >7 days inactive collapsed)
+		// Local branch switch: one recent-first hierarchy instead of a flat pill wall.
 		if len(stCopy.LocalBranches) > 1 {
-			recentBrs, staleBrs := a.RepoBranchesByActivity(stCopy)
 			ui.Column(c).Gap(6).Children(func() {
-				ui.Text(c, "近期活跃分支").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
-				ui.Row(c).Wrap().Gap(5).Children(func() {
-					for _, bi := range recentBrs {
-						brCopy := bi.Name
-						active := brCopy == stCopy.Branch
-						pill(c.Key("ibr-"+brCopy), p, brCopy, active, func() {
-							go func(r mani.DiscoveredRepo, target string) {
-								res := gitops.SwitchBranchAll(context.Background(), []mani.DiscoveredRepo{r}, target, false, 1)
-								a.runUI(func() {
-									a.lastBatchResults = res
-									a.RefreshAsync()
-								})
-							}(stCopy.Repo, brCopy)
-						})
-					}
+				ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "切换分支").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
+					ui.Text(c, "最近提交优先").FontSize(10.5).TextColor(p.TextMuted)
 				})
-
-				if len(staleBrs) > 0 {
-					staleToggle := ui.Row(c.Key("drawer-stale-br")).Padding(3, 0).Gap(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-					if staleToggle.Clicked() {
-						a.showStaleBranchesInDrawer = !a.showStaleBranchesInDrawer
+				ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
+					tree := a.repoBranchTrees[stCopy.Repo.ID]
+					if tree == nil {
+						tree = buildBranchTree(stCopy.BranchInfos)
 					}
-					staleToggle.Children(func() {
-						chev := icoChevronRight
-						if a.showStaleBranchesInDrawer {
-							chev = icoChevronDown
-						}
-						drawIcon(c, chev, 11, p.TextMuted)
-						ui.Text(c, fmt.Sprintf("一周前无变更分支 (%d)", len(staleBrs))).FontSize(11).TextColor(p.TextMuted)
-					})
-					if a.showStaleBranchesInDrawer {
-						ui.Row(c).Wrap().Gap(5).Children(func() {
-							for _, bi := range staleBrs {
-								brCopy := bi.Name
-								active := brCopy == stCopy.Branch
-								pill(c.Key("ibr-stale-"+brCopy), p, brCopy, active, func() {
-									go func(r mani.DiscoveredRepo, target string) {
-										res := gitops.SwitchBranchAll(context.Background(), []mani.DiscoveredRepo{r}, target, false, 1)
-										a.runUI(func() {
-											a.lastBatchResults = res
-											a.RefreshAsync()
-										})
-									}(stCopy.Repo, brCopy)
-								})
-							}
+					branchMenuPill(c, p, stCopy.Branch, true, func(m *ui.Menu) {
+						renderBranchMenu(m, tree, stCopy.Branch, func(target string) {
+							a.switchRepoBranch(stCopy.Repo, target)
 						})
-					}
-				}
+						m.Separator()
+						if m.Item("全部分支与分支组合…").Chosen() {
+							a.openBranchSwitchModal()
+						}
+					})
+					ui.Text(c, fmt.Sprintf("本地 %d · 远端 %d", len(stCopy.LocalBranches), len(stCopy.RemoteBranches))).FontSize(10.5).TextColor(p.TextMuted)
+				})
 			})
 		}
 

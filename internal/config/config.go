@@ -16,6 +16,14 @@ type BranchPreset struct {
 	UpdatedAt    string            `json:"updated_at"`
 }
 
+// MergePreset stores a named merge plan: target branch plus the repositories to merge into it.
+type MergePreset struct {
+	Name         string   `json:"name"`          // e.g. "合并到 test"
+	TargetBranch string   `json:"target_branch"` // e.g. "test"
+	RepoIDs      []string `json:"repo_ids"`      // repositories to include
+	UpdatedAt    string   `json:"updated_at"`
+}
+
 // Config holds persistent application configuration for Nemorous.
 type Config struct {
 	WorkspacePath       string         `json:"workspace_path"`
@@ -31,6 +39,7 @@ type Config struct {
 	IncludeRootRepo     bool           `json:"include_root_repo"`
 	ProtectedBranches   []string       `json:"protected_branches"`
 	BranchPresets       []BranchPreset `json:"branch_presets,omitempty"`
+	MergePresets        []MergePreset  `json:"merge_presets,omitempty"`
 }
 
 // Default returns a sensible default configuration.
@@ -200,6 +209,51 @@ func (c *Config) DeleteBranchPreset(name string) {
 		}
 	}
 	c.BranchPresets = next
+}
+
+// SaveMergePreset adds or updates a named merge plan (target branch + repository set).
+func (c *Config) SaveMergePreset(name, targetBranch string, repoIDs []string) {
+	name = strings.TrimSpace(name)
+	targetBranch = strings.TrimSpace(targetBranch)
+	if name == "" || targetBranch == "" || len(repoIDs) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(repoIDs))
+	ids := make([]string, 0, len(repoIDs))
+	for _, id := range repoIDs {
+		id = strings.TrimSpace(id)
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	preset := MergePreset{
+		Name:         name,
+		TargetBranch: targetBranch,
+		RepoIDs:      ids,
+		UpdatedAt:    time.Now().Format("01-02 15:04"),
+	}
+	for i := range c.MergePresets {
+		if c.MergePresets[i].Name == name {
+			c.MergePresets[i] = preset
+			return
+		}
+	}
+	c.MergePresets = append([]MergePreset{preset}, c.MergePresets...)
+}
+
+// DeleteMergePreset removes a saved merge plan by name.
+func (c *Config) DeleteMergePreset(name string) {
+	next := make([]MergePreset, 0, len(c.MergePresets))
+	for _, p := range c.MergePresets {
+		if p.Name != name {
+			next = append(next, p)
+		}
+	}
+	c.MergePresets = next
 }
 
 // ResolvedAIAgent returns the detected AI agent binary name and path.

@@ -12,11 +12,19 @@ import (
 )
 
 func (a *App) buildMergeView(c *ui.Context, p Palette) {
-	cleanCnt, conflictCnt := 0, 0
+	conflictCnt := 0
+	selectedClean := 0
+	selectedAny := 0
 	for _, pl := range a.mergePlans {
+		checked := a.mergePlanChecked(pl.Repo.ID)
+		if checked {
+			selectedAny++
+		}
 		switch pl.Kind {
 		case aimerge.PlanClean:
-			cleanCnt++
+			if checked {
+				selectedClean++
+			}
 		case aimerge.PlanConflict:
 			conflictCnt++
 		}
@@ -45,9 +53,9 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					drawIcon(c, icoMerge, 15, p.Accent)
 					ui.Text(c, "合并到目标分支：").FontSize(13).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-					targetPreset("test")
-					targetPreset("main")
-					targetPreset("release")
+					for _, target := range a.mergeTargetOptions() {
+						targetPreset(target)
+					}
 					branchFuzzyInput(
 						c.Key("merge-target-in"),
 						p,
@@ -68,15 +76,37 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 				})
 
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					pill(c, p, fmt.Sprintf("合并无冲突仓库 (%d)", cleanCnt), false, func() {
+					iconPill(c, p, icoBranch, "回到开发分支", false, func() {
+						a.TriggerReturnToDevelopmentBranches()
+					})
+					pill(c, p, fmt.Sprintf("合并选中 (%d)", selectedClean), false, func() {
 						a.TriggerExecuteCleanMerges(false)
 					})
-					pill(c, p, fmt.Sprintf("合并并推送 (%d)", cleanCnt), true, func() {
+					pill(c, p, fmt.Sprintf("合并并推送 (%d)", selectedClean), true, func() {
 						a.TriggerExecuteCleanMerges(true)
 					})
 					ghostBtn(c, p, icoMore, "", a.showMergeAdvanced, func() {
 						a.showMergeAdvanced = !a.showMergeAdvanced
 					})
+				})
+			})
+
+			// Merge plans are user-defined: pick a target and a repository set, save it, reuse it next time.
+			ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, fmt.Sprintf("合并方案（已选 %d/%d 个仓库）：", selectedAny, len(a.mergePlans))).FontSize(11).TextColor(p.TextMuted)
+				for _, preset := range a.cfg.MergePresets {
+					prCopy := preset
+					pill(c.Key("mpreset-"+prCopy.Name), p, fmt.Sprintf("%s · %s (%d)", prCopy.Name, prCopy.TargetBranch, len(prCopy.RepoIDs)), false, func() {
+						a.applyMergePreset(prCopy)
+					})
+					miniBtn(c.Key("mpreset-del-"+prCopy.Name), p, "×", func() {
+						a.cfg.DeleteMergePreset(prCopy.Name)
+						_ = a.cfg.Save()
+					})
+				}
+				ui.TextInput(c.Key("merge-preset-in"), &a.mergePresetInput).Placeholder("方案名称，如：合并到 test").Width(180)
+				miniBtn(c, p, "保存当前勾选", func() {
+					a.saveMergePreset()
 				})
 			})
 
@@ -101,10 +131,54 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 	})
 }
 
+func (a *App) mergeTargetOptions() []string {
+	seen := make(map[string]bool, len(a.cfg.MergePresets)+2)
+	out := make([]string, 0, len(a.cfg.MergePresets)+2)
+	add := func(branch string) {
+		branch = strings.TrimSpace(branch)
+		if branch != "" && !seen[branch] {
+			seen[branch] = true
+			out = append(out, branch)
+		}
+	}
+	add(a.cfg.DefaultTargetBranch)
+	for _, preset := range a.cfg.MergePresets {
+		add(preset.TargetBranch)
+	}
+	add(a.mergeTargetBranch)
+	return out
+}
+
 func (a *App) buildMergePlanList(c *ui.Context, p Palette, conflictCnt int) {
+	allChecked := len(a.mergePlans) > 0
+	for _, pl := range a.mergePlans {
+		if !a.mergePlanChecked(pl.Repo.ID) {
+			allChecked = false
+			break
+		}
+	}
 	ui.Column(c).Grow(1).FillHeight().Radius(10).Background(p.Surface).Border(1, p.Border).Children(func() {
 		// Table Header
 		ui.Row(c).Padding(10, 16).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
+			ui.Box(c).Width(30).Children(func() {
+				chk := ui.Box(c.Key("merge-all")).Size(15, 15).Radius(4).Cursor(ui.CursorPointer).Center()
+				if allChecked {
+					chk.Background(p.Accent)
+				} else {
+					chk.Background(p.Surface2).Border(1, p.BorderStrong)
+				}
+				if chk.Clicked() {
+					next := !allChecked
+					for _, pl := range a.mergePlans {
+						a.mergeCheckedRepos[pl.Repo.ID] = next
+					}
+				}
+				chk.Children(func() {
+					if allChecked {
+						drawIcon(c, icoCheck, 11, p.AccentText)
+					}
+				})
+			})
 			ui.Box(c).Width(220).Children(func() {
 				ui.Text(c, "仓库").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
 			})
@@ -126,6 +200,7 @@ func (a *App) buildMergePlanList(c *ui.Context, p Palette, conflictCnt int) {
 				}
 				plCopy := pl
 				selected := a.selectedMergeRepoID == pl.Repo.ID
+				checked := a.mergePlanChecked(pl.Repo.ID)
 				rowBg := p.Surface
 				if selected {
 					rowBg = p.ActiveRowBg
@@ -144,6 +219,24 @@ func (a *App) buildMergePlanList(c *ui.Context, p Palette, conflictCnt int) {
 					a.selectedMergeRepoID = plCopy.Repo.ID
 				}
 				row.Children(func() {
+					// Include in the merge batch
+					ui.Box(kc).Width(30).Shrink(0).Children(func() {
+						chk := ui.Box(kc).Size(15, 15).Radius(4).Cursor(ui.CursorPointer).Center()
+						if checked {
+							chk.Background(p.Accent)
+						} else {
+							chk.Background(p.Surface2).Border(1, p.BorderStrong)
+						}
+						if chk.Clicked() {
+							a.mergeCheckedRepos[plCopy.Repo.ID] = !checked
+						}
+						chk.Children(func() {
+							if checked {
+								drawIcon(kc, icoCheck, 11, p.AccentText)
+							}
+						})
+					})
+
 					// Repo
 					ui.Row(kc).Width(220).Gap(10).AlignItems(ui.Center).Shrink(0).Children(func() {
 						ui.Box(kc).Size(26, 26).Radius(6).Background(badge.Bg).Center().Shrink(0).Children(func() {
