@@ -1,0 +1,231 @@
+package config
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// BranchPreset stores a named multi-repository branch combination (e.g. "AAA 需求").
+type BranchPreset struct {
+	Name         string            `json:"name"`          // e.g. "AAA 需求"
+	RepoBranches map[string]string `json:"repo_branches"` // repoID -> targetBranch
+	UpdatedAt    string            `json:"updated_at"`
+}
+
+// Config holds persistent application configuration for Nemorous.
+type Config struct {
+	WorkspacePath       string         `json:"workspace_path"`
+	RecentWorkspaces    []string       `json:"recent_workspaces"`
+	Theme               string         `json:"theme"`                 // "dark", "light", "system"
+	DefaultTargetBranch string         `json:"default_target_branch"` // e.g. "test", "main"
+	AIAgent             string         `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
+	Concurrency         int            `json:"concurrency"`           // parallel git workers (default 8)
+	DiffSideBySide      bool           `json:"diff_side_by_side"`
+	DiffInlineMode      string         `json:"diff_inline_mode"` // "word", "char", "none"
+	EditorFontSize      float32        `json:"editor_font_size"`
+	EditorSoftWrap      bool           `json:"editor_soft_wrap"`
+	IncludeRootRepo     bool           `json:"include_root_repo"`
+	ProtectedBranches   []string       `json:"protected_branches"`
+	BranchPresets       []BranchPreset `json:"branch_presets,omitempty"`
+}
+
+// Default returns a sensible default configuration.
+func Default() Config {
+	ws := detectDefaultWorkspace()
+	var recents []string
+	if ws != "" {
+		recents = []string{ws}
+	}
+	return Config{
+		WorkspacePath:       ws,
+		RecentWorkspaces:    recents,
+		Theme:               "light",
+		DefaultTargetBranch: "test",
+		AIAgent:             "auto",
+		Concurrency:         8,
+		DiffSideBySide:      true,
+		DiffInlineMode:      "word",
+		EditorFontSize:      13,
+		EditorSoftWrap:      false,
+		IncludeRootRepo:     true,
+		ProtectedBranches:   []string{"main", "master", "test", "dev", "prod", "production"},
+	}
+}
+
+func detectDefaultWorkspace() string {
+	if env := os.Getenv("NEMOROUS_WORKSPACE"); env != "" {
+		if info, err := os.Stat(env); err == nil && info.IsDir() {
+			return env
+		}
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		candidate := filepath.Join(home, "work", "workspace")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	cwd, err := os.Getwd()
+	if err == nil {
+		return cwd
+	}
+	return ""
+}
+
+// ConfigPath returns the path to the JSON config file.
+func ConfigPath() string {
+	if custom := os.Getenv("NEMOROUS_CONFIG"); custom != "" {
+		return custom
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil || dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "nemorous", "config.json")
+}
+
+// Load reads config from disk or returns Default() if missing/invalid.
+func Load() Config {
+	cfg := Default()
+	data, err := os.ReadFile(ConfigPath())
+	if err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if envWs := os.Getenv("NEMOROUS_WORKSPACE"); envWs != "" {
+		cfg.WorkspacePath = envWs
+	}
+	if cfg.WorkspacePath == "" {
+		cfg.WorkspacePath = detectDefaultWorkspace()
+	} else if info, statErr := os.Stat(cfg.WorkspacePath); statErr != nil || !info.IsDir() {
+		cfg.WorkspacePath = detectDefaultWorkspace()
+	}
+	if cfg.Concurrency <= 0 {
+		cfg.Concurrency = 8
+	}
+	if cfg.EditorFontSize < 10 || cfg.EditorFontSize > 28 {
+		cfg.EditorFontSize = 13
+	}
+	if cfg.Theme == "" {
+		cfg.Theme = "light"
+	}
+	if cfg.DefaultTargetBranch == "" {
+		cfg.DefaultTargetBranch = "test"
+	}
+	if cfg.AIAgent == "" {
+		cfg.AIAgent = "auto"
+	}
+	if cfg.DiffInlineMode == "" {
+		cfg.DiffInlineMode = "word"
+	}
+	if len(cfg.ProtectedBranches) == 0 {
+		cfg.ProtectedBranches = []string{"main", "master", "test", "dev", "prod", "production"}
+	}
+	return cfg
+}
+
+// Save writes the configuration to disk atomically.
+func (c *Config) Save() error {
+	path := ConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// AddRecentWorkspace prepends ws to RecentWorkspaces (deduplicated, max 10).
+func (c *Config) AddRecentWorkspace(ws string) {
+	ws = filepath.Clean(ws)
+	if ws == "" {
+		return
+	}
+	c.WorkspacePath = ws
+	next := []string{ws}
+	for _, r := range c.RecentWorkspaces {
+		if filepath.Clean(r) != ws && len(next) < 10 {
+			next = append(next, filepath.Clean(r))
+		}
+	}
+	c.RecentWorkspaces = next
+}
+
+// SaveBranchPreset adds or updates a named multi-repo branch preset.
+func (c *Config) SaveBranchPreset(name string, repoBranches map[string]string) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(repoBranches) == 0 {
+		return
+	}
+	copied := make(map[string]string, len(repoBranches))
+	for k, v := range repoBranches {
+		v = strings.TrimSpace(v)
+		if k != "" && v != "" {
+			copied[k] = v
+		}
+	}
+	if len(copied) == 0 {
+		return
+	}
+	preset := BranchPreset{
+		Name:         name,
+		RepoBranches: copied,
+		UpdatedAt:    time.Now().Format("01-02 15:04"),
+	}
+	for i := range c.BranchPresets {
+		if c.BranchPresets[i].Name == name {
+			c.BranchPresets[i] = preset
+			return
+		}
+	}
+	c.BranchPresets = append([]BranchPreset{preset}, c.BranchPresets...)
+}
+
+// DeleteBranchPreset removes a saved branch preset by name.
+func (c *Config) DeleteBranchPreset(name string) {
+	next := make([]BranchPreset, 0, len(c.BranchPresets))
+	for _, p := range c.BranchPresets {
+		if p.Name != name {
+			next = append(next, p)
+		}
+	}
+	c.BranchPresets = next
+}
+
+// ResolvedAIAgent returns the detected AI agent binary name and path.
+func (c *Config) ResolvedAIAgent() (name string, binPath string) {
+	candidates := []string{"omp", "pi", "claude", "codex"}
+	if c.AIAgent != "" && c.AIAgent != "auto" {
+		candidates = append([]string{c.AIAgent}, candidates...)
+	}
+	home, _ := os.UserHomeDir()
+	extraDirs := []string{
+		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".local", "share", "mise", "installs", "node", "24", "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+	}
+	for _, cand := range candidates {
+		if p, err := exec.LookPath(cand); err == nil {
+			return cand, p
+		}
+		for _, dir := range extraDirs {
+			full := filepath.Join(dir, cand)
+			if info, err := os.Stat(full); err == nil && !info.IsDir() {
+				return cand, full
+			}
+		}
+	}
+	return "omp", ""
+}

@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.name "Nemorous CI"
+          git config --global user.email "ci@nemorous.dev"
+
+      - name: Run MyGo static lifetime vet
+        run: go tool mygo vet .
+
+      - name: Run unit and headless UI tests
+        env:
+          CGO_ENABLED: "0"
+        run: go test -v ./...
+
+      - name: Build native package
+        run: go tool mygo build

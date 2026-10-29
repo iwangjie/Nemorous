@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: darwin/arm64,darwin/amd64
+            artifacts: build/Nemorous-*.dmg
+          - os: windows-latest
+            platform: windows/amd64
+            artifacts: build/Nemorous-*-amd64-setup.exe
+          - os: windows-latest
+            platform: windows/arm64
+            artifacts: build/Nemorous-*-arm64-setup.exe
+          - os: ubuntu-24.04
+            platform: linux/amd64
+            artifacts: |
+              build/nemorous_*_amd64.deb
+              build/Nemorous-*-linux-amd64.tar.gz
+          - os: ubuntu-24.04-arm
+            platform: linux/arm64
+            artifacts: |
+              build/nemorous_*_arm64.deb
+              build/Nemorous-*-linux-arm64.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install nsis (Windows)
+        if: runner.os == 'Windows'
+        run: choco install nsis -y
+
+      - name: Vet and Test
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go tool mygo vet .
+          go test ./...
+
+      - name: Build release packages
+        run: go tool mygo build -platform ${{ matrix.platform }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.os }}-${{ strategy.job-index }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" artifacts/* --generate-notes

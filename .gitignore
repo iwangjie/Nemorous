@@ -1,0 +1,20 @@
+# 构建产物
+node_modules/
+/dist/
+/build/
+/.mygo/
+mygo_windows_*.syso
+
+# 系统与编辑器
+.DS_Store
+.idea/
+
+# AI Agent 工具目录
+.agents/
+.codex/
+.claude/
+.pi/
+.cursor/
+
+# 设计工具运行时状态
+.impeccable/hook.cache.json
