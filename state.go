@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1145,8 +1146,14 @@ func (a *App) syncMergeSelection(plans []aimerge.RepoMergePlan) {
 	keep := make(map[string]bool, len(plans))
 	for _, plan := range plans {
 		keep[plan.Repo.ID] = true
+		mergeable := plan.Kind == aimerge.PlanClean || plan.Kind == aimerge.PlanConflict
+		if !mergeable {
+			// Nothing to merge: do not leave a stale selection behind.
+			a.mergeCheckedRepos[plan.Repo.ID] = false
+			continue
+		}
 		if _, ok := a.mergeCheckedRepos[plan.Repo.ID]; !ok {
-			a.mergeCheckedRepos[plan.Repo.ID] = plan.Kind == aimerge.PlanClean || plan.Kind == aimerge.PlanConflict
+			a.mergeCheckedRepos[plan.Repo.ID] = true
 		}
 	}
 	for id := range a.mergeCheckedRepos {
@@ -1459,4 +1466,19 @@ func countOpResults(res []gitops.OpResult) (okCnt, skipCnt, failCnt int) {
 		}
 	}
 	return
+}
+
+// displayPath shortens a path under the home directory to use "~".
+func displayPath(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == home {
+		return "~"
+	}
+	if strings.HasPrefix(p, home+string(filepath.Separator)) {
+		return "~" + p[len(home):]
+	}
+	return p
 }

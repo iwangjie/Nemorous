@@ -56,20 +56,6 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 					for _, target := range a.mergeTargetOptions() {
 						targetPreset(target)
 					}
-					branchFuzzyInput(
-						c.Key("merge-target-in"),
-						p,
-						&a.mergeTargetBranch,
-						a.BranchCandidatesForRepo(""),
-						"搜索其他目标分支...",
-						160,
-						0,
-						false,
-						nil,
-						func(_ string) {
-							a.TriggerMergePreflight(false)
-						},
-					)
 					miniBtn(c, p, "检查冲突", func() {
 						a.TriggerMergePreflight(a.mergeFetchFirst)
 					})
@@ -111,10 +97,29 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 			})
 
 			if a.showMergeAdvanced {
-				ui.Row(c).Padding(8, 0, 0, 0).Gap(12).BorderWidth(1, 0, 0, 0).BorderColor(p.BorderSubtle).AlignItems(ui.Center).Children(func() {
-					ui.Checkbox(c, &a.mergeFetchFirst, "检查前先从远端拉取最新分支 (git fetch)")
-					ui.Spacer(c)
-					ui.Text(c, fmt.Sprintf("AI 冲突解决助手：%s", a.aiAgentName)).FontSize(11.5).TextColor(p.TextMuted)
+				ui.Column(c).Padding(8, 0, 0, 0).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(p.BorderSubtle).Children(func() {
+					ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
+						ui.Checkbox(c, &a.mergeFetchFirst, "检查前先从远端拉取最新分支 (git fetch)")
+						ui.Spacer(c)
+						ui.Text(c, fmt.Sprintf("AI 冲突解决助手：%s", a.aiAgentName)).FontSize(11.5).TextColor(p.TextMuted)
+					})
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "自定义目标分支：").FontSize(11.5).TextColor(p.TextMuted)
+						branchFuzzyInput(
+							c.Key("merge-target-in"),
+							p,
+							&a.mergeTargetBranch,
+							a.BranchCandidatesForRepo(""),
+							"搜索或输入其他目标分支...",
+							200,
+							0,
+							false,
+							nil,
+							func(_ string) {
+								a.TriggerMergePreflight(false)
+							},
+						)
+					})
 				})
 			}
 		})

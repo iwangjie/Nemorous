@@ -449,7 +449,7 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 
 	ui.Row(c).Height(25).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(1, 0, 0, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, a.cfg.WorkspacePath).FontSize(11).TextColor(p.TextMuted)
+			ui.Text(c, displayPath(a.cfg.WorkspacePath)).FontSize(11).TextColor(p.TextMuted)
 			if a.repoFilterID != "" {
 				badgeBox(c, "当前筛选: "+a.repoFilterID, p.Accent, p.AccentSoft, ui.Color{}, 10, true)
 				miniBtn(c, p, "显示全部仓库", func() {
