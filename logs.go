@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -207,36 +205,4 @@ func logBadgeColors(level appLogLevel, p Palette) (fg, bg ui.Color) {
 	default:
 		return p.Blue, p.BlueSoft
 	}
-}
-
-// openSystemTerminal opens Terminal.app at the workspace root; this is
-// deliberately not an embedded terminal, so shell profiles and tools behave
-// exactly as they do outside the app.
-func (a *App) openSystemTerminal() {
-	root := strings.TrimSpace(a.cfg.WorkspacePath)
-	if root == "" {
-		a.showToast("warn", "尚未选择工作区")
-		return
-	}
-	if runtime.GOOS != "darwin" {
-		a.showToast("err", "当前仅支持 macOS 系统终端")
-		return
-	}
-	a.logRuntimeDetail("info", "打开系统终端", root)
-	go func() {
-		script := `on run argv
-tell application "Terminal"
-	activate
-	do script "cd " & quoted form of item 1 of argv
-end tell
-end run`
-		err := exec.Command("osascript", "-e", script, root).Run()
-		a.runUI(func() {
-			if err != nil {
-				a.showToast("err", "打开系统终端失败: "+err.Error())
-				return
-			}
-			a.logRuntimeDetail("info", "系统终端已打开", root)
-		})
-	}()
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
@@ -267,6 +268,14 @@ type App struct {
 	showOpLog           bool
 	showLogPanel        bool
 	logTab              string
+	showTerminalPanel   bool
+	terminalEditorPct   float32
+	terminalTitle       string
+	terminalErr         string
+	terminalExited      bool
+	terminalExitCode    int
+	terminalGen         uint64
+	terminal            *terminal.Terminal
 	pendingDiscard      *PendingDiscard
 	pendingCodeTabClose *codeTab
 	pendingUndo         *PendingUndo
@@ -295,6 +304,7 @@ func NewApp(cfg config.Config) *App {
 		activeTab:            TabChanges,
 		gitEditorPct:         62,
 		logEditorPct:         62,
+		terminalEditorPct:    62,
 		gitSubTab:            "history",
 		logTab:               "command",
 		gitCollapsedRepos:    make(map[string]bool),

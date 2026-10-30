@@ -474,8 +474,11 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if app.activeTab != TabChanges {
 		t.Fatalf("expected initial TabChanges, got %s", app.activeTab)
 	}
-	if !tt.HasText("本地变更 (2/2)") {
+	if !tt.HasText("本地变更") || !tt.HasText("2 个文件") {
 		t.Fatal("expected local changes header in Changes view")
+	}
+	if tt.HasText("全选") || tt.HasText("清空") {
+		t.Fatal("select-all and clear buttons should be gone from the changes pane")
 	}
 	if !tt.HasText("中文模块.go") {
 		t.Fatal("expected Chinese filename 中文模块.go in Changes view")
@@ -504,6 +507,37 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	}
 	if !tt.HasText("Stash ▾") {
 		t.Fatal("Stash menu should remain in the changes header")
+	}
+	if err := tt.Click("选择全部改动"); err != nil {
+		t.Fatalf("click changes root checkbox: %v", err)
+	}
+	for k, checked := range app.checkedChanges {
+		if checked {
+			t.Fatalf("root checkbox should clear all children, %s stayed checked", k)
+		}
+	}
+	if err := tt.Click("选择全部改动"); err != nil {
+		t.Fatalf("click changes root checkbox again: %v", err)
+	}
+	for k, checked := range app.checkedChanges {
+		if !checked {
+			t.Fatalf("root checkbox should select all children, %s stayed unchecked", k)
+		}
+	}
+	if err := tt.Click("选择 src/main/go 的全部改动"); err != nil {
+		t.Fatalf("click directory checkbox: %v", err)
+	}
+	if app.checkedChanges["cloud-caring::src/main/go/中文模块.go"] {
+		t.Fatal("directory checkbox should clear its child file")
+	}
+	if !app.checkedChanges["cloud-caring::main.go"] {
+		t.Fatal("directory checkbox must not affect sibling files")
+	}
+	if err := tt.Click("选择 src/main/go 的全部改动"); err != nil {
+		t.Fatalf("click directory checkbox again: %v", err)
+	}
+	if !app.checkedChanges["cloud-caring::src/main/go/中文模块.go"] {
+		t.Fatal("directory checkbox should select its child file")
 	}
 
 	// Search filters the tree without changing the checked set.

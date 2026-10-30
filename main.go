@@ -43,6 +43,7 @@ func main() {
 			TitleBarStyle: mygo.TitleBarHidden,
 			Content:       ui.View(app.BuildUI),
 		})
+		app.win.OnClosed(func() { app.closeTerminal() })
 		if cfg.WorkspacePath != "" {
 			app.LoadWorkspaceAsync(cfg.WorkspacePath)
 		}
@@ -242,7 +243,12 @@ func (a *App) BuildUI(c *ui.Context) {
 						ui.Column(c).FillHeight().Children(editorArea)
 					}
 				}
-				if a.showLogPanel {
+				if a.showTerminalPanel {
+					ui.SplitVerticalPercent(c, &a.terminalEditorPct,
+						func() { ui.Column(c).FillHeight().Children(workArea) },
+						func() { a.buildTerminalPanel(c, p) },
+					).Fill()
+				} else if a.showLogPanel {
 					ui.SplitVerticalPercent(c, &a.logEditorPct,
 						func() { ui.Column(c).FillHeight().Children(workArea) },
 						func() { a.buildLogPanel(c, p) },
@@ -314,13 +320,16 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			a.saveCodeMicroEdit()
 		}
 	}
+	// The embedded terminal needs plain Space/S/U/arrows as shell input;
+	// keep the changes pane's single-key shortcuts out of its way.
+	terminalFocused := a.showTerminalPanel
 	if a.activeTab == TabChanges {
 		if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEnter) {
 			a.TriggerCommit(true)
 		} else if c.Shortcut(ui.Cmd, ui.KeyEnter) {
 			a.TriggerCommit(false)
 		}
-		if !a.textFocusActive(c) {
+		if !terminalFocused && !a.textFocusActive(c) {
 			if c.Shortcut(0, ui.KeyDown) {
 				a.moveChangeSelection(1)
 			}
@@ -348,6 +357,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	}
 	if c.Shortcut(ui.Cmd, ui.Key3) {
 		a.showLogPanel = false
+		a.showTerminalPanel = false
 		a.showGitPanel = !a.showGitPanel
 	}
 	if c.Shortcut(ui.Cmd, ui.Key4) && a.maniAvailable() {
@@ -440,6 +450,7 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				a.showGitPanel = false
 			} else {
 				a.showLogPanel = false
+				a.showTerminalPanel = false
 				a.showGitPanel = true
 				a.expandGitForMerge()
 			}
@@ -484,11 +495,12 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				a.showLogPanel = false
 			} else {
 				a.showGitPanel = false
+				a.showTerminalPanel = false
 				a.showLogPanel = true
 			}
 		})
-		toolRow("nav-terminal", icoTerminal, "终端", false, func() {
-			a.openSystemTerminal()
+		toolRow("nav-terminal", icoTerminal, "终端", a.showTerminalPanel, func() {
+			a.toggleTerminalPanel()
 		})
 
 		utility := func(key string, icon *ui.SVG, tooltip string, active bool, onClick func()) {

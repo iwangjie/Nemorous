@@ -163,40 +163,43 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 		}
 	}
 
-	ui.Column(c).Fill().Padding(8).Gap(8).Background(p.Surface).Children(func() {
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			title := "本地变更"
-			if allTotal > 0 {
-				title = fmt.Sprintf("本地变更 (%d/%d)", checkedFiles, allTotal)
+	ui.Column(c).Fill().Padding(6).Gap(6).Background(p.Surface).Children(func() {
+		visibleFiles := make([]gitops.ChangedFile, 0, visibleTotal)
+		for _, st := range dirtyStatuses {
+			visibleFiles = append(visibleFiles, filteredByRepo[st.Repo.ID]...)
+		}
+		checkedVisible := 0
+		for _, f := range visibleFiles {
+			if a.checkedChanges[f.Key()] {
+				checkedVisible++
 			}
+		}
+		allVisibleChecked := visibleTotal > 0 && checkedVisible == visibleTotal
+		someVisibleChecked := checkedVisible > 0 && !allVisibleChecked
+
+		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, title).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+				if visibleTotal > 0 {
+					a.changeParentCheck(c, p, "changes-root-check", "选择全部改动", allVisibleChecked, someVisibleChecked, func() {
+						a.setChangeFilesChecked(visibleFiles, !allVisibleChecked)
+					})
+				}
+				ui.Text(c, "本地变更").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+				if allTotal > 0 {
+					ui.Text(c, fmt.Sprintf("%d 个文件", allTotal)).FontSize(10.5).TextColor(p.TextMuted)
+				}
 				if filtered {
 					badgeBox(c, fmt.Sprintf("筛出 %d", visibleTotal), p.AccentSoftText, p.AccentSoft, ui.Color{}, 10, false)
 				}
 			})
 			if allTotal > 0 {
-				ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-					miniBtn(c, p, "全选", func() {
-						for _, st := range dirtyStatuses {
-							for _, f := range filteredByRepo[st.Repo.ID] {
-								a.checkedChanges[f.Key()] = true
-							}
-						}
-					})
-					miniBtn(c, p, "清空", func() {
-						for k := range a.checkedChanges {
-							a.checkedChanges[k] = false
-						}
-					})
-					menuPill(c, p, "Stash ▾", false, func(m *ui.Menu) {
-						if m.Item("贮藏全部改动 (Stash)").Chosen() {
-							a.TriggerStashAll()
-						}
-						if m.Item("恢复最近贮藏 (Stash Pop)").Chosen() {
-							a.TriggerStashPopAll()
-						}
-					})
+				menuPill(c, p, "Stash ▾", false, func(m *ui.Menu) {
+					if m.Item("贮藏全部改动 (Stash)").Chosen() {
+						a.TriggerStashAll()
+					}
+					if m.Item("恢复最近贮藏 (Stash Pop)").Chosen() {
+						a.TriggerStashPopAll()
+					}
 				})
 			}
 		})
@@ -205,7 +208,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			ui.SearchField(c.Key("changes-search"), &a.changesFilterQuery).Bind(&a.changesFilterHandle).Placeholder("搜索改动文件...").Grow(1)
 		})
 
-		ui.Scroll(c).Grow(1).Gap(4).Children(func() {
+		ui.Scroll(c).Grow(1).Children(func() {
 			for _, st := range dirtyStatuses {
 				a.buildChangeRepoGroup(c, p, st, filteredByRepo[st.Repo.ID])
 			}
@@ -281,32 +284,15 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 			break
 		}
 	}
-	stagedCount := 0
-	for _, f := range visible {
-		if f.Staged {
-			stagedCount++
-		}
-	}
 	collapsed := a.collapsedChangeRepos[stCopy.Repo.ID]
 
 	gkc := c.Key("grp-" + stCopy.Repo.ID)
 	ui.Column(gkc).Children(func() {
-		hdr := ui.Row(gkc).Height(26).Padding(0, 8).Gap(5).Background(p.RailBg).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+		hdr := ui.Row(gkc).Height(24).Padding(0, 6).Gap(5).AlignItems(ui.Center)
 		if hdr.Hovered() {
 			hdr.Background(p.SurfaceHover)
 		}
 		repoMenu := func(m *ui.Menu) {
-			if m.Item("全选本仓").Chosen() {
-				for _, f := range stCopy.Files {
-					a.checkedChanges[f.Key()] = true
-				}
-			}
-			if m.Item("清空本仓勾选").Chosen() {
-				for _, f := range stCopy.Files {
-					a.checkedChanges[f.Key()] = false
-				}
-			}
-			m.Separator()
 			if m.Item("暂存本仓全部").Chosen() {
 				a.stageChangeFiles(stCopy.Files, true)
 			}
@@ -314,11 +300,6 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 				a.stageChangeFiles(stCopy.Files, false)
 			}
 			m.Separator()
-			if m.Item("勾选本仓全部文件").Chosen() {
-				for _, f := range stCopy.Files {
-					a.checkedChanges[f.Key()] = true
-				}
-			}
 			if m.Item("复制仓库路径").Chosen() {
 				a.pendingClipboard = stCopy.Repo.AbsPath
 			}
@@ -349,23 +330,17 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 			}
 		}
 		hdr.PopoverMenu(repoMenu)
+		repoChecked := 0
+		for _, f := range visible {
+			if a.checkedChanges[f.Key()] {
+				repoChecked++
+			}
+		}
+		repoSomeChecked := repoChecked > 0 && !repoAllChecked
+
 		hdr.Children(func() {
-			chkBox := ui.Box(gkc).Size(14, 14).Radius(3).Cursor(ui.CursorPointer).Center().Shrink(0)
-			if repoAllChecked {
-				chkBox.Background(p.Accent)
-			} else {
-				chkBox.Background(p.Surface2).Border(1, p.BorderStrong)
-			}
-			if chkBox.Clicked() {
-				next := !repoAllChecked
-				for _, f := range visible {
-					a.checkedChanges[f.Key()] = next
-				}
-			}
-			chkBox.Children(func() {
-				if repoAllChecked {
-					drawIcon(gkc, icoCheck, 10, p.AccentText)
-				}
+			a.changeParentCheck(c, p, "repo-check-"+stCopy.Repo.ID, "选择 "+stCopy.Repo.Name+" 的全部改动", repoAllChecked, repoSomeChecked, func() {
+				a.setChangeFilesChecked(visible, !repoAllChecked)
 			})
 
 			chev := icoChevronDown
@@ -384,9 +359,6 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 			ui.Text(gkc, stCopy.Repo.Name).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
 			badgeBox(gkc, stCopy.Branch, p.TextControl, p.Surface2, ui.Color{}, 9.5, false)
 			ui.Spacer(gkc)
-			if stagedCount > 0 {
-				badgeBox(gkc, fmt.Sprintf("已暂存 %d", stagedCount), p.Green, p.GreenSoft, ui.Color{}, 9.5, true)
-			}
 			ui.Text(gkc, fmt.Sprintf("%d", len(visible))).FontSize(10).TextColor(p.TextMuted)
 			if hdr.Hovered() {
 				more := ui.Row(gkc).Size(16, 16).Radius(3).Center().Cursor(ui.CursorPointer).Shrink(0)
@@ -417,30 +389,27 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 }
 
 func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node *changeTreeNode, depth int, ordered []gitops.ChangedFile) {
-	indent := float32(8 + depth*12)
+	indent := float32(6 + depth*12)
 	for _, dir := range node.dirs {
 		dirCopy := dir
 		dirKey := repoID + "::" + dirCopy.relPath
 		collapsed := a.collapsedChangeDirs[dirKey]
 		children := collectChangeFiles(dirCopy)
+		dirChecked := 0
+		for _, f := range children {
+			if a.checkedChanges[f.Key()] {
+				dirChecked++
+			}
+		}
+		dirAllChecked := len(children) > 0 && dirChecked == len(children)
+		dirSomeChecked := dirChecked > 0 && !dirAllChecked
 
 		dkc := c.Key("cdir-" + dirKey)
-		dRow := ui.Row(dkc).Height(22).Padding(0, 8, 0, indent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+		dRow := ui.Row(dkc).Height(22).Padding(0, 6, 0, indent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 		if dRow.Hovered() {
 			dRow.Background(p.SurfaceHover)
 		}
 		dRow.PopoverMenu(func(m *ui.Menu) {
-			if m.Item("勾选此目录").Chosen() {
-				for _, f := range children {
-					a.checkedChanges[f.Key()] = true
-				}
-			}
-			if m.Item("取消勾选此目录").Chosen() {
-				for _, f := range children {
-					a.checkedChanges[f.Key()] = false
-				}
-			}
-			m.Separator()
 			if m.Item("暂存此目录").Chosen() {
 				a.stageChangeFiles(children, true)
 			}
@@ -448,18 +417,31 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node
 				a.stageChangeFiles(children, false)
 			}
 		})
-		if dRow.Clicked() {
-			a.collapsedChangeDirs[dirKey] = !collapsed
-		}
 		dRow.Children(func() {
+			a.changeParentCheck(c, p, "dir-check-"+dirKey, "选择 "+dirCopy.name+" 的全部改动", dirAllChecked, dirSomeChecked, func() {
+				a.setChangeFilesChecked(children, !dirAllChecked)
+			})
 			chev := icoChevronRight
 			if !collapsed {
 				chev = icoChevronDown
 			}
-			drawIcon(dkc, chev, 9, p.TextMuted)
-			drawIcon(dkc, icoFolder, 11, p.TextMuted)
-			ui.Text(dkc, dirCopy.name).FontSize(11).FontWeight(weightMedium).TextColor(p.TextSecondary).MaxLines(1).Grow(1)
-			ui.Text(dkc, fmt.Sprintf("%d", len(children))).FontSize(9.5).TextColor(p.TextMuted)
+			chevKc := c.Key("cdir-chev-" + dirKey)
+			chevEl := ui.Row(chevKc).Padding(1, 0).Cursor(ui.CursorPointer).Shrink(0)
+			if chevEl.Clicked() {
+				a.collapsedChangeDirs[dirKey] = !collapsed
+			}
+			chevEl.Children(func() { drawIcon(chevKc, chev, 9, p.TextMuted) })
+
+			infoKc := c.Key("cdir-info-" + dirKey)
+			info := ui.Row(infoKc).Grow(1).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+			if info.Clicked() {
+				a.collapsedChangeDirs[dirKey] = !collapsed
+			}
+			info.Children(func() {
+				drawIcon(infoKc, icoFolder, 11, p.TextMuted)
+				ui.Text(infoKc, dirCopy.name).FontSize(11).FontWeight(weightMedium).TextColor(p.TextSecondary).MaxLines(1).Grow(1)
+				ui.Text(infoKc, fmt.Sprintf("%d", len(children))).FontSize(9.5).TextColor(p.TextMuted)
+			})
 		})
 
 		if !collapsed {
@@ -486,7 +468,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 
 	fkc := c.Key("cf-" + key)
 	// Compact single-line row; stage/discard actions live in the right-click menu.
-	fRow := ui.Row(fkc).Height(24).Padding(0, 8, 0, indent).Gap(5).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	fRow := ui.Row(fkc).Height(22).Padding(0, 6, 0, indent).Gap(5).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if fRow.Hovered() && !isSelected {
 		fRow.Background(p.SurfaceHover)
 	}
@@ -818,6 +800,38 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 		// DiffView
 		editor.DiffView(c, a.diffState).Grow(1).FillWidth()
 	})
+}
+
+// changeParentCheck renders the tri-state checkbox shared by the changes root,
+// repositories and directories. A partial group shows a dash; clicking it
+// selects every child, as IDEA's commit tree does.
+func (a *App) changeParentCheck(c *ui.Context, p Palette, key, label string, all, some bool, onClick func()) {
+	kc := c.Key(key)
+	box := ui.Box(kc).Size(14, 14).Radius(3).Cursor(ui.CursorPointer).Center().Shrink(0).Label(label)
+	if all {
+		box.Background(p.Accent)
+	} else if some {
+		box.Background(p.Accent)
+	} else {
+		box.Background(p.Surface2).Border(1, p.BorderStrong)
+	}
+	if box.Clicked() && onClick != nil {
+		onClick()
+	}
+	box.Children(func() {
+		if all {
+			drawIcon(kc, icoCheck, 10, p.AccentText)
+		} else if some {
+			drawIcon(kc, icoMinus, 10, p.AccentText)
+		}
+	})
+}
+
+// setChangeFilesChecked applies one parent checkbox to every child file.
+func (a *App) setChangeFilesChecked(files []gitops.ChangedFile, checked bool) {
+	for _, f := range files {
+		a.checkedChanges[f.Key()] = checked
+	}
 }
 
 // renderedChangeFiles walks directories before files, skipping collapsed folders,
