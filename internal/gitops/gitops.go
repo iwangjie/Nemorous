@@ -21,12 +21,12 @@ import (
 type RepoHealth string
 
 const (
-	HealthClean      RepoHealth = "clean"
-	HealthDirty      RepoHealth = "dirty"
-	HealthConflict   RepoHealth = "conflict"
-	HealthBehind     RepoHealth = "behind"
-	HealthAhead      RepoHealth = "ahead"
-	HealthDiverged   RepoHealth = "diverged"
+	HealthClean    RepoHealth = "clean"
+	HealthDirty    RepoHealth = "dirty"
+	HealthConflict RepoHealth = "conflict"
+	HealthBehind   RepoHealth = "behind"
+	HealthAhead    RepoHealth = "ahead"
+	HealthDiverged RepoHealth = "diverged"
 )
 
 // ChangedFile represents a single modified, staged, untracked, or conflicted file.
@@ -66,6 +66,9 @@ type BranchInfo struct {
 	CommitUnix int64
 	RelTime    string
 	IsRemote   bool
+	// Mine reports that the branch tip was authored by this repository's
+	// configured user.email.
+	Mine bool
 }
 
 // IsRecent reports whether the branch has had a commit within the last 7 days.
@@ -130,6 +133,16 @@ type WorkspaceFile struct {
 // RunGit runs a git command in repoPath with a timeout and returns trimmed stdout.
 // Passes -c core.quotepath=false so UTF-8 Chinese filenames are never octal-escaped.
 func RunGit(ctx context.Context, repoPath string, args ...string) (string, error) {
+	return runGitOutput(ctx, repoPath, true, args...)
+}
+
+// RunGitRaw runs git like RunGit but keeps trailing newlines, for file
+// contents whose exact final bytes are meaningful to a diff.
+func RunGitRaw(ctx context.Context, repoPath string, args ...string) (string, error) {
+	return runGitOutput(ctx, repoPath, false, args...)
+}
+
+func runGitOutput(ctx context.Context, repoPath string, trim bool, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -151,7 +164,11 @@ func RunGit(ctx context.Context, repoPath string, args ...string) (string, error
 		}
 		return stdout.String(), err
 	}
-	return strings.TrimRight(stdout.String(), "\r\n"), nil
+	out := stdout.String()
+	if trim {
+		out = strings.TrimRight(out, "\r\n")
+	}
+	return out, nil
 }
 
 func unquoteGitPath(p string) string {
@@ -163,6 +180,15 @@ func unquoteGitPath(p string) string {
 		return strings.Trim(p, `"`)
 	}
 	return p
+}
+
+// normalizeEmail compares git identities without the angle brackets that
+// for-each-ref prints around %(authoremail).
+func normalizeEmail(email string) string {
+	email = strings.TrimSpace(email)
+	email = strings.TrimPrefix(email, "<")
+	email = strings.TrimSuffix(email, ">")
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
 // InspectRepos inspects all discovered repositories in parallel.
@@ -308,23 +334,31 @@ func InspectRepo(ctx context.Context, repo mani.DiscoveredRepo) RepoStatus {
 	}
 
 	// 3. Branches sorted by recent activity (--sort=-committerdate)
-	refsOut, err := RunGit(ctx, repo.AbsPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname)|%(committerdate:unix)|%(committerdate:relative)", "refs/heads", "refs/remotes/origin")
+	userEmail := ""
+	if out, cfgErr := RunGit(ctx, repo.AbsPath, "config", "user.email"); cfgErr == nil {
+		userEmail = normalizeEmail(out)
+	}
+	refsOut, err := RunGit(ctx, repo.AbsPath, "for-each-ref", "--sort=-committerdate", "--format=%(refname)|%(committerdate:unix)|%(committerdate:relative)|%(authoremail)", "refs/heads", "refs/remotes/origin")
 	if err == nil && refsOut != "" {
 		for _, line := range strings.Split(refsOut, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
 			}
-			parts := strings.SplitN(line, "|", 3)
+			parts := strings.SplitN(line, "|", 4)
 			refName := parts[0]
 			var unixTs int64
-			var relTime string
+			var relTime, authorEmail string
 			if len(parts) >= 2 {
 				unixTs, _ = strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
 			}
-			if len(parts) == 3 {
+			if len(parts) >= 3 {
 				relTime = strings.TrimSpace(parts[2])
 			}
+			if len(parts) == 4 {
+				authorEmail = normalizeEmail(parts[3])
+			}
+			mine := userEmail != "" && authorEmail == userEmail
 			switch {
 			case strings.HasPrefix(refName, "refs/heads/"):
 				b := strings.TrimPrefix(refName, "refs/heads/")
@@ -334,6 +368,7 @@ func InspectRepo(ctx context.Context, repo mani.DiscoveredRepo) RepoStatus {
 					CommitUnix: unixTs,
 					RelTime:    relTime,
 					IsRemote:   false,
+					Mine:       mine,
 				})
 			case strings.HasPrefix(refName, "refs/remotes/origin/"):
 				b := strings.TrimPrefix(refName, "refs/remotes/origin/")
@@ -453,17 +488,17 @@ func GetFileDiff(ctx context.Context, repoPath, relPath string, stagedOnly bool)
 	absFile := filepath.Join(repoPath, cleanRel)
 
 	if stagedOnly {
-		oldOut, _ := RunGit(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
-		newOut, _ := RunGit(ctx, repoPath, "show", ":"+filepath.ToSlash(cleanRel))
+		oldOut, _ := RunGitRaw(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
+		newOut, _ := RunGitRaw(ctx, repoPath, "show", ":"+filepath.ToSlash(cleanRel))
 		patchOut, _ := RunGit(ctx, repoPath, "diff", "--cached", "--", cleanRel)
 		return oldOut, newOut, patchOut, nil
 	}
 
 	// Default: compare HEAD (or index if untracked/conflicted) against current working tree file on disk
-	oldOut, showErr := RunGit(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
+	oldOut, showErr := RunGitRaw(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
 	if showErr != nil {
 		// Might be newly staged or untracked
-		oldOut, _ = RunGit(ctx, repoPath, "show", ":"+filepath.ToSlash(cleanRel))
+		oldOut, _ = RunGitRaw(ctx, repoPath, "show", ":"+filepath.ToSlash(cleanRel))
 	}
 
 	diskBytes, readErr := os.ReadFile(absFile)
@@ -489,7 +524,7 @@ func ReadRepoFile(ctx context.Context, repoPath, relPath string) (currentText st
 	if err != nil {
 		return "", "", err
 	}
-	headOut, _ := RunGit(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
+	headOut, _ := RunGitRaw(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
 	return string(data), headOut, nil
 }
 

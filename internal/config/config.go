@@ -36,6 +36,7 @@ type Config struct {
 	DiffInlineMode      string         `json:"diff_inline_mode"` // "word", "char", "none"
 	EditorFontSize      float32        `json:"editor_font_size"`
 	EditorSoftWrap      bool           `json:"editor_soft_wrap"`
+	NavShowLabels       bool           `json:"nav_show_labels"`
 	IncludeRootRepo     bool           `json:"include_root_repo"`
 	ProtectedBranches   []string       `json:"protected_branches"`
 	BranchPresets       []BranchPreset `json:"branch_presets,omitempty"`
@@ -58,8 +59,8 @@ func Default() Config {
 		Concurrency:         8,
 		DiffSideBySide:      true,
 		DiffInlineMode:      "word",
-		EditorFontSize:      13,
-		EditorSoftWrap:      false,
+		EditorFontSize:      14,
+		EditorSoftWrap:      true,
 		IncludeRootRepo:     true,
 		ProtectedBranches:   []string{"main", "master", "test", "dev", "prod", "production"},
 	}
@@ -117,7 +118,7 @@ func Load() Config {
 		cfg.Concurrency = 8
 	}
 	if cfg.EditorFontSize < 10 || cfg.EditorFontSize > 28 {
-		cfg.EditorFontSize = 13
+		cfg.EditorFontSize = 14
 	}
 	if cfg.Theme == "" {
 		cfg.Theme = "light"

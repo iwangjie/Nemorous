@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
@@ -40,7 +41,7 @@ tasks:
 		_ = os.WriteFile(filepath.Join(dir, "src", "main", "go", "中文模块.go"), []byte("package main\n// 中文模块\n"), 0o644)
 		_, _ = gitops.RunGit(ctx, dir, "add", "-A")
 		_, _ = gitops.RunGit(ctx, dir, "commit", "-m", "init "+name)
-		// Create an older branch (> 7 days ago) to verify stale branch folding
+		// Create an older branch (> 7 days ago) to verify tier ordering keeps it below recent work.
 		_, _ = gitops.RunGit(ctx, dir, "checkout", "-b", "legacy/old-archive")
 		_ = os.WriteFile(filepath.Join(dir, "legacy.txt"), []byte("old\n"), 0o644)
 		_, _ = gitops.RunGit(ctx, dir, "add", "legacy.txt")
@@ -57,12 +58,148 @@ tasks:
 	return ws
 }
 
+func TestCodeTabsReuseAndClose(t *testing.T) {
+	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	ws := setupUITestWorkspace(t)
+	cfg := config.Default()
+	cfg.WorkspacePath = ws
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(ws)
+
+	mainFile := gitops.WorkspaceFile{
+		RepoID: "cloud-caring", RepoName: "cloud-caring",
+		RepoPath: filepath.Join(ws, "cloud-caring"), RelPath: "main.go",
+	}
+	cnFile := gitops.WorkspaceFile{
+		RepoID: "cloud-caring", RepoName: "cloud-caring",
+		RepoPath: filepath.Join(ws, "cloud-caring"), RelPath: "src/main/go/中文模块.go",
+	}
+
+	app.selectCodeFile(mainFile)
+	app.selectCodeFile(cnFile)
+	if len(app.codeTabs) != 2 || app.codeTabIdx != 1 {
+		t.Fatalf("expected two tabs with the second active, got %d tabs idx %d", len(app.codeTabs), app.codeTabIdx)
+	}
+	if !app.expandedCodeRepos["cloud-caring"] {
+		t.Fatal("opening a file should reveal its repository")
+	}
+	if app.codeTabs[0].state.ReadOnly {
+		t.Fatal("files should be editable directly without an edit-mode toggle")
+	}
+	gotoBound := false
+	for _, b := range app.codeTabs[0].state.Bindings {
+		if b.Mods == ui.Cmd && b.Key == ui.KeyG && b.Command == editor.GoToLine {
+			gotoBound = true
+		}
+	}
+	if !gotoBound {
+		t.Fatal("Cmd+G should open go-to-line in the code editor")
+	}
+
+	app.codeTabs[1].state.Buffer.Set(app.codeTabs[1].state.Buffer.String() + "\n// unsaved\n")
+	app.selectCodeFile(mainFile)
+	if len(app.codeTabs) != 2 || app.codeTabIdx != 0 {
+		t.Fatalf("reopening a file must activate its tab, got %d tabs idx %d", len(app.codeTabs), app.codeTabIdx)
+	}
+	if !strings.Contains(app.codeTabs[1].state.Buffer.String(), "// unsaved") {
+		t.Fatal("switching tabs must keep unsaved buffers")
+	}
+
+	app.requestCloseCodeTab(app.codeTabs[1])
+	if app.pendingCodeTabClose == nil {
+		t.Fatal("closing a dirty tab should ask for confirmation")
+	}
+	app.pendingCodeTabClose = nil
+	app.closeCodeTab(app.codeTabs[1])
+	if len(app.codeTabs) != 1 || app.codeTabIdx != 0 {
+		t.Fatalf("closing an inactive tab should keep the active one, got %d tabs idx %d", len(app.codeTabs), app.codeTabIdx)
+	}
+	app.closeCodeTab(app.codeTabs[0])
+	if len(app.codeTabs) != 0 || app.codeTabIdx != -1 {
+		t.Fatalf("closing the last tab should leave no active tab, got %d tabs idx %d", len(app.codeTabs), app.codeTabIdx)
+	}
+}
+
+func TestBatchNotificationFoldsResultToast(t *testing.T) {
+	app := NewApp(config.Default())
+	app.setBatchResults([]gitops.OpResult{{Status: "OK"}, {Status: "FAIL"}})
+	if app.notify == nil || !app.notify.Clickable || app.notify.Kind != "warn" {
+		t.Fatalf("expected a clickable warning result card, got %+v", app.notify)
+	}
+	app.showToast("warn", "推送完成：1 成功，1 失败")
+	if app.notify == nil || !app.notify.Clickable || app.notify.Message != "推送完成：1 成功，1 失败" {
+		t.Fatalf("the result toast should keep the clickable card, got %+v", app.notify)
+	}
+	app.setBatchResults(nil)
+	if app.notify != nil {
+		t.Fatalf("clearing results should dismiss the card, got %+v", app.notify)
+	}
+}
+
+func TestNotificationOpensOperationDetails(t *testing.T) {
+	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	ws := setupUITestWorkspace(t)
+	cfg := config.Default()
+	cfg.WorkspacePath = ws
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(ws)
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+
+	app.setBatchResults([]gitops.OpResult{{Status: "OK"}})
+	app.showToast("ok", "推送完成：1 成功")
+	tt.Frame()
+	if err := tt.Click("点击查看详情"); err != nil {
+		t.Fatalf("result card should offer details: %v", err)
+	}
+	tt.Frame()
+	if !app.showOpLog {
+		t.Fatal("clicking the result card should open the operation log")
+	}
+}
+
+func TestBranchPickerViews(t *testing.T) {
+	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	ws := setupUITestWorkspace(t)
+	cfg := config.Default()
+	cfg.WorkspacePath = ws
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(ws)
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+
+	app.showBranchPicker = true
+	tt.Frame()
+	for _, want := range []string{"拉取全部仓库", "推送待推送仓库", "切换或新建分支…", "我的最近提交", "全部分支与分支组合…"} {
+		if !tt.HasText(want) {
+			t.Fatalf("expected %q in the branch picker", want)
+		}
+	}
+
+	app.branchPickerRepoID = "cloud-caring"
+	tt.Frame()
+	if !tt.HasText("← 全部仓库") || !tt.HasText("legacy/old-archive") {
+		t.Fatal("expected the repository branch view with its local branches")
+	}
+
+	app.branchPickerRepoID = ""
+	app.branchPickerQuery = "main"
+	tt.Frame()
+	if !tt.HasText("分支") || !tt.HasText("main") {
+		t.Fatal("expected branch search results")
+	}
+}
+
 func TestNemorousHeadlessUI(t *testing.T) {
 	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	ws := setupUITestWorkspace(t)
 	cfg := config.Default()
 	cfg.WorkspacePath = ws
 	cfg.IncludeRootRepo = false
+	cfg.NavShowLabels = true
 
 	app := NewApp(cfg)
 	app.LoadWorkspaceSync(ws)
@@ -79,34 +216,30 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("中文模块.go") {
 		t.Fatal("expected Chinese filename 中文模块.go in Changes view")
 	}
-	if !tt.HasText("无改动仓库 (1)") {
-		t.Fatal("expected collapsed clean repositories indicator in Changes view")
+	if tt.HasText("无改动仓库") {
+		t.Fatal("clean repositories should not be listed in the changes view")
+	}
+	if tt.HasText("实时同步中") {
+		t.Fatal("the live sync indicator should be gone from the status bar")
+	}
+	if app.diffState == nil {
+		t.Fatal("expected a diff state after loading the workspace")
+	}
+	if !app.diffState.Wrap || app.diffState.Font.Size != 14 {
+		t.Fatalf("diff should default to wrap with 14pt, got wrap=%v size=%v", app.diffState.Wrap, app.diffState.Font.Size)
 	}
 
-	// Expand collapsed commit options
-	if err := tt.Click("更多选项"); err != nil {
-		t.Fatalf("failed to expand commit options: %v", err)
+	// Commit box keeps only the message, actions and a visible amend toggle.
+	if !tt.HasText("修正") {
+		t.Fatal("amend should be visible next to the commit actions")
 	}
-	if !tt.HasText("常用前缀：") {
-		t.Fatal("expected commit prefixes after expanding commit options")
-	}
-	for _, label := range []string{"修正上一次提交 (--amend)", "仅已暂存", "Stash ▾"} {
-		if !tt.HasText(label) {
-			t.Fatalf("expected %q in commit options", label)
+	for _, gone := range []string{"常用前缀", "提交范围", "生成说明", "逐仓说明", "更多选项", "仅已暂存", "仅当前仓库", "⌘Enter / ⌘⇧Enter"} {
+		if tt.HasText(gone) {
+			t.Fatalf("%q should be removed from the commit box", gone)
 		}
 	}
-
-	// Generate a commit message from the checked changes without leaving the view.
-	app.generateCommitMessage()
-	if !strings.Contains(app.commitMessage, "cloud-caring") || !strings.Contains(app.commitMessage, "2 个文件") {
-		t.Fatalf("expected generated commit message to summarize the checked files, got %q", app.commitMessage)
-	}
-	if !strings.Contains(app.commitMessage, "修改 2") {
-		t.Fatalf("expected generated message to count modified files, got %q", app.commitMessage)
-	}
-	tt.Frame()
-	if !tt.HasText("逐仓说明 · 1") {
-		t.Fatal("expected per-repository message badge after generating")
+	if !tt.HasText("Stash ▾") {
+		t.Fatal("Stash menu should remain in the changes header")
 	}
 
 	// Search filters the tree without changing the checked set.
@@ -116,16 +249,6 @@ func TestNemorousHeadlessUI(t *testing.T) {
 		t.Fatalf("expected search to narrow the file list, got %+v", filtered)
 	}
 	app.changesFilterQuery = ""
-
-	if !app.perRepoMessagesActive() {
-		t.Fatal("generated per-repository messages should match the current selection")
-	}
-	firstKey := "cloud-caring::main.go"
-	app.checkedChanges[firstKey] = false
-	if app.perRepoMessagesActive() {
-		t.Fatal("per-repository messages must be invalidated when the selection changes")
-	}
-	app.checkedChanges[firstKey] = true
 
 	// Keyboard selection: Space toggles the checkbox, arrows move the diff selection.
 	selectedKey := app.selectedChangeKey
@@ -148,8 +271,16 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if app.activeTab != TabCode {
 		t.Fatalf("expected TabCode, got %s", app.activeTab)
 	}
+	if !tt.HasText("cloud-caring") || !tt.HasText("risk-cloud") {
+		t.Fatal("expected repository headers in the file tree")
+	}
+	if tt.HasText("src/main/go") {
+		t.Fatal("repositories should start collapsed in the file tree")
+	}
+	app.expandedCodeRepos["cloud-caring"] = true
+	tt.Frame()
 	if !tt.HasText("src/main/go") {
-		t.Fatal("expected compacted single-child directory src/main/go in file tree")
+		t.Fatal("expected compacted single-child directory src/main/go after expanding the repository")
 	}
 	if err := tt.Click("src/main/go"); err != nil {
 		t.Fatalf("failed to click folder src/main/go in file tree: %v", err)
@@ -168,29 +299,41 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("cloud-caring") || !tt.HasText("risk-cloud") {
 		t.Fatal("expected discovered repositories in Overview table")
 	}
-	// Repository inspector shows a recent-first branch dropdown instead of a flat pill wall.
+	// Repository inspector shows a tier-ordered branch dropdown instead of a flat pill wall.
 	app.selectedRepoID = "cloud-caring"
 	app.showRepoDetailDrawer = true
 	tt.Frame()
-	if !tt.HasText("最近提交优先") || !tt.HasText("切换分支") {
-		t.Fatal("expected recent-first branch dropdown in repository inspector")
+	if !tt.HasText("我的分支优先") || !tt.HasText("切换分支") {
+		t.Fatal("expected tier-ordered branch dropdown in repository inspector")
 	}
 	if tt.HasText("近期活跃分支") {
 		t.Fatal("flat branch pill wall should be gone from the inspector")
 	}
 	app.showRepoDetailDrawer = false
 
-	// 4. Open Branch Switch Modal, verify stale branch folding (>7 days), fuzzy branch search & saving a multi-project branch preset ("AAA 需求")
+	// 4. Open Branch Switch Modal, verify the 7-day activity sections are gone, fuzzy branch search & saving a multi-project branch preset ("AAA 需求")
 	app.openBranchSwitchModal()
 	tt.Frame()
 	if !tt.HasText("切换分支与分支组合") {
 		t.Fatal("expected multi-project branch switch modal")
 	}
-	if !tt.HasText("按层级选择近期分支") {
-		t.Fatal("expected hierarchical recent-branch dropdown in branch modal")
+	if !tt.HasText("按层级选择分支") {
+		t.Fatal("expected a single hierarchical branch dropdown in branch modal")
 	}
-	if !tt.HasText("一周前无变更分支 (1)") {
-		t.Fatal("expected stale branch (>7 days) to be collapsed under 一周前无变更分支 (1)")
+	if tt.HasText("近 7 天活跃") || tt.HasText("一周前无变更分支") {
+		t.Fatal("branch modal must not split branches by 7-day activity anymore")
+	}
+	// Opening the fuzzy list marks branches whose tip I authored with a me badge.
+	tt.Key(0, ui.KeyDown)
+	tt.Frame()
+	meBadge := false
+	for _, text := range tt.Texts() {
+		if text == "me" {
+			meBadge = true
+		}
+	}
+	if !meBadge {
+		t.Fatal("expected a me badge in the branch picker for branches I committed to")
 	}
 	if !tt.HasText("有未提交改动 · 将跳过") {
 		t.Fatal("expected dirty repository warning in branch modal")

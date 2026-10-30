@@ -108,7 +108,11 @@ func fuzzyMatchBranches(branches []gitops.BranchInfo, query string, maxResults i
 			continue
 		}
 		if bi.IsRecent(now) {
-			totalScore += 40
+			if bi.Mine {
+				totalScore += 60
+			} else {
+				totalScore += 40
+			}
 		}
 		matched = append(matched, scoredBranch{info: bi, score: totalScore})
 	}
@@ -130,6 +134,10 @@ func fuzzyMatchBranches(branches []gitops.BranchInfo, query string, maxResults i
 	sort.Slice(matched, func(i, j int) bool {
 		if matched[i].score != matched[j].score {
 			return matched[i].score > matched[j].score
+		}
+		ti, tj := branchPickerTier(matched[i].info, now), branchPickerTier(matched[j].info, now)
+		if ti != tj {
+			return ti < tj
 		}
 		if matched[i].info.CommitUnix != matched[j].info.CommitUnix {
 			return matched[i].info.CommitUnix > matched[j].info.CommitUnix
@@ -200,6 +208,13 @@ func branchFuzzyInput(
 				}
 				drawIcon(c, icoBranch, 12, icCol)
 				ui.Text(c, biCopy.Name).FontSize(12).FontWeight(weightMedium).TextColor(txtCol).SingleLine().Grow(1)
+				if biCopy.Mine {
+					meFg, meBg := p.Accent, p.AccentSoft
+					if hi {
+						meFg, meBg = p.AccentText, p.AccentText.Alpha(0.18)
+					}
+					badgeBox(c, "me", meFg, meBg, ui.Color{}, 9.5, true)
+				}
 				if biCopy.RelTime != "" {
 					ui.Text(c, biCopy.RelTime).FontSize(10.5).TextColor(metaCol).SingleLine()
 				}
@@ -292,7 +307,7 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			})
 			addEntry("act-merge", "操作", "合并分支到 "+a.mergeTargetBranch, "检查冲突并合并", p.Purple, func() {
 				a.activeTab = TabMerge
-				a.TriggerMergePreflight(false)
+				a.TriggerMergeScan()
 			})
 			addEntry("act-refresh", "操作", "刷新仓库状态", "⌘R", p.Accent, func() {
 				a.RefreshAsync()
@@ -393,8 +408,7 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 			})
 		}
 
-		// 2. Unified Input + Activity-Sorted Branches (<=7 days visible, >7 days collapsed)
-		recentBrs, staleBrs := a.BranchesByActivity()
+		// 2. Unified input + one hierarchy ordered by picker tier.
 		allWorkspaceCandidates := a.BranchCandidatesForRepo("")
 
 		ui.Column(c).Gap(6).Children(func() {
@@ -418,43 +432,14 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 				)
 			})
 
-			// Recent Active Branches (within 7 days) — show top 8 directly, scroll if more
-			if len(recentBrs) > 0 {
-				ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, fmt.Sprintf("近 7 天活跃 (%d)：", len(recentBrs))).FontSize(11).TextColor(p.TextMuted)
-					recentTree, _ := a.workspaceBranchTrees()
-					branchMenuPill(c, p, "按层级选择近期分支", false, func(m *ui.Menu) {
-						renderBranchMenu(m, recentTree, a.branchInput, a.branchCoverage, func(target string) {
-							a.SetUnifiedBranchForChecked(target)
-						})
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "我的分支 → 他人最近提交 → 其他").FontSize(11).TextColor(p.TextMuted).Shrink(0)
+				branchMenuPill(c, p, fmt.Sprintf("按层级选择分支 (%d)", len(a.WorkspaceBranches())), false, func(m *ui.Menu) {
+					renderBranchMenu(m, a.branchTree(), a.branchInput, a.branchCoverage, func(target string) {
+						a.SetUnifiedBranchForChecked(target)
 					})
 				})
-			}
-
-			// Collapsible Stale Branches (> 7 days without changes)
-			if len(staleBrs) > 0 {
-				staleToggle := ui.Row(c.Key("modal-stale-toggle")).Padding(2, 0).Gap(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-				if staleToggle.Clicked() {
-					a.showStaleBranchesInModal = !a.showStaleBranchesInModal
-				}
-				staleToggle.Children(func() {
-					chev := icoChevronRight
-					if a.showStaleBranchesInModal {
-						chev = icoChevronDown
-					}
-					drawIcon(c, chev, 11, p.TextMuted)
-					ui.Text(c, fmt.Sprintf("一周前无变更分支 (%d)", len(staleBrs))).FontSize(11).TextColor(p.TextMuted)
-				})
-
-				if a.showStaleBranchesInModal {
-					_, staleTree := a.workspaceBranchTrees()
-					branchMenuPill(c, p, fmt.Sprintf("按层级选择更早分支 (%d)", len(staleBrs)), false, func(m *ui.Menu) {
-						renderBranchMenu(m, staleTree, a.branchInput, a.branchCoverage, func(target string) {
-							a.SetUnifiedBranchForChecked(target)
-						})
-					})
-				}
-			}
+			})
 		})
 
 		// 3. Multi-Project Selection & Per-Project Branch Table
@@ -663,8 +648,10 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 					if a.cfg.EditorFontSize > 17 {
 						a.cfg.EditorFontSize = 12
 					}
-					if a.codeEditorState != nil {
-						a.codeEditorState.Font = ui.Font{Size: a.cfg.EditorFontSize}
+					for _, tab := range a.codeTabs {
+						if tab.state != nil {
+							tab.state.Font = ui.Font{Size: a.cfg.EditorFontSize}
+						}
 					}
 					if a.diffState != nil {
 						a.diffState.Font = ui.Font{Size: a.cfg.EditorFontSize}
@@ -751,6 +738,40 @@ func (a *App) setTheme(t string) {
 	_ = a.cfg.Save()
 }
 
+func (a *App) buildCodeTabCloseModal(c *ui.Context, p Palette) {
+	open := a.pendingCodeTabClose != nil
+	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
+		if !open || a.pendingCodeTabClose == nil {
+			a.pendingCodeTabClose = nil
+			return
+		}
+		tab := a.pendingCodeTabClose
+		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
+		panel.Width(460).Padding(18).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
+		ui.Text(c, "关闭未保存的文件？").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
+		ui.Text(c, fmt.Sprintf("%s/%s 有未保存修改。", tab.file.RepoName, tab.file.RelPath)).FontSize(12.5).TextColor(p.TextPrimary)
+		ui.Text(c, "保存后关闭，或放弃这些修改。").FontSize(11.5).TextColor(p.TextMuted)
+		ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
+			pill(c, p, "取消", false, func() {
+				a.pendingCodeTabClose = nil
+			})
+			pill(c, p, "放弃修改", false, func() {
+				a.pendingCodeTabClose = nil
+				a.closeCodeTab(tab)
+			})
+			pill(c, p, "保存并关闭", true, func() {
+				a.pendingCodeTabClose = nil
+				if a.saveCodeTab(tab) {
+					a.closeCodeTab(tab)
+				}
+			})
+		})
+	})
+	if !open {
+		a.pendingCodeTabClose = nil
+	}
+}
+
 func (a *App) buildUndoConfirmModal(c *ui.Context, p Palette) {
 	open := a.pendingUndo != nil
 	ui.DialogBase(c, &open, func(backdrop, panel ui.Element) {
@@ -830,7 +851,7 @@ func (a *App) buildOpLogModal(c *ui.Context, p Palette) {
 			ui.Text(c, "操作记录").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
 			ui.Row(c).Gap(6).Children(func() {
 				miniBtn(c, p, "清空", func() {
-					a.lastBatchResults = nil
+					a.setBatchResults(nil)
 					a.showOpLog = false
 				})
 				miniBtn(c, p, "关闭", func() { a.showOpLog = false })

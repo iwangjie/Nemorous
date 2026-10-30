@@ -134,19 +134,17 @@ tasks:
 		}
 	}
 
-	// Test Pre-flight Merge Analysis (feature/order-v2 -> main)
-	plans := aimerge.PreflightMergeAll(ctx, repos, "main", false, []string{"main", "master", "test"}, 4)
-	if plans[0].Kind != aimerge.PlanClean || plans[0].AheadCommits != 1 {
-		t.Fatalf("expected service-alpha PlanClean with 1 commit, got %+v", plans[0])
+	// Direct merge (feature/order-v2 -> main) in an isolated worktree.
+	target := aimerge.InspectMergeTarget(ctx, repos[0], "main")
+	if !target.TargetExists || target.AheadCommits != 1 {
+		t.Fatalf("expected service-alpha with 1 commit to merge, got %+v", target)
 	}
-	if plans[2].Kind != aimerge.PlanSkipUpToDate {
-		t.Fatalf("expected service-gamma PlanSkipUpToDate, got %+v", plans[2])
+	if gamma := aimerge.InspectMergeTarget(ctx, repos[2], "main"); gamma.AheadCommits != 0 {
+		t.Fatalf("expected service-gamma to have nothing to merge, got %+v", gamma)
 	}
-
-	// Execute clean worktree merge for service-alpha into main
-	mergeOp := aimerge.ExecuteCleanMerge(ctx, plans[0], false)
-	if mergeOp.Status != "OK" {
-		t.Fatalf("ExecuteCleanMerge failed: %s", mergeOp.Message)
+	outcome := aimerge.MergeIntoBranch(ctx, target, false)
+	if outcome.Result.Status != "OK" {
+		t.Fatalf("MergeIntoBranch failed: %s", outcome.Result.Message)
 	}
 
 	// Verify mani task execution
@@ -177,16 +175,18 @@ func TestConflictDetectionAndAIMergeVerification(t *testing.T) {
 	_, _ = gitops.RunGit(ctx, repoDir, "commit", "-am", "chore: adjust timeout on test")
 	preTarget, _ := gitops.RunGit(ctx, repoDir, "rev-parse", "HEAD")
 
-	// Switch back to feature/timeout-tune and run pre-flight merge check into test
+	// Switch back to feature/timeout-tune and merge directly into test.
 	_, _ = gitops.RunGit(ctx, repoDir, "switch", "feature/timeout-tune")
 	repos, _ := mani.DiscoverRepos(wsDir, false)
-	plans := aimerge.PreflightMergeAll(ctx, repos, "test", false, []string{"main", "test"}, 2)
-	if len(plans) != 1 || plans[0].Kind != aimerge.PlanConflict {
-		t.Fatalf("expected PlanConflict, got %+v", plans)
+	target := aimerge.InspectMergeTarget(ctx, repos[0], "test")
+	outcome := aimerge.MergeIntoBranch(ctx, target, false)
+	if outcome.Result.Status != "CONFLICT" {
+		t.Fatalf("expected a direct conflict, got %+v", outcome.Result)
 	}
-	if len(plans[0].ConflictFiles) != 1 || plans[0].ConflictFiles[0] != "config.yaml" {
-		t.Fatalf("expected conflict file config.yaml, got %v", plans[0].ConflictFiles)
+	if len(outcome.Conflicts) != 1 || outcome.Conflicts[0] != "config.yaml" {
+		t.Fatalf("expected conflict file config.yaml, got %v", outcome.Conflicts)
 	}
+	_ = aimerge.CleanupManualMerge(ctx, repoDir, outcome.Worktree, outcome.Branch)
 
 	// Simulate AI resolving the conflict cleanly on test branch
 	_, _ = gitops.RunGit(ctx, repoDir, "switch", "test")
@@ -293,6 +293,15 @@ func TestChineseFilenamesAndMultiRepoBranchPlan(t *testing.T) {
 		}
 		if len(s.BranchInfos) == 0 {
 			t.Fatalf("expected BranchInfos populated for %s", s.Repo.Name)
+		}
+		mineSeen := false
+		for _, bi := range s.BranchInfos {
+			if !bi.IsRemote && bi.Mine {
+				mineSeen = true
+			}
+		}
+		if !mineSeen {
+			t.Fatalf("expected branches committed with user.email to be marked Mine for %s", s.Repo.Name)
 		}
 	}
 }
@@ -429,7 +438,7 @@ func TestUndoLastCommitAndFileHistory(t *testing.T) {
 	}
 }
 
-func TestPrepareManualMergeLeavesConflicts(t *testing.T) {
+func TestMergeIntoBranchLeavesConflictWorktree(t *testing.T) {
 	ctx := context.Background()
 	repoDir := filepath.Join(t.TempDir(), "risk")
 	initTestRepo(t, repoDir, "main", map[string]string{"risk.go": "package risk\n\nfunc Score(base int) int {\n\treturn base\n}\n"})
@@ -452,14 +461,12 @@ func TestPrepareManualMergeLeavesConflicts(t *testing.T) {
 	run("commit", "-am", "feat: login")
 
 	repo := mani.DiscoveredRepo{ID: "risk", Name: "risk", AbsPath: repoDir}
-	plans := aimerge.PreflightMergeAll(ctx, []mani.DiscoveredRepo{repo}, "test", false, nil, 1)
-	if len(plans) != 1 || plans[0].Kind != aimerge.PlanConflict {
-		t.Fatalf("expected a conflict plan, got %+v", plans)
+	target := aimerge.InspectMergeTarget(ctx, repo, "test")
+	outcome := aimerge.MergeIntoBranch(ctx, target, false)
+	if outcome.Result.Status != "CONFLICT" {
+		t.Fatalf("expected a direct conflict, got %+v", outcome.Result)
 	}
-	worktree, conflicts, err := aimerge.PrepareManualMerge(ctx, plans[0])
-	if err != nil {
-		t.Fatalf("manual merge failed: %v", err)
-	}
+	worktree, conflicts := outcome.Worktree, outcome.Conflicts
 	if len(conflicts) != 1 || conflicts[0] != "risk.go" {
 		t.Fatalf("expected risk.go conflict, got %+v", conflicts)
 	}
@@ -467,10 +474,44 @@ func TestPrepareManualMergeLeavesConflicts(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "<<<<<<<") {
 		t.Fatalf("worktree should contain conflict markers, got %q err=%v", data, err)
 	}
-	if err := aimerge.CleanupManualMerge(ctx, repoDir, worktree); err != nil {
-		t.Fatalf("cleanup failed: %v", err)
+	if err := os.WriteFile(filepath.Join(worktree, "risk.go"), []byte("package risk\n\nfunc Score(base int) int {\n\treturn base + 30\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitops.RunGit(ctx, worktree, "add", "risk.go"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := aimerge.FinishManualMerge(ctx, repoDir, worktree, outcome.Branch, "test", false)
+	if err != nil || res.Status != "OK" {
+		t.Fatalf("finishing manual merge failed: %v %+v", err, res)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Fatalf("worktree directory should be removed, stat err=%v", err)
+	}
+	merged, _ := gitops.RunGit(ctx, repoDir, "show", "test:risk.go")
+	if !strings.Contains(merged, "base + 30") {
+		t.Fatalf("target branch should contain the manual resolution, got %q", merged)
+	}
+}
+
+func TestTrailingBlankLinesSurviveFileReads(t *testing.T) {
+	ctx := context.Background()
+	repoDir := filepath.Join(t.TempDir(), "alpha")
+	content := "line one\n\n"
+	initTestRepo(t, repoDir, "main", map[string]string{"README.md": content})
+
+	current, head, err := gitops.ReadRepoFile(ctx, repoDir, "README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != content || head != content {
+		t.Fatalf("trailing blank lines must survive a file read: current=%q head=%q", current, head)
+	}
+
+	oldText, newText, _, err := gitops.GetFileDiff(ctx, repoDir, "README.md", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldText != newText {
+		t.Fatalf("an unchanged file must diff equal: old=%q new=%q", oldText, newText)
 	}
 }

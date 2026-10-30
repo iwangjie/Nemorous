@@ -10,53 +10,31 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/iwangjie/nemorous/internal/gitops"
 	"github.com/iwangjie/nemorous/internal/mani"
 )
 
-// PlanKind represents the pre-flight merge classification for a repository.
-type PlanKind string
-
-const (
-	PlanClean         PlanKind = "clean"          // Clean 3-way merge possible
-	PlanConflict      PlanKind = "conflict"       // Merge will conflict; eligible for AI resolution
-	PlanSkipProtected PlanKind = "skip_protected" // Currently on main/master/test/dev or target branch
-	PlanSkipDirty     PlanKind = "skip_dirty"     // Working tree has uncommitted changes
-	PlanSkipNoTarget  PlanKind = "skip_no_target" // Target branch does not exist in repo
-	PlanSkipUpToDate  PlanKind = "skip_uptodate"  // Target already contains all commits from source
-	PlanError         PlanKind = "error"
-)
-
-// RepoMergePlan holds the pre-flight merge analysis for one repository.
+// RepoMergePlan describes one controlled merge for the AI conflict resolver.
 type RepoMergePlan struct {
-	Repo          mani.DiscoveredRepo
-	SourceBranch  string
-	TargetBranch  string
-	TargetRef     string
-	AheadCommits  int
-	Kind          PlanKind
-	Summary       string
-	ConflictFiles []string
-	CommitPreview []string
+	Repo         mani.DiscoveredRepo
+	SourceBranch string
+	TargetBranch string
+	TargetRef    string
 }
 
 // VerificationReport holds the machine verification checks after an AI merge resolution.
 type VerificationReport struct {
-	Passed          bool
-	Checks          []VerifyCheck
-	PreTargetSHA    string
-	SourceTipSHA    string
-	MergeCommitSHA  string
-	OrigBranch      string
-	DiffStat        string
-	FullPatch       string
-	FailureReason   string
+	Passed         bool
+	Checks         []VerifyCheck
+	PreTargetSHA   string
+	SourceTipSHA   string
+	MergeCommitSHA string
+	OrigBranch     string
+	DiffStat       string
+	FullPatch      string
+	FailureReason  string
 }
 
 // VerifyCheck represents one machine safety assertion.
@@ -67,255 +45,6 @@ type VerifyCheck struct {
 }
 
 var conflictMarkerRe = regexp.MustCompile(`^(<{7}|={7}|>{7}|\|{7})( |$)`)
-
-// PreflightMergeAll runs non-destructive git merge-tree pre-flight analysis across all repos in parallel.
-func PreflightMergeAll(ctx context.Context, repos []mani.DiscoveredRepo, targetBranch string, fetchFirst bool, protectedBranches []string, concurrency int) []RepoMergePlan {
-	if concurrency <= 0 {
-		concurrency = 8
-	}
-	targetBranch = strings.TrimSpace(targetBranch)
-	plans := make([]RepoMergePlan, len(repos))
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-
-	protected := make(map[string]bool, len(protectedBranches)+1)
-	for _, b := range protectedBranches {
-		protected[strings.TrimSpace(b)] = true
-	}
-	protected[targetBranch] = true
-
-	for i, repo := range repos {
-		wg.Add(1)
-		go func(idx int, r mani.DiscoveredRepo) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			plans[idx] = PreflightMergeRepo(ctx, r, targetBranch, fetchFirst, protected)
-		}(i, repo)
-	}
-	wg.Wait()
-	return plans
-}
-
-// PreflightMergeRepo analyzes whether the current branch of repo can be merged into targetBranch without touching the working tree.
-func PreflightMergeRepo(ctx context.Context, repo mani.DiscoveredRepo, targetBranch string, fetchFirst bool, protected map[string]bool) RepoMergePlan {
-	plan := RepoMergePlan{
-		Repo:         repo,
-		TargetBranch: targetBranch,
-	}
-	if targetBranch == "" {
-		plan.Kind = PlanError
-		plan.Summary = "未指定目标分支"
-		return plan
-	}
-
-	cur, err := gitops.RunGit(ctx, repo.AbsPath, "branch", "--show-current")
-	if err != nil || cur == "" {
-		plan.Kind = PlanSkipProtected
-		plan.Summary = "跳过 (detached HEAD)"
-		return plan
-	}
-	plan.SourceBranch = cur
-
-	if cur == targetBranch || protected[cur] {
-		plan.Kind = PlanSkipProtected
-		plan.Summary = fmt.Sprintf("当前位于 %s 分支，无需合并", cur)
-		return plan
-	}
-
-	// Check working tree cleanliness (tracked modifications or staged changes)
-	porcelain, _ := gitops.RunGit(ctx, repo.AbsPath, "status", "--porcelain", "-uno")
-	if strings.TrimSpace(porcelain) != "" {
-		plan.Kind = PlanSkipDirty
-		plan.Summary = "有未提交的改动，请先提交或暂存"
-		return plan
-	}
-
-	if fetchFirst {
-		_, _ = gitops.RunGit(ctx, repo.AbsPath, "fetch", "origin", targetBranch, "--quiet")
-	}
-
-	// Locate targetRef (prefer origin/<targetBranch> if available, fallback to local <targetBranch>)
-	targetRef := ""
-	if _, err := gitops.RunGit(ctx, repo.AbsPath, "show-ref", "--verify", "--quiet", "refs/remotes/origin/"+targetBranch); err == nil {
-		targetRef = "origin/" + targetBranch
-	} else if _, err := gitops.RunGit(ctx, repo.AbsPath, "show-ref", "--verify", "--quiet", "refs/heads/"+targetBranch); err == nil {
-		targetRef = targetBranch
-	} else {
-		plan.Kind = PlanSkipNoTarget
-		plan.Summary = fmt.Sprintf("未找到 %s 分支", targetBranch)
-		return plan
-	}
-	plan.TargetRef = targetRef
-
-	// Count commits in HEAD not yet in targetRef
-	cntStr, err := gitops.RunGit(ctx, repo.AbsPath, "rev-list", "--count", targetRef+"..HEAD")
-	if err != nil {
-		plan.Kind = PlanError
-		plan.Summary = "无法计算提交差异: " + err.Error()
-		return plan
-	}
-	ahead, _ := strconv.Atoi(strings.TrimSpace(cntStr))
-	plan.AheadCommits = ahead
-	if ahead == 0 {
-		plan.Kind = PlanSkipUpToDate
-		plan.Summary = fmt.Sprintf("%s 已包含当前分支全部提交", targetBranch)
-		return plan
-	}
-
-	// Grab commit preview lines
-	logOut, _ := gitops.RunGit(ctx, repo.AbsPath, "log", "--oneline", "-n", "5", targetRef+"..HEAD")
-	if logOut != "" {
-		plan.CommitPreview = strings.Split(logOut, "\n")
-	}
-
-	// Run non-destructive in-memory merge-tree
-	mtOut, mtErr := gitops.RunGit(ctx, repo.AbsPath, "merge-tree", "--write-tree", targetRef, "HEAD")
-	if mtErr == nil {
-		plan.Kind = PlanClean
-		plan.Summary = fmt.Sprintf("可直接合并（%d 个新提交）", ahead)
-		return plan
-	}
-
-	// Parse conflicted files from merge-tree output
-	conflicts := parseMergeTreeConflicts(mtOut)
-	plan.Kind = PlanConflict
-	plan.ConflictFiles = conflicts
-	if len(conflicts) > 0 {
-		plan.Summary = fmt.Sprintf("检测到冲突 %s → %s (%d 个冲突文件: %s)", cur, targetBranch, len(conflicts), strings.Join(conflicts, ", "))
-	} else {
-		plan.Summary = fmt.Sprintf("检测到冲突 %s → %s (可交由 AI 解决)", cur, targetBranch)
-	}
-	return plan
-}
-
-func parseMergeTreeConflicts(out string) []string {
-	seen := make(map[string]bool)
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "CONFLICT (") {
-			if idx := strings.Index(line, " in "); idx >= 0 {
-				file := strings.TrimSpace(line[idx+4:])
-				if file != "" {
-					seen[file] = true
-				}
-			}
-		}
-	}
-	var list []string
-	for f := range seen {
-		list = append(list, f)
-	}
-	sort.Strings(list)
-	return list
-}
-
-// ExecuteCleanMerge safely merges sourceBranch into targetBranch using an isolated temporary git worktree
-// (matching workspace/mani.yaml's safe worktree merge pattern so the user's current branch is untouched).
-func ExecuteCleanMerge(ctx context.Context, plan RepoMergePlan, pushRemote bool) gitops.OpResult {
-	start := time.Now()
-	r := plan.Repo
-	if plan.Kind != PlanClean {
-		return gitops.OpResult{
-			RepoID:   r.ID,
-			RepoName: r.Name,
-			Status:   "SKIP",
-			Message:  plan.Summary,
-			Duration: time.Since(start),
-		}
-	}
-
-	tmpDir, err := os.MkdirTemp("", "nemorous-merge-"+r.Name+"-*")
-	if err != nil {
-		return gitops.OpResult{RepoID: r.ID, RepoName: r.Name, Status: "FAIL", Message: err.Error(), Err: err}
-	}
-	_ = os.RemoveAll(tmpDir) // git worktree add expects non-existent or empty target dir
-	defer func() {
-		_, _ = gitops.RunGit(context.Background(), r.AbsPath, "worktree", "remove", "--force", tmpDir)
-		_ = os.RemoveAll(tmpDir)
-	}()
-
-	// Add worktree detached at targetRef
-	if _, err := gitops.RunGit(ctx, r.AbsPath, "worktree", "add", "--detach", "--quiet", tmpDir, plan.TargetRef); err != nil {
-		return gitops.OpResult{RepoID: r.ID, RepoName: r.Name, Status: "FAIL", Message: "创建临时 worktree 失败: " + err.Error(), Duration: time.Since(start), Err: err}
-	}
-
-	// Merge sourceBranch into the temporary worktree
-	mergeMsg := fmt.Sprintf("Merge branch '%s' into %s", plan.SourceBranch, plan.TargetBranch)
-	if _, err := gitops.RunGit(ctx, tmpDir, "merge", "--no-edit", "-m", mergeMsg, plan.SourceBranch); err != nil {
-		_, _ = gitops.RunGit(ctx, tmpDir, "merge", "--abort")
-		return gitops.OpResult{RepoID: r.ID, RepoName: r.Name, Status: "FAIL", Message: "合并失败: " + err.Error(), Duration: time.Since(start), Err: err}
-	}
-
-	// Update local targetBranch ref to the merged HEAD if targetBranch isn't currently checked out
-	mergedSHA, err := gitops.RunGit(ctx, tmpDir, "rev-parse", "HEAD")
-	if err == nil && mergedSHA != "" {
-		_, _ = gitops.RunGit(ctx, r.AbsPath, "branch", "-f", plan.TargetBranch, mergedSHA)
-	}
-
-	if pushRemote {
-		if _, err := gitops.RunGit(ctx, tmpDir, "push", "origin", "HEAD:refs/heads/"+plan.TargetBranch, "--quiet"); err != nil {
-			return gitops.OpResult{
-				RepoID:   r.ID,
-				RepoName: r.Name,
-				Status:   "FAIL",
-				Message:  fmt.Sprintf("已在本地合入 %s，但推送远端失败: %v", plan.TargetBranch, err),
-				Duration: time.Since(start),
-				Err:      err,
-			}
-		}
-		return gitops.OpResult{
-			RepoID:   r.ID,
-			RepoName: r.Name,
-			Status:   "OK",
-			Message:  fmt.Sprintf("已安全合并 %s → %s (%d commits) 并推送 origin/%s", plan.SourceBranch, plan.TargetBranch, plan.AheadCommits, plan.TargetBranch),
-			Duration: time.Since(start),
-		}
-	}
-
-	return gitops.OpResult{
-		RepoID:   r.ID,
-		RepoName: r.Name,
-		Status:   "OK",
-		Message:  fmt.Sprintf("已在本地安全合并 %s → %s (%d commits)", plan.SourceBranch, plan.TargetBranch, plan.AheadCommits),
-		Duration: time.Since(start),
-	}
-}
-
-// PrepareManualMerge creates an isolated worktree at the target branch and starts
-// the merge there, leaving conflicts in place for manual resolution. It never
-// touches the user's working tree and never pushes.
-func PrepareManualMerge(ctx context.Context, plan RepoMergePlan) (worktree string, conflicts []string, err error) {
-	r := plan.Repo
-	tmpDir, err := os.MkdirTemp("", "nemorous-manual-"+r.Name+"-*")
-	if err != nil {
-		return "", nil, err
-	}
-	_ = os.RemoveAll(tmpDir)
-	if _, err := gitops.RunGit(ctx, r.AbsPath, "worktree", "add", "--detach", "--quiet", tmpDir, plan.TargetRef); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", nil, fmt.Errorf("创建临时 worktree 失败: %w", err)
-	}
-	mergeMsg := fmt.Sprintf("Merge branch '%s' into %s", plan.SourceBranch, plan.TargetBranch)
-	if _, err := gitops.RunGit(ctx, tmpDir, "merge", "--no-edit", "-m", mergeMsg, plan.SourceBranch); err != nil {
-		out, _ := gitops.RunGit(ctx, tmpDir, "diff", "--name-only", "--diff-filter=U")
-		for _, line := range strings.Split(out, "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				conflicts = append(conflicts, line)
-			}
-		}
-		// Conflicts are the expected outcome of a manual merge; leave them in place.
-		return tmpDir, conflicts, nil
-	}
-	return tmpDir, nil, nil
-}
-
-// CleanupManualMerge removes a manual merge worktree and its temporary directory.
-func CleanupManualMerge(ctx context.Context, repoPath, worktree string) error {
-	_, err := gitops.RunGit(ctx, repoPath, "worktree", "remove", "--force", worktree)
-	_ = os.RemoveAll(worktree)
-	return err
-}
 
 // ResolveConflictWithAI performs a controlled merge of sourceBranch into targetBranch, invokes the AI Agent
 // to resolve conflicts, streams progress via onLog, and runs strict machine verification (VerifyAIMerge).

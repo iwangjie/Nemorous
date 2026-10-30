@@ -15,9 +15,6 @@ func (a *App) buildOverviewView(c *ui.Context, p Palette) {
 
 	var filtered []gitops.RepoStatus
 	for _, st := range a.statuses {
-		if a.repoFilterID != "" && st.Repo.ID != a.repoFilterID {
-			continue
-		}
 		switch a.overviewFilter {
 		case "dirty":
 			if !st.Dirty() {
@@ -29,10 +26,6 @@ func (a *App) buildOverviewView(c *ui.Context, p Palette) {
 			}
 		case "behind":
 			if st.Behind == 0 {
-				continue
-			}
-		case "unaligned":
-			if st.Branch == domBranch {
 				continue
 			}
 		}
@@ -104,9 +97,6 @@ func (a *App) buildOverviewFilterBar(c *ui.Context, p Palette, total, dirty, ahe
 			if behind > 0 {
 				fChip("behind", "待拉取", behind)
 			}
-			if unaligned > 0 {
-				fChip("unaligned", "分支不一致", unaligned)
-			}
 		})
 
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -120,7 +110,7 @@ func (a *App) buildOverviewFilterBar(c *ui.Context, p Palette, total, dirty, ahe
 			})
 			iconPill(c, p, icoMerge, "合并分支...", false, func() {
 				a.activeTab = TabMerge
-				a.TriggerMergePreflight(false)
+				a.TriggerMergeScan()
 			})
 		})
 	})
@@ -156,7 +146,6 @@ func (a *App) buildRepoMatrixTable(c *ui.Context, p Palette, list []gitops.RepoS
 					ui.Text(c, "没有符合筛选条件的仓库").FontSize(13).FontWeight(weightSemibold).TextColor(p.TextSecondary)
 					miniBtn(c, p, "显示全部仓库", func() {
 						a.overviewFilter = "all"
-						a.repoFilterID = ""
 					})
 				})
 				return
@@ -252,13 +241,11 @@ func (a *App) buildRepoMatrixTable(c *ui.Context, p Palette, list []gitops.RepoS
 					ui.Row(kc).Width(170).Justify(ui.End).Gap(6).Shrink(0).Children(func() {
 						if len(stCopy.Files) > 0 {
 							miniBtn(kc, p, "查看改动", func() {
-								a.repoFilterID = stCopy.Repo.ID
 								a.selectChangedFile(stCopy.Files[0])
 								a.activeTab = TabChanges
 							})
 						}
 						miniBtn(kc, p, "浏览文件", func() {
-							a.repoFilterID = stCopy.Repo.ID
 							a.activeTab = TabCode
 						})
 						miniBtn(kc, p, "详情", func() {
@@ -282,7 +269,7 @@ func (a *App) buildBatchResultBanner(c *ui.Context, p Palette) {
 			ui.Text(c, fmt.Sprintf("操作结果：%d 成功 · %d 跳过 · %d 失败", okCnt, skipCnt, failCnt)).
 				FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary)
 			miniBtn(c, p, "收起", func() {
-				a.lastBatchResults = nil
+				a.setBatchResults(nil)
 			})
 		})
 		ui.Row(c).Wrap().Gap(6).Children(func() {
@@ -330,7 +317,7 @@ func (a *App) buildRightInspector(c *ui.Context, p Palette, st *gitops.RepoStatu
 				go func(r mani.DiscoveredRepo) {
 					res := gitops.PullAll(context.Background(), []mani.DiscoveredRepo{r}, 1)
 					a.runUI(func() {
-						a.lastBatchResults = res
+						a.setBatchResults(res)
 						a.RefreshAsync()
 					})
 				}(stCopy.Repo)
@@ -339,7 +326,7 @@ func (a *App) buildRightInspector(c *ui.Context, p Palette, st *gitops.RepoStatu
 				go func(r mani.DiscoveredRepo) {
 					res := gitops.BatchPush(context.Background(), []mani.DiscoveredRepo{r}, 1)
 					a.runUI(func() {
-						a.lastBatchResults = res
+						a.setBatchResults(res)
 						a.RefreshAsync()
 					})
 				}(stCopy.Repo)
@@ -348,7 +335,7 @@ func (a *App) buildRightInspector(c *ui.Context, p Palette, st *gitops.RepoStatu
 				go func(r mani.DiscoveredRepo) {
 					res := gitops.SwitchBranchAll(context.Background(), []mani.DiscoveredRepo{r}, stCopy.DefaultBranch, false, 1)
 					a.runUI(func() {
-						a.lastBatchResults = res
+						a.setBatchResults(res)
 						a.RefreshAsync()
 					})
 				}(stCopy.Repo)
@@ -360,7 +347,7 @@ func (a *App) buildRightInspector(c *ui.Context, p Palette, st *gitops.RepoStatu
 			ui.Column(c).Gap(6).Children(func() {
 				ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 					ui.Text(c, "切换分支").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
-					ui.Text(c, "最近提交优先").FontSize(10.5).TextColor(p.TextMuted)
+					ui.Text(c, "我的分支优先").FontSize(10.5).TextColor(p.TextMuted)
 				})
 				ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
 					tree := a.repoBranchTrees[stCopy.Repo.ID]

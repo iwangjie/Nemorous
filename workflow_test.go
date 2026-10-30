@@ -4,7 +4,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/egoist/mygo"
 	"github.com/iwangjie/nemorous/internal/aimerge"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/gitops"
@@ -50,59 +52,71 @@ func branchNames(n *branchNode) []string {
 	return names
 }
 
-func TestBuildCommitMessagesPerRepo(t *testing.T) {
-	files := []gitops.ChangedFile{
-		{RepoID: "alpha", RepoName: "alpha", Path: "src/a.go", Kind: "M", AddedLines: 2, DeletedLines: 1},
-		{RepoID: "alpha", RepoName: "alpha", Path: "src/b.go", Kind: "A"},
-		{RepoID: "beta", RepoName: "beta", Path: "README.md", Kind: "D", DeletedLines: 4},
+func TestBranchPickerOrdersMineThenRecentThenRest(t *testing.T) {
+	now := time.Now().Unix()
+	day := int64(24 * time.Hour / time.Second)
+	branches := []gitops.BranchInfo{
+		{Name: "mine-old", CommitUnix: now - 30*day, Mine: true},
+		{Name: "other-old", CommitUnix: now - 20*day},
+		{Name: "other-recent", CommitUnix: now - 2*day},
+		{Name: "mine-recent", CommitUnix: now - 3*day, Mine: true},
 	}
-	set := buildCommitMessages(files)
+	sortBranchesForPicker(branches)
 
-	for _, want := range []string{"更新 alpha、beta", "2 个仓库", "3 个文件", "新增 1", "修改 1", "删除 1"} {
-		if !strings.Contains(set.root, want) {
-			t.Fatalf("root message missing %q:\n%s", want, set.root)
-		}
+	got := make([]string, 0, len(branches))
+	for _, bi := range branches {
+		got = append(got, bi.Name)
 	}
-	alpha := set.byRepo["alpha"]
-	if !strings.Contains(alpha, "更新 alpha 的 2 个文件") || !strings.Contains(alpha, "src/a.go") {
-		t.Fatalf("alpha message should list its own files:\n%s", alpha)
+	want := "mine-recent,other-recent,other-old,mine-old"
+	if strings.Join(got, ",") != want {
+		t.Fatalf("expected picker order %s, got %s", want, strings.Join(got, ","))
 	}
-	if strings.Contains(alpha, "README.md") {
-		t.Fatalf("alpha message must not mention another repository's files:\n%s", alpha)
+}
+
+func TestBranchTreePickerTierOrder(t *testing.T) {
+	now := time.Now().Unix()
+	day := int64(24 * time.Hour / time.Second)
+	root := buildBranchTree([]gitops.BranchInfo{
+		{Name: "team/old", CommitUnix: now - 30*day},
+		{Name: "team/recent", CommitUnix: now - int64(time.Hour/time.Second)},
+		{Name: "mine/recent", CommitUnix: now - 2*3600, Mine: true},
+	})
+
+	if got := branchNames(root); strings.Join(got, ",") != "mine,team" {
+		t.Fatalf("expected my branch group first, got %v", got)
 	}
-	if beta := set.byRepo["beta"]; beta != "更新 beta：README.md" {
-		t.Fatalf("single-file repository message should name the file, got %q", beta)
+	if !root.children[0].children[0].mine {
+		t.Fatal("expected the branch authored by me to carry the me marker")
+	}
+	team := root.children[1]
+	if got := branchNames(team); strings.Join(got, ",") != "recent,old" {
+		t.Fatalf("expected recent teammate branch before stale one, got %v", got)
 	}
 }
 
 func TestMergeSelectionDefaultsAndPreservesChoices(t *testing.T) {
 	app := NewApp(config.Default())
-	app.statuses = []gitops.RepoStatus{
-		{Repo: mani.DiscoveredRepo{ID: "alpha"}},
-		{Repo: mani.DiscoveredRepo{ID: "beta"}},
-		{Repo: mani.DiscoveredRepo{ID: "gamma"}},
-	}
 	app.mergeCheckedRepos["beta"] = false
 
-	app.syncMergeSelection([]aimerge.RepoMergePlan{
-		{Repo: mani.DiscoveredRepo{ID: "alpha"}, Kind: aimerge.PlanClean},
-		{Repo: mani.DiscoveredRepo{ID: "beta"}, Kind: aimerge.PlanClean},
-		{Repo: mani.DiscoveredRepo{ID: "gamma"}, Kind: aimerge.PlanSkipUpToDate},
-	})
-	if !app.mergePlanChecked("alpha") {
-		t.Fatal("clean plans should be selected by default")
+	targets := []aimerge.MergeTarget{
+		{Repo: mani.DiscoveredRepo{ID: "alpha"}, TargetExists: true, SourceBranch: "feat", TargetBranch: "test", AheadCommits: 2},
+		{Repo: mani.DiscoveredRepo{ID: "beta"}, TargetExists: true, SourceBranch: "feat", TargetBranch: "test", AheadCommits: 2},
+		{Repo: mani.DiscoveredRepo{ID: "gamma"}, TargetExists: true, SourceBranch: "feat", TargetBranch: "test", AheadCommits: 0},
 	}
-	if app.mergePlanChecked("beta") {
-		t.Fatal("an explicit deselection must survive a preflight")
+	app.syncMergeSelection(targets)
+	if !app.mergeRepoChecked("alpha") {
+		t.Fatal("mergeable repositories should be selected by default")
 	}
-	if app.mergePlanChecked("gamma") {
-		t.Fatal("plans without work should stay unselected")
+	if app.mergeRepoChecked("beta") {
+		t.Fatal("an explicit deselection must survive a rescan")
+	}
+	if app.mergeRepoChecked("gamma") {
+		t.Fatal("repositories with no new commits should stay unselected")
 	}
 
-	// Stale repositories disappear from the selection after a new preflight.
-	app.syncMergeSelection([]aimerge.RepoMergePlan{{Repo: mani.DiscoveredRepo{ID: "alpha"}, Kind: aimerge.PlanClean}})
+	app.syncMergeSelection(targets[:1])
 	if _, ok := app.mergeCheckedRepos["beta"]; ok {
-		t.Fatal("repositories missing from the preflight should be dropped")
+		t.Fatal("repositories missing from the scan should be dropped")
 	}
 }
 
@@ -132,16 +146,7 @@ func TestCommitTargetsFollowScope(t *testing.T) {
 		t.Fatalf("expected one target per repository, got %+v", targets)
 	}
 	if len(targets[0].Files) != 1 || targets[0].Files[0] != "a.go" {
-		t.Fatalf("checked scope should stage only the checked file, got %+v", targets[0].Files)
-	}
-
-	app.commitScope = "staged"
-	targets = app.commitTargets()
-	if len(targets) != 1 || targets[0].Repo.ID != "alpha" {
-		t.Fatalf("staged scope should include only repositories with staged files, got %+v", targets)
-	}
-	if len(targets[0].Files) != 0 {
-		t.Fatalf("staged scope must commit the index as-is, got %+v", targets[0].Files)
+		t.Fatalf("checked files should be committed, got %+v", targets[0].Files)
 	}
 }
 
@@ -169,25 +174,13 @@ func TestMergePresetPersistence(t *testing.T) {
 	}
 }
 
-func TestCommitAvailabilityByScope(t *testing.T) {
+func TestCommitAvailabilityRequiresCheckedFiles(t *testing.T) {
 	app := NewApp(config.Default())
-	app.commitScope = "checked"
-	if ok, _ := app.commitAvailability(0, 0); ok {
-		t.Fatal("checked scope with no files must be unavailable")
+	if ok, hint := app.commitAvailability(0); ok || !strings.Contains(hint, "勾选") {
+		t.Fatalf("no checked files must be unavailable with a hint, got %v %q", ok, hint)
 	}
-	if ok, _ := app.commitAvailability(3, 0); !ok {
-		t.Fatal("checked scope with files must be available")
-	}
-	app.commitScope = "staged"
-	if ok, hint := app.commitAvailability(3, 0); ok || !strings.Contains(hint, "暂存") {
-		t.Fatalf("staged scope without staged files must explain why, got %v %q", ok, hint)
-	}
-	if ok, _ := app.commitAvailability(3, 1); !ok {
-		t.Fatal("staged scope with staged files must be available")
-	}
-	app.commitScope = "current"
-	if ok, _ := app.commitAvailability(3, 1); ok {
-		t.Fatal("current-repository scope needs a selected file")
+	if ok, _ := app.commitAvailability(3); !ok {
+		t.Fatal("checked files must be committable")
 	}
 }
 
@@ -245,5 +238,27 @@ func TestRenderedChangeFilesSkipsCollapsedDirs(t *testing.T) {
 	delete(app.collapsedChangeDirs, "r::src")
 	if visible := app.renderedChangeFiles("r", tree); len(visible) != 2 {
 		t.Fatalf("expanded folders should expose all files, got %+v", visible)
+	}
+}
+
+func TestClassifyWatchHints(t *testing.T) {
+	app := NewApp(config.Default())
+	app.repos = []mani.DiscoveredRepo{
+		{ID: "alpha", RelPath: "alpha"},
+		{ID: "beta", RelPath: "beta"},
+	}
+	ids, listFiles, workspaceLevel := app.classifyWatchHints([]mygo.FileEvent{{Path: "alpha/src", Op: mygo.FileHint}})
+	if workspaceLevel || !listFiles || len(ids) != 1 || !ids["alpha"] {
+		t.Fatalf("source hint should refresh one repo and its files, got ids=%v files=%v ws=%v", ids, listFiles, workspaceLevel)
+	}
+	ids, listFiles, workspaceLevel = app.classifyWatchHints([]mygo.FileEvent{{Path: "beta/.git", Op: mygo.FileHint}})
+	if workspaceLevel || listFiles || len(ids) != 1 || !ids["beta"] {
+		t.Fatalf("git hint should refresh status only, got ids=%v files=%v ws=%v", ids, listFiles, workspaceLevel)
+	}
+	if _, _, workspaceLevel = app.classifyWatchHints([]mygo.FileEvent{{Path: ".", Op: mygo.FileHint}}); !workspaceLevel {
+		t.Fatal("workspace root hints need a full rediscovery")
+	}
+	if _, _, workspaceLevel = app.classifyWatchHints([]mygo.FileEvent{{Path: "unknown", Op: mygo.FileHint}}); !workspaceLevel {
+		t.Fatal("unknown paths need a full rediscovery")
 	}
 }
