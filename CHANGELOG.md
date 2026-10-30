@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- 修复 Darcula 主题的区域配色，使其真正还原 IntelliJ IDEA：
+  - 工具窗口、侧栏、Git 面板与编辑器头部统一使用 IDEA 的 `#3D3F41`，编辑器与 Diff 内容保持 `#2B2B2B`，不再出现侧栏与编辑器同为黑色的层次错位。
+  - 工具窗口中的按钮/输入控件改用 IDEA 的 `#45494A`，修复控件与工具窗口同色而“消失”的问题。
+
 ## 0.2.1
 
 - **IDEA 风格已暂存与未暂存分组隔离 (Staged vs Unstaged Separation)**：

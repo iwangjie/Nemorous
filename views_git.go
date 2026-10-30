@@ -344,7 +344,7 @@ func (a *App) buildGitFilterBar(c *ui.Context, p Palette) {
 		branchLabel = a.gitFilterBranch
 	}
 
-	ui.Row(c).Padding(8, 10).Gap(6).Wrap().Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
+	ui.Row(c).Padding(8, 10).Gap(6).Wrap().Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
 		sf := ui.SearchField(c.Key("git-filter-q"), &a.gitFilterText).Bind(&a.gitFilterHandle).Placeholder("提交信息 / 哈希 / 正则...").Width(220)
 		if sf.Changed() {
 			a.reloadGitLog()
@@ -608,7 +608,7 @@ func (a *App) buildGitBranchRow(c *ui.Context, p Palette, st gitops.RepoStatus, 
 }
 
 func (a *App) buildGitCommitList(c *ui.Context, p Palette) {
-	ui.Column(c).FillHeight().Background(p.Surface).Children(func() {
+	ui.Column(c).FillHeight().Background(p.RailBg).Children(func() {
 		if len(a.gitLogTargets) == 0 {
 			ui.Column(c).Grow(1).Center().Gap(4).Children(func() {
 				ui.Text(c, "没有匹配的提交").FontSize(12).FontWeight(weightSemibold).TextColor(p.TextSecondary)
@@ -674,7 +674,7 @@ func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutt
 	if selected {
 		rowEl.Background(p.ActiveRowBg)
 	} else if rowEl.Hovered() {
-		rowEl.Background(p.RailBg)
+		rowEl.Background(p.SurfaceHover)
 	}
 	if rowEl.Clicked() {
 		a.gitAutoSelected = false
@@ -797,7 +797,7 @@ func gitRelTime(unix int64) string {
 }
 
 func (a *App) buildGitDetails(c *ui.Context, p Palette) {
-	ui.Column(c).FillHeight().Background(p.Surface).Children(func() {
+	ui.Column(c).FillHeight().Background(p.RailBg).Children(func() {
 		if a.gitDetail == nil && !a.gitDetailLoading {
 			ui.Column(c).Grow(1).Center().Gap(4).Children(func() {
 				ui.Text(c, "选择提交查看详情").FontSize(12).FontWeight(weightSemibold).TextColor(p.TextSecondary)
@@ -1270,7 +1270,7 @@ func (a *App) closeGitCommitDiff() {
 
 func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 	ui.Column(c).Grow(1).Fill().Background(p.AppBg).Children(func() {
-		ui.Row(c).Height(44).FillWidth().Padding(0, 14).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Height(44).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
 				miniBtn(c, p, "← 返回提交图", func() {
 					a.closeGitCommitDiff()

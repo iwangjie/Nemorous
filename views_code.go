@@ -167,7 +167,7 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 		})
 
 		// One continuous explorer: workspace root → repositories → directories.
-		ui.Column(c).Grow(1).Background(p.Surface).Children(func() {
+		ui.Column(c).Grow(1).Background(p.RailBg).Children(func() {
 			ui.Scroll(c).Grow(1).Children(func() {
 				rootName := filepath.Base(a.cfg.WorkspacePath)
 				if rootName == "" || rootName == "." {
@@ -177,7 +177,7 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 				rkc := c.Key("croot")
 				rootRow := ui.Row(rkc).Height(codeTreeRootHeight).Padding(0, 10).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 				if rootRow.Hovered() {
-					rootRow.Background(p.RailBg)
+					rootRow.Background(p.SurfaceHover)
 				}
 				if rootRow.Clicked() && query == "" {
 					a.codeRootCollapsed = !a.codeRootCollapsed
@@ -251,9 +251,9 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		expanded := forceExpand || a.expandedCodeDirs[dirKey]
 
 		dkc := c.Key("dir-" + dirKey)
-		dRow := ui.Row(dkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent).Gap(5).Background(p.Surface).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+		dRow := ui.Row(dkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent).Gap(5).Background(p.RailBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 		if dRow.Hovered() {
-			dRow.Background(p.RailBg)
+			dRow.Background(p.SurfaceHover)
 		}
 		if dRow.Clicked() {
 			a.expandedCodeDirs[dirKey] = !a.expandedCodeDirs[dirKey]
@@ -279,7 +279,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		wfCopy := wf
 		activeFile := a.activeCodeFile()
 		selected := activeFile != nil && activeFile.RepoID == wf.RepoID && activeFile.RelPath == wf.RelPath
-		rowBg := p.Surface
+		rowBg := p.RailBg
 		textCol := p.TextSecondary
 		if selected {
 			rowBg = p.ActiveRowBg
@@ -290,7 +290,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		fkc := c.Key("wf-" + wf.RepoID + "::" + wf.RelPath)
 		fRow := ui.Row(fkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent+codeTreeChevronSlot).Gap(5).Background(rowBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 		if fRow.Hovered() && !selected {
-			fRow.Background(p.RailBg)
+			fRow.Background(p.SurfaceHover)
 		}
 		if fRow.Clicked() {
 			a.selectCodeFile(wfCopy)
@@ -421,7 +421,7 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 		wf := tab.file
 		isModified := tab.dirty()
 
-		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
 				badgeBox(c, wf.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
 				ui.Text(c, wf.RelPath).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()

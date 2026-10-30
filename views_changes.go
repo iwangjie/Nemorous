@@ -163,7 +163,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 		}
 	}
 
-	ui.Column(c).Fill().Padding(6).Gap(6).Background(p.Surface).Children(func() {
+	ui.Column(c).Fill().Padding(6).Gap(6).Background(p.RailBg).Children(func() {
 		visibleFiles := make([]gitops.ChangedFile, 0, visibleTotal)
 		for _, st := range dirtyStatuses {
 			visibleFiles = append(visibleFiles, filteredByRepo[st.Repo.ID]...)
@@ -751,7 +751,7 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 
 	canCommit, commitHint := a.commitAvailability(checkedFiles)
 
-	ui.Column(c).Padding(8).Gap(6).Radius(8).Background(p.RailBg).Border(1, p.Border).Children(func() {
+	ui.Column(c).Padding(8).Gap(6).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
 		ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").Lines(2, 6).FillWidth()
 
 		ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
@@ -796,7 +796,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 		isDirty := a.diffModified || (a.diffState != nil && a.diffState.New != nil && a.diffState.New.Modified())
 
 		// Clean Diff Header Bar
-		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
 				badgeBox(c, cf.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
 				if cf.OrigPath != "" {
