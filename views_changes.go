@@ -933,17 +933,6 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					splitBtn(false, "单栏")
 				})
 
-				editLabel := "编辑"
-				if a.diffEditable {
-					editLabel = "退出编辑"
-				}
-				iconPill(c, p, icoEdit, editLabel, a.diffEditable, func() {
-					a.diffEditable = !a.diffEditable
-					if a.diffState != nil {
-						a.diffState.Editable = a.diffEditable
-					}
-				})
-
 				if a.diffEditable || isDirty {
 					pill(c, p, "保存 (⌘S)", true, func() {
 						a.saveDiffMicroEdit()
@@ -960,12 +949,13 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					a.activeTab = TabCode
 				})
 
-				// Collapsible Display Options
 				ghostBtn(c, p, icoMore, "", a.showDiffOptions, func() {
 					a.showDiffOptions = !a.showDiffOptions
 				})
 			})
 		})
+
+		a.buildDiffToolbar(c, p, a.diffState)
 
 		// Collapsible Diff Display Options Bar ("不常用操作折叠起来，必要时候也能用")
 		if a.showDiffOptions {
@@ -1016,6 +1006,59 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 
 		// DiffView
 		editor.DiffView(c, a.diffState).Grow(1).FillWidth()
+	})
+}
+
+// buildDiffToolbar draws IDEA's file-diff actions: previous/next change,
+// edit, and previous/next file.
+func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState) {
+	if state == nil {
+		return
+	}
+	hunks := state.Hunks()
+	total := len(hunks)
+	cur, _ := state.CurrentHunk()
+	pos := cur + 1
+	if pos < 0 {
+		pos = 0
+	}
+	prevHunk := func() {
+		if total == 0 {
+			return
+		}
+		i := cur - 1
+		if i < 0 {
+			i = total - 1
+		}
+		state.GoToHunk(i)
+	}
+	nextHunk := func() {
+		if total == 0 {
+			return
+		}
+		i := cur + 1
+		if i >= total {
+			i = 0
+		}
+		state.GoToHunk(i)
+	}
+	fileCount := len(a.visibleChangeFileList())
+	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
+		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
+		diffToolButton(c, p, "diff-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
+		diffToolButton(c, p, "diff-next", icoPull, "下一个差异", false, total > 0, nextHunk)
+		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
+		diffToolButton(c, p, "diff-edit", icoEdit, "编辑差异", a.diffEditable, true, func() {
+			a.diffEditable = !a.diffEditable
+			state.Editable = a.diffEditable
+		})
+		diffToolButton(c, p, "diff-prev-file", icoArrowLeft, "上一个文件", false, fileCount > 1, func() {
+			a.moveChangeSelection(-1)
+		})
+		diffToolButton(c, p, "diff-next-file", icoArrowRight, "下一个文件", false, fileCount > 1, func() {
+			a.moveChangeSelection(1)
+		})
 	})
 }
 

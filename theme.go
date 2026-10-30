@@ -414,6 +414,35 @@ func ghostBtn(c *ui.Context, p Palette, svg *ui.SVG, label string, active bool, 
 	})
 }
 
+// diffToolButton renders a flat diff toolbar icon, lit when its toggle is on.
+func diffToolButton(c *ui.Context, p Palette, key string, svg *ui.SVG, tip string, active, enabled bool, onClick func()) {
+	kc := c.Key(key)
+	btn := ui.Box(kc).Size(26, 26).Radius(4).Center().Tooltip(tip).Label(tip)
+	fg := p.TextControl
+	if active {
+		btn.Background(p.Surface2)
+		fg = p.TextPrimary
+	}
+	if !enabled {
+		fg = p.TextMuted
+	}
+	if enabled {
+		btn.Cursor(ui.CursorPointer)
+		if btn.Hovered() {
+			btn.Background(p.SurfaceHover)
+			if !active {
+				fg = p.TextPrimary
+			}
+		}
+		if btn.Clicked() && onClick != nil {
+			onClick()
+		}
+	}
+	btn.Children(func() {
+		drawIcon(kc, svg, 14, fg)
+	})
+}
+
 // badgeBox renders a subtle status pill without harsh borders.
 func badgeBox(c *ui.Context, text string, fg, bg, border ui.Color, fontSize float32, bold bool) {
 	el := ui.Row(c).Padding(2, 7).Radius(5).Background(bg).AlignItems(ui.Center).Shrink(0)
