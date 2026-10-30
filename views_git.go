@@ -317,7 +317,7 @@ func gitFilterPill(c *ui.Context, p Palette, key, label string, active bool, bui
 // label so the filter row stays scannable.
 func gitIconButton(c *ui.Context, p Palette, key string, icon *ui.SVG, tooltip string, onClick func()) {
 	kc := c.Key(key)
-	fg := p.TextMuted
+	fg := p.TextControl
 	el := ui.Row(kc).Size(24, 24).Radius(5).Background(ui.Transparent).Cursor(ui.CursorPointer).
 		AlignItems(ui.Center).Justify(ui.Center).Tooltip(tooltip).Label(tooltip)
 	if el.Hovered() {
@@ -813,7 +813,7 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 				ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 					badgeBox(c, d.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 9.5, true)
 					ui.Text(c, d.ShortHash).Font("SF Mono, Menlo, monospace").FontSize(11).FontWeight(weightSemibold).TextColor(p.AccentSoftText)
-					miniBtn(c, p, "复制哈希", func() {
+					gitIconButton(c, p, "git-copy-detail", icoCopy, "复制提交哈希", func() {
 						a.pendingClipboard = d.Hash
 					})
 				})
@@ -1242,7 +1242,7 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 					short = short[:8]
 				}
 				ui.Text(c, short).Font("SF Mono, Menlo, monospace").FontSize(10.5).TextColor(p.TextMuted).Shrink(0)
-				miniBtn(c, p, "复制哈希", func() {
+				gitIconButton(c, p, "git-copy-diff", icoCopy, "复制提交哈希", func() {
 					a.pendingClipboard = a.gitDiffHash
 				})
 			})

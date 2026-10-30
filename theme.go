@@ -337,6 +337,31 @@ func iconPill(c *ui.Context, p Palette, svg *ui.SVG, label string, primary bool,
 	})
 }
 
+// iconAction renders a square icon-only action with a tooltip in place of a
+// visible text label.
+func iconAction(c *ui.Context, p Palette, key string, svg *ui.SVG, tooltip string, primary bool, onClick func()) {
+	bg := p.Surface2
+	iconCol := p.TextControl
+	hover := p.SurfaceHover
+	if primary {
+		bg = p.Accent
+		iconCol = p.AccentText
+		hover = p.AccentHover
+	}
+	kc := c.Key(key)
+	el := ui.Row(kc).Size(28, 28).Radius(6).Background(bg).Cursor(ui.CursorPointer).
+		AlignItems(ui.Center).Justify(ui.Center).Tooltip(tooltip).Label(tooltip)
+	if el.Hovered() {
+		el.Background(hover)
+	}
+	if el.Clicked() && onClick != nil {
+		onClick()
+	}
+	el.Children(func() {
+		drawIcon(kc, svg, 14, iconCol)
+	})
+}
+
 // miniBtn renders a quiet compact control button.
 func miniBtn(c *ui.Context, p Palette, label string, onClick func()) {
 	el := ui.Row(c).Padding(4, 8).Radius(5).Background(p.Surface2).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)

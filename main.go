@@ -547,6 +547,18 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 			}
 			a.buildBranchPicker(c, p, brBtn, domBranch)
 
+			pullTip := "拉取全部仓库更新"
+			iconAction(c, p, "top-pull", icoPull, pullTip, false, func() {
+				a.TriggerBatchPull()
+			})
+			pushTip := "推送待推送仓库"
+			if aheadRepos > 0 {
+				pushTip = fmt.Sprintf("推送 %d 个待推送仓库", aheadRepos)
+			}
+			iconAction(c, p, "top-push", icoPush, pushTip, aheadRepos > 0, func() {
+				a.TriggerPushAllAhead()
+			})
+
 			// Quick Saved Branch Presets in Top Bar (if any exist)
 			for idx, preset := range a.cfg.BranchPresets {
 				if idx >= 2 {
@@ -557,23 +569,6 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 					a.ApplyBranchPreset(prCopy, true)
 				})
 			}
-		})
-
-		ui.Spacer(c)
-
-		// Right: High-Frequency Daily Controls + Collapsible "More"
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			iconPill(c, p, icoPull, "拉取", false, func() {
-				a.TriggerBatchPull()
-			})
-
-			pushLabel := "推送"
-			if aheadRepos > 0 {
-				pushLabel = fmt.Sprintf("推送 (%d)", aheadRepos)
-			}
-			iconPill(c, p, icoPush, pushLabel, aheadRepos > 0, func() {
-				a.TriggerPushAllAhead()
-			})
 		})
 	})
 }
