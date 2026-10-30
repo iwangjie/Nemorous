@@ -120,14 +120,16 @@ function divider() { return { type: "divider" }; }
 // ---------- filesystem helpers ----------
 function baseName(p) {
   if (!p) return "";
-  var v = String(p).replace(/\/+$/, "");
-  var i = v.lastIndexOf("/");
+  var v = String(p).replace(/[\\/]+$/, "");
+  var i = Math.max(v.lastIndexOf("/"), v.lastIndexOf("\\"));
   return i >= 0 ? v.substring(i + 1) : v;
 }
 function relPath(p) {
   var ws = nemorous.workspace();
-  if (ws.path && p.indexOf(ws.path) === 0) return p.substring(ws.path.length).replace(/^\/+/, "") || ".";
-  return p;
+  var root = String(ws.path || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  var full = String(p || "").replace(/\\/g, "/");
+  if (root && full.indexOf(root + "/") === 0) return full.substring(root.length + 1) || ".";
+  return full;
 }
 function skipDir(name) {
   return name.charAt(0) === "." || name === "target" || name === "build" ||
