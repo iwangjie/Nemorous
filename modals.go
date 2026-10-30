@@ -565,7 +565,16 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showSettings, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(560).Padding(18).Gap(14).Radius(12).Background(p.Surface).Border(1, p.Border)
+		panelHeight := float32(720)
+		if a.win != nil {
+			if _, h := a.win.ContentSize(); h > 0 {
+				panelHeight = min(panelHeight, float32(h)-48)
+				if panelHeight < 520 {
+					panelHeight = 520
+				}
+			}
+		}
+		panel.Width(640).Height(panelHeight).Padding(18).Gap(12).Radius(12).Background(p.Surface).Border(1, p.Border)
 
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "设置").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
@@ -575,131 +584,134 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 			})
 		})
 
-		ui.Scroll(c).MaxHeight(540).Children(func() {
-			// Section 1: Workspace Directory
-			ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
-				ui.Text(c, "工作区目录").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.TextInput(c.Key("ws-path-in"), &a.cfg.WorkspacePath).Grow(1)
-					pill(c, p, "选择目录...", false, func() {
-						go func() {
-							paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-								Parent:    a.win,
-								Title:     "选择多仓库工作区目录",
-								Directory: true,
-							})
-							if err == nil && len(paths) > 0 {
-								a.runUI(func() {
-									a.LoadWorkspaceAsync(paths[0])
-									_ = a.cfg.Save()
+		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
+			ui.Column(c).FillWidth().Gap(12).Padding(0, 2).Children(func() {
+				// Section 1: Workspace Directory
+				ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+					ui.Text(c, "工作区目录").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.TextInput(c.Key("ws-path-in"), &a.cfg.WorkspacePath).Grow(1)
+						pill(c, p, "选择目录...", false, func() {
+							go func() {
+								paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+									Parent:    a.win,
+									Title:     "选择多仓库工作区目录",
+									Directory: true,
 								})
-							}
-						}()
-					})
-					pill(c, p, "加载", true, func() {
-						a.LoadWorkspaceAsync(a.cfg.WorkspacePath)
-						_ = a.cfg.Save()
-					})
-				})
-
-				if ui.Checkbox(c, &a.cfg.IncludeRootRepo, "包含工作区根目录自身的 Git 仓库").Changed() {
-					_ = a.cfg.Save()
-					a.RefreshAsync()
-				}
-
-				if len(a.cfg.RecentWorkspaces) > 1 {
-					for _, ws := range a.cfg.RecentWorkspaces {
-						wsCopy := ws
-						kc := c.Key("rec-" + wsCopy)
-						ui.Row(kc).Padding(4, 8).Gap(8).Radius(5).Background(p.Surface).AlignItems(ui.Center).Children(func() {
-							ui.Text(kc, wsCopy).FontSize(11.5).TextColor(p.TextSecondary).Grow(1)
-							miniBtn(kc, p, "切换", func() {
-								a.LoadWorkspaceAsync(wsCopy)
-								_ = a.cfg.Save()
-							})
+								if err == nil && len(paths) > 0 {
+									a.runUI(func() {
+										a.LoadWorkspaceAsync(paths[0])
+										_ = a.cfg.Save()
+									})
+								}
+							}()
 						})
-					}
-				}
-			})
-
-			// Section 2: Appearance & Editor
-			ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
-				ui.Text(c, "外观与显示").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-				ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "主题：").FontSize(12).TextColor(p.TextSecondary)
-					for _, choice := range themeChoices {
-						ch := choice
-						pill(c, p, ch.Label, a.cfg.Theme == ch.ID, func() {
-							a.setTheme(ch.ID)
-						})
-					}
-					ui.Spacer(c)
-					ui.Text(c, "代码字号：").FontSize(12).TextColor(p.TextSecondary)
-					miniBtn(c, p, fmt.Sprintf("%.0fpt", a.cfg.EditorFontSize), func() {
-						a.cfg.EditorFontSize += 1
-						if a.cfg.EditorFontSize > 17 {
-							a.cfg.EditorFontSize = 12
-						}
-						for _, tab := range a.codeTabs {
-							if tab.state != nil {
-								tab.state.Font = ui.Font{Size: a.cfg.EditorFontSize}
-							}
-						}
-						if a.diffState != nil {
-							a.diffState.Font = ui.Font{Size: a.cfg.EditorFontSize}
-						}
-						_ = a.cfg.Save()
-					})
-				})
-			})
-
-			// Section 3: Merge & AI Assistant (supports omp, pi, claude, codex)
-			ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
-				ui.Text(c, "分支合并与 AI 冲突解决").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "AI 命令行工具：").FontSize(12).TextColor(p.TextSecondary)
-					for _, id := range []string{"auto", "omp", "pi", "claude", "codex"} {
-						idCopy := id
-						label := idCopy
-						if idCopy == "auto" {
-							label = "自动检测"
-						}
-						pill(c.Key("ag-"+idCopy), p, label, a.cfg.AIAgent == idCopy, func() {
-							a.cfg.AIAgent = idCopy
-							a.aiAgentName, a.aiAgentBin = a.cfg.ResolvedAIAgent()
+						pill(c, p, "加载", true, func() {
+							a.LoadWorkspaceAsync(a.cfg.WorkspacePath)
 							_ = a.cfg.Save()
 						})
-					}
-				})
-				ui.Text(c, fmt.Sprintf("当前使用：%s (%s)", a.aiAgentName, a.aiAgentBin)).FontSize(11).TextColor(p.TextMuted)
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, "默认合并目标分支：").FontSize(12).TextColor(p.TextSecondary)
-					if ui.TextInput(c.Key("def-target"), &a.cfg.DefaultTargetBranch).Width(120).Changed() {
-						a.mergeTargetBranch = a.cfg.DefaultTargetBranch
+					})
+
+					if ui.Checkbox(c, &a.cfg.IncludeRootRepo, "包含工作区根目录自身的 Git 仓库").Changed() {
 						_ = a.cfg.Save()
+						a.RefreshAsync()
 					}
-				})
-			})
-			// Section 4: Mani Task Integration
-			ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
-				ui.Text(c, "Mani 任务集成").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					if ui.Checkbox(c, &a.cfg.ManiEnabled, "启用 mani.yaml 任务面板").Changed() {
-						_ = a.cfg.Save()
-						if !a.cfg.ManiEnabled {
-							a.showManiPanel = false
+
+					if len(a.cfg.RecentWorkspaces) > 1 {
+						for _, ws := range a.cfg.RecentWorkspaces {
+							wsCopy := ws
+							kc := c.Key("rec-" + wsCopy)
+							ui.Row(kc).Padding(4, 8).Gap(8).Radius(5).Background(p.Surface).AlignItems(ui.Center).Children(func() {
+								ui.Text(kc, wsCopy).FontSize(11.5).TextColor(p.TextSecondary).Grow(1)
+								miniBtn(kc, p, "切换", func() {
+									a.LoadWorkspaceAsync(wsCopy)
+									_ = a.cfg.Save()
+								})
+							})
 						}
 					}
-					ui.Spacer(c)
-					status := "未检测到 mani.yaml"
-					if a.maniCfg != nil && len(a.maniCfg.Tasks) > 0 {
-						status = fmt.Sprintf("%d 个任务 · %d 个项目", len(a.maniCfg.Tasks), len(a.maniCfg.Projects))
-					}
-					ui.Text(c, status).FontSize(11).TextColor(p.TextMuted)
 				})
-				ui.Text(c, "启用后右侧出现 Mani 工具图标；右键项目节点可指定项目执行任务。关闭后不再展示。").FontSize(10.5).TextColor(p.TextMuted)
+
+				// Section 2: Appearance & Editor
+				ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+					ui.Text(c, "外观与显示").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+					ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "主题：").FontSize(12).TextColor(p.TextSecondary)
+						for _, choice := range themeChoices {
+							ch := choice
+							pill(c, p, ch.Label, a.cfg.Theme == ch.ID, func() {
+								a.setTheme(ch.ID)
+							})
+						}
+						ui.Spacer(c)
+						ui.Text(c, "代码字号：").FontSize(12).TextColor(p.TextSecondary)
+						miniBtn(c, p, fmt.Sprintf("%.0fpt", a.cfg.EditorFontSize), func() {
+							a.cfg.EditorFontSize += 1
+							if a.cfg.EditorFontSize > 17 {
+								a.cfg.EditorFontSize = 12
+							}
+							for _, tab := range a.codeTabs {
+								if tab.state != nil {
+									tab.state.Font = ui.Font{Size: a.cfg.EditorFontSize}
+								}
+							}
+							if a.diffState != nil {
+								a.diffState.Font = ui.Font{Size: a.cfg.EditorFontSize}
+							}
+							_ = a.cfg.Save()
+						})
+					})
+				})
+
+				// Section 3: Merge & AI Assistant (supports omp, pi, claude, codex)
+				ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+					ui.Text(c, "分支合并与 AI 冲突解决").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "AI 命令行工具：").FontSize(12).TextColor(p.TextSecondary)
+						for _, id := range []string{"auto", "omp", "pi", "claude", "codex"} {
+							idCopy := id
+							label := idCopy
+							if idCopy == "auto" {
+								label = "自动检测"
+							}
+							pill(c.Key("ag-"+idCopy), p, label, a.cfg.AIAgent == idCopy, func() {
+								a.cfg.AIAgent = idCopy
+								a.aiAgentName, a.aiAgentBin = a.cfg.ResolvedAIAgent()
+								_ = a.cfg.Save()
+							})
+						}
+					})
+					agentPath := fmt.Sprintf("当前使用：%s (%s)", a.aiAgentName, a.aiAgentBin)
+					ui.Text(c, agentPath).FontSize(11).TextColor(p.TextMuted).SingleLine().Tooltip(agentPath)
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "默认合并目标分支：").FontSize(12).TextColor(p.TextSecondary)
+						if ui.TextInput(c.Key("def-target"), &a.cfg.DefaultTargetBranch).Width(120).Changed() {
+							a.mergeTargetBranch = a.cfg.DefaultTargetBranch
+							_ = a.cfg.Save()
+						}
+					})
+				})
+				// Section 4: Mani Task Integration
+				ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+					ui.Text(c, "Mani 任务集成").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						if ui.Checkbox(c, &a.cfg.ManiEnabled, "启用 mani.yaml 任务面板").Changed() {
+							_ = a.cfg.Save()
+							if !a.cfg.ManiEnabled {
+								a.showManiPanel = false
+							}
+						}
+						ui.Spacer(c)
+						status := "未检测到 mani.yaml"
+						if a.maniCfg != nil && len(a.maniCfg.Tasks) > 0 {
+							status = fmt.Sprintf("%d 个任务 · %d 个项目", len(a.maniCfg.Tasks), len(a.maniCfg.Projects))
+						}
+						ui.Text(c, status).FontSize(11).TextColor(p.TextMuted)
+					})
+					ui.Text(c, "启用后右侧出现 Mani 工具图标；右键项目节点可指定项目执行任务。关闭后不再展示。").FontSize(10.5).TextColor(p.TextMuted)
+				})
+				a.buildUpdateSettings(c, p)
 			})
-			a.buildUpdateSettings(c, p)
 		})
 	})
 }

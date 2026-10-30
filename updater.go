@@ -345,12 +345,13 @@ func (a *App) installUpdate(auto bool) {
 
 // buildUpdateSettings renders the auto-update section inside Settings.
 func (a *App) buildUpdateSettings(c *ui.Context, p Palette) {
-	ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+	ui.Column(c).FillWidth().Padding(14).Gap(10).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "自动更新").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
 			ui.Text(c, "当前 v"+updateVersion()).FontSize(10.5).TextColor(p.TextMuted)
 		})
-		ui.Row(c).Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if ui.Checkbox(c, &a.cfg.AutoUpdate, "前台定时检查更新").Changed() {
 				_ = a.cfg.Save()
 				a.restartUpdateLoop()
@@ -372,8 +373,10 @@ func (a *App) buildUpdateSettings(c *ui.Context, p Palette) {
 				}
 			}
 			ui.Text(c, "分钟").FontSize(11.5).TextColor(p.TextSecondary)
-			ui.Spacer(c)
-			if ui.Checkbox(c, &a.cfg.AutoUpdateIdle, "非前台 30 秒后自动安装并重启").Changed() {
+		})
+
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			if ui.Checkbox(c, &a.cfg.AutoUpdateIdle, "后台自动安装并重启").Changed() {
 				_ = a.cfg.Save()
 				if !a.cfg.AutoUpdateIdle {
 					a.cancelIdleUpdate()
@@ -381,9 +384,11 @@ func (a *App) buildUpdateSettings(c *ui.Context, p Palette) {
 					a.scheduleIdleUpdate()
 				}
 			}
+			ui.Text(c, "切到后台 30 秒后执行；有未保存改动或任务运行时会延后").FontSize(10.5).TextColor(p.TextMuted)
 		})
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "下载镜像").FontSize(11.5).TextColor(p.TextSecondary).Shrink(0)
+
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "下载镜像").FontSize(11.5).TextColor(p.TextSecondary).Width(58).Shrink(0)
 			if ui.TextInput(c.Key("update-mirror"), &a.cfg.UpdateMirror).Grow(1).Changed() {
 				a.cfg.UpdateMirror = strings.TrimSpace(a.cfg.UpdateMirror)
 				_ = a.cfg.Save()
@@ -391,7 +396,8 @@ func (a *App) buildUpdateSettings(c *ui.Context, p Palette) {
 			}
 			ui.Text(c, "留空则直连 GitHub").FontSize(10).TextColor(p.TextMuted).Shrink(0)
 		})
-		ui.Text(c, "镜像仅加速下载，更新包仍由内置公钥验签。").FontSize(10).TextColor(p.TextMuted)
+		ui.Text(c, "镜像只加速下载；更新包仍由内置公钥验签。").FontSize(10).TextColor(p.TextMuted)
+
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if a.updatePending != nil && !a.updateIsSkipped(a.updatePending.Version) {
 				pill(c, p, "查看 v"+a.updatePending.Version, true, func() {
@@ -416,7 +422,7 @@ func (a *App) buildUpdateSettings(c *ui.Context, p Palette) {
 			if a.updateLastErr != "" {
 				status += " · " + truncateRunes(a.updateLastErr, 42)
 			}
-			ui.Text(c, status).FontSize(10.5).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+			ui.Text(c, status).FontSize(10.5).TextColor(p.TextMuted).Grow(1).MaxLines(1).SingleLine()
 		})
 	})
 }
