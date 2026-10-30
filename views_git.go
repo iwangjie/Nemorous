@@ -313,6 +313,25 @@ func gitFilterPill(c *ui.Context, p Palette, key, label string, active bool, bui
 	})
 }
 
+// gitIconButton is a compact icon-only toolbar action; the tooltip carries the
+// label so the filter row stays scannable.
+func gitIconButton(c *ui.Context, p Palette, key string, icon *ui.SVG, tooltip string, onClick func()) {
+	kc := c.Key(key)
+	fg := p.TextMuted
+	el := ui.Row(kc).Size(24, 24).Radius(5).Background(ui.Transparent).Cursor(ui.CursorPointer).
+		AlignItems(ui.Center).Justify(ui.Center).Tooltip(tooltip).Label(tooltip)
+	if el.Hovered() {
+		el.Background(p.SurfaceHover)
+		fg = p.TextPrimary
+	}
+	if el.Clicked() && onClick != nil {
+		onClick()
+	}
+	el.Children(func() {
+		drawIcon(kc, icon, 13, fg)
+	})
+}
+
 func (a *App) buildGitFilterBar(c *ui.Context, p Palette) {
 	repoLabel := "全部仓库"
 	if a.gitFilterRepoID != "" {
@@ -386,19 +405,30 @@ func (a *App) buildGitFilterBar(c *ui.Context, p Palette) {
 			}
 			a.reloadGitLog()
 		}
-		for _, opt := range []struct {
-			label string
-			days  int
-		}{{"全部", 0}, {"7 天", 7}, {"30 天", 30}, {"1 年", 365}} {
-			optCopy := opt
-			pill(c.Key(fmt.Sprintf("git-since-%d", optCopy.days)), p, optCopy.label, a.gitSinceDays == optCopy.days, func() {
-				if a.gitSinceDays != optCopy.days {
-					a.gitSinceDays = optCopy.days
-					a.reloadGitLog()
-				}
-			})
+		sinceLabel := "全部"
+		switch a.gitSinceDays {
+		case 7:
+			sinceLabel = "7 天"
+		case 30:
+			sinceLabel = "30 天"
+		case 365:
+			sinceLabel = "1 年"
 		}
-		miniBtn(c.Key("git-refresh"), p, "刷新", func() {
+		gitFilterPill(c, p, "git-since-filter", sinceLabel, a.gitSinceDays != 0, func(m *ui.Menu) {
+			for _, opt := range []struct {
+				label string
+				days  int
+			}{{"全部", 0}, {"7 天", 7}, {"30 天", 30}, {"1 年", 365}} {
+				optCopy := opt
+				if m.Item(optCopy.label).Radio(a.gitSinceDays == optCopy.days).Chosen() {
+					if a.gitSinceDays != optCopy.days {
+						a.gitSinceDays = optCopy.days
+						a.reloadGitLog()
+					}
+				}
+			}
+		})
+		gitIconButton(c, p, "git-refresh", icoRefresh, "刷新提交记录", func() {
 			a.reloadGitLog()
 		})
 		if a.gitFiltersActive() {

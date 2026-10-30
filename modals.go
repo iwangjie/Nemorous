@@ -290,6 +290,9 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 				})
 			}
 
+			addEntry("act-global-search", "操作", "在文件中查找", "⇧⌘F · 跨仓库搜索文件内容", p.Accent, func() {
+				a.openGlobalSearch()
+			})
 			addEntry("act-branch", "操作", "切换或新建分支 / 管理分支组合", "⌘B · 支持多项目同时切换与记住分支组合", p.Accent, func() {
 				a.openBranchSwitchModal()
 			})

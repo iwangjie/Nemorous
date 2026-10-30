@@ -262,6 +262,7 @@ func (a *App) BuildUI(c *ui.Context) {
 
 		// Modals & Dialogs
 		a.buildCommandPaletteModal(c, p)
+		a.buildGlobalSearchModal(c, p)
 		a.buildBranchSwitchModal(c, p)
 		a.buildSettingsModal(c, p)
 		a.buildDiscardConfirmModal(c, p)
@@ -277,6 +278,9 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	// Dialogs own the keyboard: global actions must not fire behind them.
 	if a.overlayOpen() {
 		return
+	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
+		a.openGlobalSearch()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyK) || c.Shortcut(ui.Cmd, ui.KeyP) {
 		a.showCmdPalette = !a.showCmdPalette
@@ -570,12 +574,6 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 			iconPill(c, p, icoPush, pushLabel, aheadRepos > 0, func() {
 				a.TriggerPushAllAhead()
 			})
-
-			iconPill(c, p, icoSearch, "搜索 ⌘K", false, func() {
-				a.showCmdPalette = true
-				a.cmdPaletteQuery = ""
-				a.cmdInputHandle.Focus()
-			})
 		})
 	})
 }
@@ -594,7 +592,7 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 					a.showOpLog = true
 				})
 			}
-			hint := "⌘1 提交 · ⌘2 文件 · ⌘3 Git · ⌘4 Mani · ⌘K 搜索 · ⌘B 分支 · ⌘Enter 提交"
+			hint := "⌘1 提交 · ⌘2 文件 · ⌘3 Git · ⌘4 Mani · ⇧⌘F 全局搜索 · ⌘B 分支 · ⌘Enter 提交"
 			if a.activeTab == TabChanges {
 				hint = "↑↓ 选择 · 空格勾选 · S/U 暂存 · ⌘Enter 提交"
 			}

@@ -245,6 +245,18 @@ type App struct {
 	// Modals & Overlays
 	showCmdPalette      bool
 	cmdPaletteQuery     string
+	showGlobalSearch    bool
+	globalSearchQuery   string
+	globalSearchHandle  ui.Handle
+	globalSearchCase    bool
+	globalSearchRegex   bool
+	globalSearchGroups  []globalSearchGroup
+	globalSearchTotal   int
+	globalSearchRunning bool
+	globalSearchErr     string
+	globalSearchPartial bool
+	globalSearchSeq     uint64
+	globalSearchCancel  context.CancelFunc
 	showSettings        bool
 	showBranchModal     bool
 	showBranchPicker    bool
@@ -451,7 +463,7 @@ func (a *App) setBatchResults(res []gitops.OpResult) {
 
 // overlayOpen reports whether a dialog owns the keyboard.
 func (a *App) overlayOpen() bool {
-	return a.showCmdPalette || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
+	return a.showCmdPalette || a.showGlobalSearch || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
 		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil || a.showManiResult
 }
 
