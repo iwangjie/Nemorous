@@ -751,26 +751,32 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 
 	canCommit, commitHint := a.commitAvailability(checkedFiles)
 
-	ui.Column(c).Padding(8).Gap(6).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
-		ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").Lines(2, 6).FillWidth()
-
-		ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
-			if canCommit {
-				pill(c, p, commitBtnLabel, true, func() {
-					a.TriggerCommit(false)
-				})
-				pill(c, p, "提交并推送", false, func() {
-					a.TriggerCommit(true)
-				})
-			} else {
-				pillDisabled(c, p, commitBtnLabel)
-				pillDisabled(c, p, "提交并推送")
-			}
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Row(c).Padding(2, 4).AlignItems(ui.Center).Children(func() {
 			ui.Checkbox(c, &a.commitAmend, "修正")
 		})
-		if !canCommit && commitHint != "" {
-			ui.Text(c, commitHint).FontSize(10.5).TextColor(p.TextMuted)
-		}
+
+		ui.Column(c).Padding(8).Gap(6).Radius(4).Background(p.AppBg).Border(1, p.Border).Children(func() {
+			ta := ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").Lines(2, 6).FillWidth()
+			ta.Background(p.AppBg).Border(0, p.Border).Radius(3).Padding(4, 6)
+
+			ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
+				if canCommit {
+					pill(c, p, commitBtnLabel, true, func() {
+						a.TriggerCommit(false)
+					})
+					pill(c, p, "提交并推送", false, func() {
+						a.TriggerCommit(true)
+					})
+				} else {
+					pillDisabled(c, p, commitBtnLabel)
+					pillDisabled(c, p, "提交并推送")
+				}
+			})
+			if !canCommit && commitHint != "" {
+				ui.Text(c, commitHint).FontSize(10.5).TextColor(p.TextMuted)
+			}
+		})
 	})
 }
 
