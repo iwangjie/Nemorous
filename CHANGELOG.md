@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - 还原 IntelliJ IDEA 的控件描边与提交框样式：
   - 工具窗口中的按钮/输入控件补上 IDEA 的 `#5D6060` 1px 描边，按钮圆角收敛到 4px。
