@@ -14,6 +14,9 @@ func TestDefaultUpdateSettings(t *testing.T) {
 	if c.UpdateCheckMinutes != 30 {
 		t.Fatalf("check interval = %d, want 30", c.UpdateCheckMinutes)
 	}
+	if c.UpdateMirror != "https://ghfast.top" {
+		t.Fatalf("update mirror = %q", c.UpdateMirror)
+	}
 }
 
 func TestLoadClampsUpdateInterval(t *testing.T) {
