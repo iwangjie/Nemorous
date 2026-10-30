@@ -57,6 +57,19 @@ type AppNotification struct {
 type codeTab struct {
 	file  gitops.WorkspaceFile
 	state *editor.State
+
+	blameEnabled  bool
+	blameAll      bool
+	blameLine     int
+	blameLoading  bool
+	blameLoaded   bool
+	blameErr      string
+	blameSeq      uint64
+	blameLines    map[int]gitops.BlameLine
+	blameShownKey string
+	blameHiddenAt time.Time
+	editorWidth   float32
+	viewHandle    ui.Handle
 }
 
 func (t *codeTab) dirty() bool {
@@ -160,48 +173,51 @@ type App struct {
 	presetNameInput     string // e.g. "AAA 需求"
 
 	// Git Management State
-	gitSubTab            string // "history" or "merge"
-	gitFilterText        string
-	gitFilterAuthor      string
-	gitAuthorMe          bool
-	gitAuthorSuggestions []string
-	gitAuthorsLoaded     bool
-	gitAuthorsLoading    bool
-	gitFilterPath        string
-	gitPathCache         []string
-	gitPathCacheKey      string
-	gitFilterRepoID      string
-	gitFilterBranch      string
-	gitSinceDays         int
-	gitFilterHandle      ui.Handle
-	gitLogLoaded         bool
-	gitLogSeq            uint64
-	gitLogGroups         []gitRepoLog
-	gitLogTargets        []gitops.RepoStatus
-	gitUnifiedRows       []gitCommitRow
-	gitUnifiedMaxLanes   int
-	gitUnifiedLimit      int
-	gitLogTotal          int
-	gitGroupLoading      map[string]bool
-	gitSelectedCommit    string
-	gitAutoSelected      bool
-	gitDetail            *gitops.CommitDetail
-	gitDetailLoading     bool
-	gitDetailSeq         uint64
-	gitCollapsedRepos    map[string]bool
-	gitRemoteOpen        map[string]bool
-	gitLeftWidth         float32
-	gitCenterPct         float32
-	maniContentPct       float32
-	gitDiffOpen          bool
-	gitDiffLoading       bool
-	gitDiffRepo          string
-	gitDiffPath          string
-	gitDiffOldPath       string
-	gitDiffHash          string
-	gitDiffErr           string
-	gitDiffSeq           uint64
-	gitCommitDiff        *editor.DiffState
+	gitSubTab              string // "history" or "merge"
+	gitFilterText          string
+	gitFilterAuthor        string
+	gitAuthorMe            bool
+	gitAuthorSuggestions   []string
+	gitAuthorsLoaded       bool
+	gitAuthorsLoading      bool
+	gitFilterPath          string
+	gitPathCache           []string
+	gitPathCacheKey        string
+	gitFilterRepoID        string
+	gitFilterBranch        string
+	gitSinceDays           int
+	gitFilterHandle        ui.Handle
+	gitLogLoaded           bool
+	gitLogSeq              uint64
+	gitLogGroups           []gitRepoLog
+	gitLogTargets          []gitops.RepoStatus
+	gitUnifiedRows         []gitCommitRow
+	gitUnifiedMaxLanes     int
+	gitUnifiedLimit        int
+	gitLogTotal            int
+	gitGroupLoading        map[string]bool
+	gitSelectedCommit      string
+	gitAutoSelected        bool
+	gitRevealCommit        string              // row to scroll into view once
+	gitPinnedCommit        *gitops.CommitEntry // blame jump: keep the target visible outside the first log page
+	gitDetail              *gitops.CommitDetail
+	gitDetailLoading       bool
+	gitDetailSeq           uint64
+	gitDetailCollapsedDirs map[string]bool
+	gitCollapsedRepos      map[string]bool
+	gitRemoteOpen          map[string]bool
+	gitLeftWidth           float32
+	gitCenterPct           float32
+	maniContentPct         float32
+	gitDiffOpen            bool
+	gitDiffLoading         bool
+	gitDiffRepo            string
+	gitDiffPath            string
+	gitDiffOldPath         string
+	gitDiffHash            string
+	gitDiffErr             string
+	gitDiffSeq             uint64
+	gitCommitDiff          *editor.DiffState
 
 	// Branches & AI Merge State
 	mergeTargetBranch   string
@@ -244,43 +260,61 @@ type App struct {
 	maniResultTitle       string
 	maniResultOutput      string
 
+	// Signed GitHub auto-update state
+	updateLoopCancel    context.CancelFunc
+	updateCheckCancel   context.CancelFunc
+	updateInstallCancel context.CancelFunc
+	updateIdleTimer     *time.Timer
+	updateMinutesDraft  float64
+	updateChecking      bool
+	updateLastCheck     time.Time
+	updateLastErr       string
+	updatePending       *mygo.Update
+	updatePromptedFor   string
+	updateShowDialog    bool
+	updateInstalling    bool
+	updateProgress      float64
+	updateInstallErr    string
+	updateDeferred      bool
+
 	// Modals & Overlays
-	showCmdPalette      bool
-	cmdPaletteQuery     string
-	showGlobalSearch    bool
-	globalSearchQuery   string
-	globalSearchHandle  ui.Handle
-	globalSearchCase    bool
-	globalSearchRegex   bool
-	globalSearchGroups  []globalSearchGroup
-	globalSearchTotal   int
-	globalSearchRunning bool
-	globalSearchErr     string
-	globalSearchPartial bool
-	globalSearchSeq     uint64
-	globalSearchCancel  context.CancelFunc
-	showSettings        bool
-	showBranchModal     bool
-	showBranchPicker    bool
-	branchPickerQuery   string
-	branchPickerRepoID  string
-	branchPickerHandle  ui.Handle
-	showOpLog           bool
-	showLogPanel        bool
-	logTab              string
-	showTerminalPanel   bool
-	terminalEditorPct   float32
-	terminalTitle       string
-	terminalErr         string
-	terminalExited      bool
-	terminalExitCode    int
-	terminalGen         uint64
-	terminal            *terminal.Terminal
-	pendingDiscard      *PendingDiscard
-	pendingCodeTabClose *codeTab
-	pendingUndo         *PendingUndo
-	fileHistory         *FileHistoryState
-	notify              *AppNotification
+	showCmdPalette       bool
+	cmdPaletteQuery      string
+	showGlobalSearch     bool
+	globalSearchQuery    string
+	globalSearchHandle   ui.Handle
+	globalSearchCase     bool
+	globalSearchRegex    bool
+	globalSearchGroups   []globalSearchGroup
+	globalSearchTotal    int
+	globalSearchRunning  bool
+	globalSearchErr      string
+	globalSearchPartial  bool
+	globalSearchSeq      uint64
+	globalSearchCancel   context.CancelFunc
+	showSettings         bool
+	showBranchModal      bool
+	showBranchPicker     bool
+	branchPickerQuery    string
+	branchPickerRepoID   string
+	branchPickerHandle   ui.Handle
+	showOpLog            bool
+	showLogPanel         bool
+	logTab               string
+	showTerminalPanel    bool
+	terminalEditorPct    float32
+	terminalTitle        string
+	terminalErr          string
+	terminalExited       bool
+	terminalExitCode     int
+	terminalGen          uint64
+	terminal             *terminal.Terminal
+	pendingDiscard       *PendingDiscard
+	pendingCodeTabClose  *codeTab
+	pendingCodeTabsClose []*codeTab
+	pendingUndo          *PendingUndo
+	fileHistory          *FileHistoryState
+	notify               *AppNotification
 
 	// Handles for focus & shortcuts
 	rootHandle        ui.Handle
@@ -300,42 +334,44 @@ func NewApp(cfg config.Config) *App {
 	cfg.Theme = normalizeTheme(cfg.Theme)
 	agentName, agentBin := cfg.ResolvedAIAgent()
 	a := &App{
-		cfg:                  cfg,
-		activeTab:            TabChanges,
-		gitEditorPct:         62,
-		logEditorPct:         62,
-		terminalEditorPct:    62,
-		gitSubTab:            "history",
-		logTab:               "command",
-		gitCollapsedRepos:    make(map[string]bool),
-		gitGroupLoading:      make(map[string]bool),
-		gitRemoteOpen:        make(map[string]bool),
-		gitLeftWidth:         250,
-		gitCenterPct:         62,
-		gitUnifiedLimit:      80,
-		maniContentPct:       72,
-		mergeDetailPct:       66,
-		statusByID:           make(map[string]gitops.RepoStatus),
-		watchPending:         make(map[string]bool),
-		checkedChanges:       make(map[string]bool),
-		expandedCodeRepos:    make(map[string]bool),
-		expandedCodeDirs:     make(map[string]bool),
-		branchCheckedRepos:   make(map[string]bool),
-		branchPerRepoTarget:  make(map[string]*string),
-		mergeCheckedRepos:    make(map[string]bool),
-		manualMerges:         make(map[string]ManualMerge),
-		collapsedChangeRepos: make(map[string]bool),
-		collapsedChangeDirs:  make(map[string]bool),
-		repoBranchTrees:      make(map[string]*branchNode),
-		changeTreeCache:      make(map[string]*changeTreeNode),
-		codeTreeCache:        make(map[string]*codeTreeDir),
-		changesSplit:         320,
-		codeSplit:            290,
-		codeTabIdx:           -1,
-		mergeTargetBranch:    cfg.DefaultTargetBranch,
-		aiAgentName:          agentName,
-		aiAgentBin:           agentBin,
-		maniParamTarget:      cfg.DefaultTargetBranch,
+		cfg:                    cfg,
+		activeTab:              TabChanges,
+		updateMinutesDraft:     float64(cfg.UpdateCheckMinutes),
+		gitEditorPct:           62,
+		logEditorPct:           62,
+		terminalEditorPct:      62,
+		gitSubTab:              "history",
+		logTab:                 "command",
+		gitCollapsedRepos:      make(map[string]bool),
+		gitDetailCollapsedDirs: make(map[string]bool),
+		gitGroupLoading:        make(map[string]bool),
+		gitRemoteOpen:          make(map[string]bool),
+		gitLeftWidth:           250,
+		gitCenterPct:           62,
+		gitUnifiedLimit:        80,
+		maniContentPct:         72,
+		mergeDetailPct:         66,
+		statusByID:             make(map[string]gitops.RepoStatus),
+		watchPending:           make(map[string]bool),
+		checkedChanges:         make(map[string]bool),
+		expandedCodeRepos:      make(map[string]bool),
+		expandedCodeDirs:       make(map[string]bool),
+		branchCheckedRepos:     make(map[string]bool),
+		branchPerRepoTarget:    make(map[string]*string),
+		mergeCheckedRepos:      make(map[string]bool),
+		manualMerges:           make(map[string]ManualMerge),
+		collapsedChangeRepos:   make(map[string]bool),
+		collapsedChangeDirs:    make(map[string]bool),
+		repoBranchTrees:        make(map[string]*branchNode),
+		changeTreeCache:        make(map[string]*changeTreeNode),
+		codeTreeCache:          make(map[string]*codeTreeDir),
+		changesSplit:           320,
+		codeSplit:              290,
+		codeTabIdx:             -1,
+		mergeTargetBranch:      cfg.DefaultTargetBranch,
+		aiAgentName:            agentName,
+		aiAgentBin:             agentBin,
+		maniParamTarget:        cfg.DefaultTargetBranch,
 	}
 	a.logRuntimeDetail("INFO", "应用启动", strings.TrimSpace(cfg.WorkspacePath))
 	a.diffState = &editor.DiffState{
@@ -490,7 +526,8 @@ func (a *App) setBatchResults(res []gitops.OpResult) {
 // overlayOpen reports whether a dialog owns the keyboard.
 func (a *App) overlayOpen() bool {
 	return a.showCmdPalette || a.showGlobalSearch || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
-		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil || a.showManiResult
+		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil ||
+		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -1140,7 +1177,7 @@ func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
 		baseBuf = editor.NewBuffer(headTxt)
 		baseBuf.SetLanguage(lang)
 	}
-	a.codeTabs = append(a.codeTabs, &codeTab{
+	tab := &codeTab{
 		file: wf,
 		state: &editor.State{
 			Buffer:   buf,
@@ -1149,7 +1186,9 @@ func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
 			Font:     ui.Font{Size: a.cfg.EditorFontSize},
 			Bindings: []editor.Binding{{Mods: ui.Cmd, Key: ui.KeyG, Command: editor.GoToLine}},
 		},
-	})
+	}
+	a.wireCodeBlame(tab)
+	a.codeTabs = append(a.codeTabs, tab)
 	a.codeTabIdx = len(a.codeTabs) - 1
 	a.revealCodeFile(wf)
 }
@@ -1173,6 +1212,66 @@ func (a *App) requestCloseCodeTab(tab *codeTab) {
 		return
 	}
 	a.closeCodeTab(tab)
+}
+
+// requestCloseOtherCodeTabs closes every tab but keep, asking once when any
+// of them has unsaved edits.
+func (a *App) requestCloseOtherCodeTabs(keep *codeTab) {
+	targets := make([]*codeTab, 0, len(a.codeTabs))
+	for i, tab := range a.codeTabs {
+		if tab == keep {
+			a.codeTabIdx = i
+			continue
+		}
+		targets = append(targets, tab)
+	}
+	a.requestCloseCodeTabs(targets)
+}
+
+// requestCloseAllCodeTabs closes every open code tab.
+func (a *App) requestCloseAllCodeTabs() {
+	a.requestCloseCodeTabs(append([]*codeTab(nil), a.codeTabs...))
+}
+
+func (a *App) requestCloseCodeTabs(tabs []*codeTab) {
+	if len(tabs) == 0 {
+		return
+	}
+	dirty := false
+	for _, tab := range tabs {
+		if tab.dirty() {
+			dirty = true
+			break
+		}
+	}
+	if !dirty {
+		a.closeCodeTabs(tabs)
+		return
+	}
+	a.pendingCodeTabsClose = append([]*codeTab(nil), tabs...)
+}
+
+func (a *App) closeCodeTabs(tabs []*codeTab) {
+	for _, tab := range tabs {
+		a.closeCodeTab(tab)
+	}
+}
+
+func (a *App) discardAndCloseCodeTabs(tabs []*codeTab) {
+	a.pendingCodeTabsClose = nil
+	a.closeCodeTabs(tabs)
+}
+
+func (a *App) saveAndCloseCodeTabs(tabs []*codeTab) {
+	var failed []*codeTab
+	for _, tab := range tabs {
+		if tab.dirty() && !a.saveCodeTab(tab) {
+			failed = append(failed, tab)
+			continue
+		}
+		a.closeCodeTab(tab)
+	}
+	a.pendingCodeTabsClose = failed
 }
 
 // closeCodeTab removes a tab and keeps the neighbour active.

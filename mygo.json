@@ -6,5 +6,10 @@
   "out": "build",
   "linux": {
     "webview": false
+  },
+  "updates": {
+    "publicKey": "ox37vmP3aFxe/cbZ19NuQUJd33TC0ZRn4TjtoCI1L2s=",
+    "github": "iwangjie/Nemorous",
+    "deltas": 0
   }
 }

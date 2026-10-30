@@ -26,22 +26,27 @@ type MergePreset struct {
 
 // Config holds persistent application configuration for Nemorous.
 type Config struct {
-	WorkspacePath       string         `json:"workspace_path"`
-	RecentWorkspaces    []string       `json:"recent_workspaces"`
-	Theme               string         `json:"theme"`                 // "light", "dark", "darcula", "system"
-	DefaultTargetBranch string         `json:"default_target_branch"` // e.g. "test", "main"
-	AIAgent             string         `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
-	Concurrency         int            `json:"concurrency"`           // parallel git workers (default 8)
-	DiffSideBySide      bool           `json:"diff_side_by_side"`
-	DiffInlineMode      string         `json:"diff_inline_mode"` // "word", "char", "none"
-	EditorFontSize      float32        `json:"editor_font_size"`
-	EditorSoftWrap      bool           `json:"editor_soft_wrap"`
-	NavShowLabels       bool           `json:"nav_show_labels"`
-	IncludeRootRepo     bool           `json:"include_root_repo"`
-	ManiEnabled         bool           `json:"mani_enabled"`
-	ProtectedBranches   []string       `json:"protected_branches"`
-	BranchPresets       []BranchPreset `json:"branch_presets,omitempty"`
-	MergePresets        []MergePreset  `json:"merge_presets,omitempty"`
+	WorkspacePath        string         `json:"workspace_path"`
+	RecentWorkspaces     []string       `json:"recent_workspaces"`
+	Theme                string         `json:"theme"`                 // "light", "dark", "darcula", "system"
+	DefaultTargetBranch  string         `json:"default_target_branch"` // e.g. "test", "main"
+	AIAgent              string         `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
+	Concurrency          int            `json:"concurrency"`           // parallel git workers (default 8)
+	DiffSideBySide       bool           `json:"diff_side_by_side"`
+	DiffInlineMode       string         `json:"diff_inline_mode"` // "word", "char", "none"
+	EditorFontSize       float32        `json:"editor_font_size"`
+	EditorSoftWrap       bool           `json:"editor_soft_wrap"`
+	NavShowLabels        bool           `json:"nav_show_labels"`
+	IncludeRootRepo      bool           `json:"include_root_repo"`
+	ManiEnabled          bool           `json:"mani_enabled"`
+	AutoUpdate           bool           `json:"auto_update"`          // check GitHub Releases for signed updates
+	AutoUpdateIdle       bool           `json:"auto_update_idle"`     // install while the app is in the background
+	UpdateCheckMinutes   int            `json:"update_check_minutes"` // foreground check interval
+	UpdateMirror         string         `json:"update_mirror"`        // GitHub proxy prefix for faster downloads
+	SkippedUpdateVersion string         `json:"skipped_update_version,omitempty"`
+	ProtectedBranches    []string       `json:"protected_branches"`
+	BranchPresets        []BranchPreset `json:"branch_presets,omitempty"`
+	MergePresets         []MergePreset  `json:"merge_presets,omitempty"`
 }
 
 // Default returns a sensible default configuration.
@@ -64,6 +69,10 @@ func Default() Config {
 		EditorSoftWrap:      true,
 		IncludeRootRepo:     true,
 		ManiEnabled:         true,
+		AutoUpdate:          true,
+		AutoUpdateIdle:      true,
+		UpdateCheckMinutes:  30,
+		UpdateMirror:        "https://ghfast.top",
 		ProtectedBranches:   []string{"main", "master", "test", "dev", "prod", "production"},
 	}
 }
@@ -134,6 +143,16 @@ func Load() Config {
 	if cfg.DiffInlineMode == "" {
 		cfg.DiffInlineMode = "word"
 	}
+	if cfg.UpdateCheckMinutes <= 0 {
+		cfg.UpdateCheckMinutes = 30
+	}
+	if cfg.UpdateCheckMinutes < 5 {
+		cfg.UpdateCheckMinutes = 5
+	}
+	if cfg.UpdateCheckMinutes > 24*60 {
+		cfg.UpdateCheckMinutes = 24 * 60
+	}
+	cfg.UpdateMirror = strings.TrimSpace(cfg.UpdateMirror)
 	if len(cfg.ProtectedBranches) == 0 {
 		cfg.ProtectedBranches = []string{"main", "master", "test", "dev", "prod", "production"}
 	}

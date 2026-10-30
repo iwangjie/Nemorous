@@ -43,11 +43,17 @@ func main() {
 			TitleBarStyle: mygo.TitleBarHidden,
 			Content:       ui.View(app.BuildUI),
 		})
-		app.win.OnClosed(func() { app.closeTerminal() })
+		app.win.OnClosed(func() {
+			app.closeTerminal()
+			app.shutdownUpdates()
+		})
+		app.win.OnFocus(func() { app.runUI(func() { app.handleAppForeground() }) })
+		app.win.OnBlur(func() { app.runUI(func() { app.handleAppBackground() }) })
 		if cfg.WorkspacePath != "" {
 			app.LoadWorkspaceAsync(cfg.WorkspacePath)
 		}
 		app.startWorkspaceWatcher()
+		app.startUpdateLoop()
 	})
 
 	if err := mygo.App.Run(); err != nil {
@@ -276,8 +282,10 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildGlobalSearchModal(c, p)
 		a.buildBranchSwitchModal(c, p)
 		a.buildSettingsModal(c, p)
+		a.buildUpdateModal(c, p)
 		a.buildDiscardConfirmModal(c, p)
 		a.buildCodeTabCloseModal(c, p)
+		a.buildCodeTabsCloseModal(c, p)
 		a.buildUndoConfirmModal(c, p)
 		a.buildFileHistoryModal(c, p)
 		a.buildOpLogModal(c, p)
@@ -629,6 +637,17 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 				})
 			}
 		})
+		ui.Spacer(c)
+		switch {
+		case a.updateInstalling:
+			pill(c, p, "更新中", false, func() { a.updateShowDialog = true })
+		case a.updatePending != nil && !a.updateIsSkipped(a.updatePending.Version):
+			up := a.updatePending
+			pill(c, p, "新版本 v"+up.Version, true, func() {
+				a.updateShowDialog = true
+				a.updatePromptedFor = up.Version
+			})
+		}
 	})
 }
 

@@ -667,6 +667,10 @@ func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutt
 	selected := a.gitSelectedCommit == key
 	kc := c.Key("git-commit-" + key)
 	rowEl := ui.Row(kc).Height(28).Padding(0, 8).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+	if a.gitRevealCommit == key {
+		rowEl.ScrollIntoView()
+		a.gitRevealCommit = ""
+	}
 	if selected {
 		rowEl.Background(p.ActiveRowBg)
 	} else if rowEl.Hovered() {
@@ -837,29 +841,8 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 					})
 				}
 				ui.Text(c, fmt.Sprintf("变更文件 (%d)", len(d.Files))).FontSize(11).FontWeight(weightSemibold).TextColor(p.TextMuted)
-				for _, f := range d.Files {
-					fCopy := f
-					fkc := c.Key("git-file-" + d.Hash + "-" + fCopy.Path)
-					row := ui.Row(fkc).Height(24).Padding(0, 6).Gap(6).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-					if row.Hovered() {
-						row.Background(p.RailBg)
-					}
-					if row.Clicked() {
-						a.TriggerGitFileDiff(*d, fCopy)
-					}
-					row.Children(func() {
-						kindCol, kindBg := p.Green, p.GreenSoft
-						if fCopy.Status == "D" {
-							kindCol, kindBg = p.Danger, p.DangerSoft
-						} else if fCopy.Status != "A" {
-							kindCol, kindBg = p.Amber, p.AmberSoft
-						}
-						badgeBox(fkc, fCopy.Status, kindCol, kindBg, ui.Color{}, 9, true)
-						ui.Text(fkc, fCopy.Path).FontSize(10.5).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
-						if fCopy.Added > 0 || fCopy.Deleted > 0 {
-							ui.Text(fkc, fmt.Sprintf("+%d -%d", fCopy.Added, fCopy.Deleted)).FontSize(9).TextColor(p.TextMuted)
-						}
-					})
+				if len(d.Files) > 0 {
+					a.renderGitCommitTree(c, p, *d, buildGitCommitTree(d.Files), 0)
 				}
 			})
 		})
@@ -912,6 +895,8 @@ func (a *App) TriggerGitLog() {
 	a.gitLogLoaded = true
 	a.gitSelectedCommit = ""
 	a.gitAutoSelected = false
+	a.gitRevealCommit = ""
+	a.gitPinnedCommit = nil
 	a.gitDetail = nil
 	a.gitDetailLoading = false
 	a.gitLogTargets = a.gitTargetStatuses()
@@ -1029,10 +1014,7 @@ func (a *App) rebuildGitUnified() {
 				continue
 			}
 			e := g.Rows[idxs[i]].Entry
-			t := e.CommitterUnix
-			if t == 0 {
-				t = e.AuthorUnix
-			}
+			t := gitCommitTime(e)
 			if best < 0 || t > bestTime || (t == bestTime && e.RepoName < groups[best].Status.Repo.Name) {
 				best = i
 				bestTime = t
@@ -1044,12 +1026,21 @@ func (a *App) rebuildGitUnified() {
 		entries = append(entries, groups[best].Rows[idxs[best]].Entry)
 		idxs[best]++
 	}
+	if pinned := a.gitPinnedCommit; pinned != nil && !gitLogContains(entries, pinned.RepoID+"|"+pinned.Hash) {
+		t := gitCommitTime(*pinned)
+		pos := sort.Search(len(entries), func(i int) bool { return gitCommitTime(entries[i]) < t })
+		entries = append(entries, gitops.CommitEntry{})
+		copy(entries[pos+1:], entries[pos:])
+		entries[pos] = *pinned
+	}
 	rows, maxLanes := buildGitRows(entries)
 	a.gitUnifiedRows = rows
 	a.gitUnifiedMaxLanes = maxLanes
 	a.gitLogTotal = len(rows)
-	if a.gitSelectedCommit != "" && !a.gitAutoSelected && a.findGitCommit(a.gitSelectedCommit) {
-		return
+	if a.gitSelectedCommit != "" && !a.gitAutoSelected {
+		if a.findGitCommit(a.gitSelectedCommit) || a.gitRevealCommit == a.gitSelectedCommit {
+			return
+		}
 	}
 	a.gitSelectedCommit = ""
 	a.gitDetail = nil
@@ -1057,6 +1048,22 @@ func (a *App) rebuildGitUnified() {
 		a.gitAutoSelected = true
 		a.TriggerGitDetail(rows[0].Entry)
 	}
+}
+
+func gitCommitTime(e gitops.CommitEntry) int64 {
+	if e.CommitterUnix != 0 {
+		return e.CommitterUnix
+	}
+	return e.AuthorUnix
+}
+
+func gitLogContains(entries []gitops.CommitEntry, key string) bool {
+	for _, e := range entries {
+		if e.RepoID+"|"+e.Hash == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) findGitCommit(key string) bool {
@@ -1144,6 +1151,43 @@ func firstFreeLane(active []string) int {
 		}
 	}
 	return len(active)
+}
+
+// openGitCommit reveals one commit in the Git history: it clears filters that
+// could hide the commit, pins it into the list even when it is older than the
+// current page, and loads its detail pane.
+func (a *App) openGitCommit(entry gitops.CommitEntry) {
+	if entry.RepoID == "" || entry.Hash == "" {
+		return
+	}
+	// Prefer the richer entry already in the log (email, refs, body) over the
+	// minimal metadata carried by a blame line.
+	key := entry.RepoID + "|" + entry.Hash
+	for _, row := range a.gitUnifiedRows {
+		if row.Entry.RepoID+"|"+row.Entry.Hash == key {
+			entry = row.Entry
+			break
+		}
+	}
+	a.showGitPanel = true
+	a.showLogPanel = false
+	a.showTerminalPanel = false
+	a.gitSubTab = "history"
+	a.gitFilterRepoID = entry.RepoID
+	a.gitFilterBranch = ""
+	a.gitFilterText = ""
+	a.gitFilterAuthor = ""
+	a.gitAuthorMe = false
+	a.gitFilterPath = ""
+	a.gitSinceDays = 0
+	a.gitAutoSelected = false
+	a.TriggerGitLog()
+	pinned := entry
+	a.gitPinnedCommit = &pinned
+	a.gitSelectedCommit = key
+	a.gitRevealCommit = key
+	a.TriggerGitDetail(entry)
+	a.invalidateUI()
 }
 
 func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {

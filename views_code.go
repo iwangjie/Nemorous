@@ -332,6 +332,17 @@ func (a *App) buildCodeTabBar(c *ui.Context, p Palette) {
 				} else if row.Hovered() {
 					row.Background(p.Surface2)
 				}
+				row.PopoverMenu(func(m *ui.Menu) {
+					if m.Item("关闭").Chosen() {
+						a.requestCloseCodeTab(tabCopy)
+					}
+					if m.Item("关闭其他").Chosen() {
+						a.requestCloseOtherCodeTabs(tabCopy)
+					}
+					if m.Item("关闭全部").Chosen() {
+						a.requestCloseAllCodeTabs()
+					}
+				})
 				closed := false
 				row.Children(func() {
 					badge := repoBadgeColors(tabCopy.file.ColorIdx, p.IsDark)
@@ -434,6 +445,21 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			})
 		}
 
-		editor.View(c, tab.state).Grow(1).FillWidth()
+		if tab.blameAll {
+			ui.Row(c).Grow(1).FillHeight().Children(func() {
+				a.buildCodeBlameGutter(c, p, tab)
+				view := editor.View(c, tab.state).Bind(&tab.viewHandle).Grow(1).FillHeight()
+				if width := view.Bounds().W; width > 0 {
+					tab.editorWidth = width
+				}
+			})
+			a.syncCodeBlame(tab)
+			return
+		}
+		view := editor.View(c, tab.state).Bind(&tab.viewHandle).Grow(1).FillWidth()
+		if width := view.Bounds().W; width > 0 {
+			tab.editorWidth = width
+		}
+		a.syncCodeBlame(tab)
 	})
 }
