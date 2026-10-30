@@ -1,88 +1,251 @@
-# Nemorous — 多仓如林 · 统一俯瞰
+<div align="center">
 
-**Nemorous** 是一款专为 AI 编程时代打造的高性能、极低内存占用、秒级启动的多仓库 Git 协同与代码查阅桌面工具，基于 [MyGo Native UI](https://mygo.egoist.dev/) 构建（macOS Metal / Windows Direct3D 11 / Linux OpenGL 纯原生 GPU 渲染，零 WebView 开销，`CGO_ENABLED=0` 单二进制跨平台分发）。
+<a href="https://github.com/iwangjie/Nemorous"><img src="assets/icon.png" width="108" alt="Nemorous"></a>
 
----
+# Nemorous
 
-## 核心解决痛点
+### Forest of Repositories, Unified Glance
 
-在多微服务 / 多仓库协作架构中，一个业务需求往往横跨多个 Git 仓库（如 `cloud-caring`、`gateway`、`monorepo`、`risk-cloud`、`sby-libs`、`tax_pay_ext` 等）。在 AI 编程时代，开发者每天的核心高频动作已从“手写大量样板代码”转变为：
+**Ultra-fast, lightweight, and native Git multi-repository cockpit built for the AI coding era**<br>
+Crafted with [MyGo Native UI](https://mygo.egoist.dev/) · 100% Native GPU rendering · Zero WebView/Electron overhead · `CGO=0` single-binary distribution
 
-1. **多仓分支对齐与统一拉取**：一键将所有关联仓库切到同一特性分支或切回主干并快进同步；拉取前自动暂存本地改动，快进成功后自动恢复，本地有改动不再被跳过；
-2. **跨仓 Diff 审阅与微调**：像在 IDEA 中一样直观审阅双栏/单栏 Diff，随手在 Diff 或代码查阅器里做行级微调（`⌘S` 保存）或 Hunk 级还原；
-3. **统一提交与统一推送**：支持勾选多个仓库的改动一键统一提交（Unified Commit）或按仓独立提交，安全推送远端；
-4. **直接合并与 AI 辅助冲突消解**：合并直接发生在临时 `git worktree`，不触碰工作区；无冲突即更新目标分支并推送，冲突保留工作区供手动处理，或交由 AI Agent（`pi` / `claude` / `codex`）消解并执行 **6 项机器强安全校验 (`VerifyAIMerge`)**，最后由人工确认推送；
-5. **原生集成 `mani.yaml` 与 `AGENTS.md`**：自动发现工作区中的 `mani.yaml` 项目配置、任务脚本以及 `AGENTS.md` 仓库职责表，同时自动扫描未登记的同级 `.git` 仓库。
+[![Release](https://img.shields.io/github/v/release/iwangjie/Nemorous?label=release&color=10B981)](https://github.com/iwangjie/Nemorous/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/iwangjie/Nemorous/ci.yml?branch=main&label=CI&color=10B981)](https://github.com/iwangjie/Nemorous/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-6366F1)](LICENSE)
+[![Go Report Card](https://goreportcard.com/badge/github.com/iwangjie/Nemorous)](https://goreportcard.com/report/github.com/iwangjie/Nemorous)
 
----
+![macOS](https://img.shields.io/badge/macOS-Metal-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-Direct3D_11-0078D4?logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-OpenGL-FCC624?logo=linux&logoColor=black)
+![Architecture](https://img.shields.io/badge/Arch-arm64_%7C_amd64-059669)
 
-## 核心视图与快捷键
+<br>
 
-| 快捷键 | 视图 / 功能 | 说明 |
+**[Downloads](https://github.com/iwangjie/Nemorous/releases/latest)** &nbsp;·&nbsp; **[Features](#core-features)** &nbsp;·&nbsp; **[Safety Invariants](#safety-invariants)** &nbsp;·&nbsp; **[Shortcuts](#keyboard-shortcuts)** &nbsp;·&nbsp; **English** · [简体中文](README.zh-CN.md)
+
+<br>
+
+<picture>
+  <img src="assets/banner.png" width="100%" alt="Nemorous Banner">
+</picture>
+
+<br>
+
+<picture>
+  <img src="assets/preview.gif" width="100%" alt="Nemorous Promo Preview">
+</picture>
+
+<sub>🎬 Watch the Full HD 60fps showcase video in [assets/promo.mp4](assets/promo.mp4)</sub>
+
+</div>
+
+<br>
+
+## Why Nemorous?
+
+In modern microservice architectures, business features and architectural refactors frequently span across multiple Git repositories (e.g., `cloud-caring`, `gateway`, `monorepo`, `risk-cloud`, `sby-libs`, `tax-pay-ext`, etc.).
+
+As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenCode, Pi) write code at machine speed, developers face a new bottleneck: **multi-repository coordination friction**.
+
+| Traditional Git Pitfalls | AI Era Amplified Pain Points | Nemorous's Solution |
 |---|---|---|
-| `⌘1` | **± 改动差异与提交** | IDEA 风格多仓变更文件树（紧凑单行、仓库/目录/文件分层；文件级与仓库/目录三态复选框，勾选父节点自动同步子文件；文件名按新增/修改/删除着色，`A/M/D/R/?` 状态标记，目录折叠、文件名搜索）、复选框与 Shift 连选、右键暂存/还原/文件历史、工作区 vs 暂存区 Diff、多行提交说明、按钮按可用性自动禁用、多仓 Stash、`--amend`、撤销上一次提交、多仓提交与推送 |
-| `⌘2` | **⟨⟩ 代码极速查阅** | 免索引毫秒级多仓文件模糊检索、工作区根节点下的紧凑文件树（仓库 → 目录，默认折叠）、多标签页并行查阅（每页保留独立编辑缓冲与未保存状态，标签右键支持关闭 / 关闭其他 / 关闭全部）、30+ 语言语法高亮、HEAD 差异边栏条、单击源码直接编辑、行号右键 Git Blame（整文件左侧日期/作者注解，近期提交按时间着色；单击行尾显示单行注解；点击注解跳转提交图查看详情）、`⌘F` 查找、`⌘G` 跳行、`⌘S` 保存 |
-| `⌘3` | **⎇ Git 统一提交森林与合并** | 所有仓库的提交按时间合并为同一棵树，仓库色标 + 全局泳道（最多展示 10 条活跃泳道，溢出泳道折叠到右列，避免跨内容长连线）；左侧工作区/仓库/分支树懒加载。筛选条支持文本/哈希/RE2（rg 风格）、仓库、分支、作者「我」与自动补全、路径目录选择/自动补全/rg glob；提交详情使用文件树展示变更文件，点击文件使用与待提交 diff 相同的 DiffView（双栏/单栏、一致高亮），三栏与 Mani 面板均可拖动；时间范围使用下拉框，刷新按钮收为图标。子页「合并」保留 Worktree 隔离合并、方案复用、手动冲突与 AI 消解 + 6 项强校验。 |
-| `⌘4` | **⚙ Mani 工具面板** | 右侧 Maven 风格工具窗：工作区 → 任务 / 项目树，运行选中任务或右键项目指定目标执行；支持 `B=`、`TARGET=` 参数；未启用或未检测到 `mani.yaml` 时不展示 |
-| `⌘K` / `⌘P` | **全局命令面板** | 跨仓库、改动文件、代码文件、分支动作与 Mani 任务的一站式瞬时检索跳转 |
-| `⇧⌘F` | **全局文件内容搜索** | 类似 IDEA 的 Find in Files：跨仓库搜索文件内容，支持区分大小写、正则表达式与逐行结果跳转；优先使用 `rg` 加速，未安装时自动回退到内置扫描 |
-| `⌘B` | **多仓批量切分支** | 批量切换或基于当前提交新建分支（自动保护跳过有未提交改动的仓库）；顶栏分支弹窗按 IDEA 组织为「搜索 + 快捷操作 + 仓库列表 + 最近分支」，仓库检查器使用“我的分支优先 + 按 `/` 分层”的下拉菜单（我的最近提交 → 他人最近提交 → 其他，我的分支带 `me` 角标） |
-| `⌘⏎` / `⌘⇧⏎` | **提交 / 提交并推送** | 在变更视图内直接提交勾选文件，可选 `--amend`；推送严格禁止 force |
-| `↑↓` / `Space` / `S` / `U` | **变更树键盘流** | 上下移动 Diff 选择、空格勾选、`S` 暂存、`U` 取消暂存（无文本焦点时） |
-| `⌘S` | **保存微调** | 在代码查阅器或 Diff 微调模式下将修改安全落盘 |
-| `⌘,` | **全局设置** | 配置多仓工作区目录、AI Agent CLI、默认目标分支、并发协程数、明亮 / 暗色 / Darcula / 跟随系统四种主题与字号；Mani 集成、自动更新检查间隔 / 后台自动安装 / GitHub 加速镜像也在此处 |
-
-## 下载与自动更新
-
-稳定版安装包见 [GitHub Releases](https://github.com/iwangjie/Nemorous/releases/latest)。
-
-- 启动 20 秒后检查一次，之后前台每 **30 分钟** 检查一次 GitHub Releases（设置中可调 5 分钟–24 小时）。
-- 发现新版本时前台弹窗提示；应用处于非前台 30 秒后自动下载、安装并重启。
-- 有未保存代码 / Diff 修改或 Git、Mani 任务正在运行时，自动更新会延后，避免丢失工作。
-- 更新包使用 Ed25519 签名，客户端内置公钥校验；默认通过 `ghfast.top` GitHub 镜像加速，可在设置中修改或留空直连，镜像失效会自动回退 GitHub。
-- 当前 macOS 安装包使用 ad-hoc 签名，首次打开若被 Gatekeeper 提示，请右键选择“打开”；更新包仍会执行签名校验。
-
-> 主界面采用 IDEA 式停靠布局：左侧变更/文件树，中间编辑器或 Diff，底部全宽可拖拽的 Git / 日志 / 内置终端工具窗，右侧 Mani 工具窗。左下角主题图标可快速切换明亮 / 暗色 / Darcula / 跟随系统；日志按钮打开命令执行 / 软件运行两个日志 Tab，终端按钮打开内置终端窗口（PTY + Ghostty 终端模拟器）。视图切换使用左侧竖排工具窗：默认仅图标，右键在「仅图标 / 图标 + 文字」之间切换。Mani 启用后右侧出现工具图标与面板；未启用或未检测到 `mani.yaml` 时不展示。长任务在右下角显示进度与结果卡片，运行中可点 × 停止，点击结果可打开操作详情。
+| **Branch Drift** | AI creates branches across multiple repos; developers forget to align branches before editing. | **`⌘B` 1-Click Multi-Repo Switch**: Atomically aligns all repos to the feature branch, auto-stashes unstaged changes, and recalls saved branch presets. |
+| **Pull Conflicts & Skips** | `git pull` across multiple repos skips repositories with dirty working trees, breaking local builds. | **Auto Stash & Pop**: Silently stashes dirty files before pulling, fast-forwards clean commits, and seamlessly pops changes back. |
+| **Fragmented Code Review** | Tabbing through dozens of IDE windows to inspect diffs loses cross-repo context. | **Unified Multi-Repo Changes Tree**: Hierarchical IDEA-style tree, side-by-side diffs, and inline micro-editing with `⌘S` save. |
+| **High-Risk Merges** | Merging feature branches into staging/main pollutes the local working tree. | **Worktree-Isolated Direct Merge**: Merges execute inside ephemeral `git worktree` sandboxes, leaving your active tree 100% clean. |
+| **Unreliable AI Conflict Fixes** | AI conflict resolution might hallucinate, edit unrelated files, or leave conflict markers. | **6-Layer Machine Verified Invariants (`VerifyAIMerge`)**: Boundary checking, parent SHA validation, and exhaustive 0-conflict-marker scans. |
+| **Bloated Electron Apps** | Running multiple heavyweight Git GUIs eats gigabytes of RAM and drains battery life. | **Pure Native GPU Engine (Metal / D3D11 / OpenGL)**: Instant cold start (<0.3s), ~20MB RAM idle, zero web engine lag. |
 
 ---
 
-## 安全不变量 (Safety Invariants)
+## Core Features
 
-- **绝不破坏未提交代码**：批量切分支、切主干与 `pull --ff-only` 遇到未提交改动会自动安全跳过；合并只在临时 worktree 中读已提交历史，未提交改动不会进入合并；还原单文件改动前强制弹窗二次确认。
-- **绝不强制推送**：任何推送操作均严禁 `--force` / `--force-with-lease`；`--amend` 后普通推送被拒时由用户决定后续处理。
-- **撤销提交有边界**：只允许 `reset --soft` 撤销未推送的提交，已存在于远端的提交会被拒绝。
-- **手动合并隔离**：冲突手动合并只在临时 `git worktree` 中进行，绝不触碰工作区、绝不自动推送。
-- **合并目标安全**：直接合并前校验目标分支是否存在；目标分支当前被检出时拒绝执行；冲突时保留临时 worktree，绝不自动推送。
-- **AI 合并 6 项机器安全强校验 (`VerifyAIMerge`)**：
-  1. `MERGE_HEAD` 必须已清理完成合并提交；
-  2. `git diff --diff-filter=U` 必须为 0 未决冲突文件；
-  3. `git status --porcelain` 工作区必须完全干净；
-  4. `HEAD` 必须为双亲提交且精确匹配 `[preTargetSHA, sourceTipSHA]`；
-  5. 合并提交涉及的变更文件必须严格属于双边分支变更集的并集，严禁 AI 越界修改无关文件；
-  6. 全量扫描冲突文件确保 0 残留 `<<<<<<<` / `=======` / `>>>>>>>` / `|||||||` 标记。
+### 1. Multi-Repo Branch Matrix & Batch Fast-Forward (`⌘B`)
+- **Bird’s-Eye Branch Matrix**: Instantly view the checked-out branch, ahead/behind counters, and uncommitted change flags for all workspace repositories.
+- **One-Click Synchronization**: Switch all or selected repositories to a target branch simultaneously with RE2 regex and fuzzy matching.
+- **Branch Presets**: Save complex multi-repo branch combinations (e.g. `Billing-V2-Sprint`) and restore them with one click from the header.
+- **Fail-Safe Guard**: Repositories with uncommitted modifications are never clobbered or unsafely overwritten.
+
+<picture>
+  <img src="assets/screenshots/04_branch_switch_light.png" width="100%" alt="Multi-Repo Branch Matrix">
+</picture>
 
 ---
 
-## 构建与验证
+### 2. IDEA-Grade Changes Tree & Diff Micro-Editing (`⌘1`)
+- **Hierarchical Directory Tree**: Clean, verified tree indentation (`Repo → Directory → File`), with single-child directory compaction (Compact Middle Packages).
+- **Tri-State Checkboxes**: Check/uncheck by file, directory, or repository; Shift-click range selection; keyboard-driven flow (`Space` toggle, `S` stage, `U` unstage).
+- **Unified & Split Diff View**: Crisp syntax highlighting for additions and deletions, with direct cursor micro-editing and `⌘S` instant disk sync.
+- **Unified Multi-Repo Commit & Push**: Commit checked files across multiple repos in one atomic operation, with `--amend` and safe soft-undo support.
+
+<picture>
+  <img src="assets/screenshots/01_changes_diff_light.png" width="100%" alt="Changes Tree and Diff">
+</picture>
+
+---
+
+### 3. Zero-Index Millisecond Code Explorer & Git Blame (`⌘2`)
+- **Zero-Index Instant Launch**: Browse multi-million-line workspaces without waiting for indexing.
+- **Fuzzy File Finder (`⌘P` / `⌘K`)**: Millisecond file lookup across all workspace repositories.
+- **30+ Language Syntax Highlighting**: GPU-accelerated code rendering with buttery smooth scrolling.
+- **IntelliJ-Grade Git Blame**: File-wide date and author annotations with commit recency heat-map coloring; single-click line annotation to drill straight into commit graph details.
+
+<picture>
+  <img src="assets/screenshots/02_code_explorer_light.png" width="100%" alt="Code Explorer & Git Blame">
+</picture>
+
+---
+
+### 4. Global Commit Forest & Colorful Swimlanes (`⌘3`)
+- **Topological Commit Forest**: Combines commit histories across all repositories into a unified timeline graph.
+- **Multi-Repo Swimlanes**: Displays up to 10 active parallel swimlanes with intelligent overflow folding to prevent tangled visual noise.
+- **Power Filters**: Search commits by message, SHA, repository, branch, author ("My commits" prioritized), file path, or Ripgrep glob.
+
+<picture>
+  <img src="assets/screenshots/03_commit_forest_light.png" width="100%" alt="Global Commit Forest">
+</picture>
+
+---
+
+### 5. Worktree-Isolated Merge & AI Conflict Resolution
+- **Zero Working-Tree Dirtying**: Merges execute inside an isolated ephemeral `git worktree`. Your active working directory remains completely untouched.
+- **Fast-Forward & Direct Merge**: Clean merges automatically advance the target branch and optionally push to origin.
+- **AI Conflict Resolution**: Connect your local AI Agent CLI (`pi`, `claude`, `codex`, `omp`) to automatically resolve merge conflicts.
+- **6-Layer Machine Verified Security (`VerifyAIMerge`)**: AI merge results must strictly pass all 6 automated invariant checks before committing.
+
+---
+
+### 6. Native `mani.yaml` & `AGENTS.md` Integration (`⌘4`)
+- **Mani Tool Window**: Automatically discovers workspace task pipelines and projects from `mani.yaml`. Run commands workspace-wide or target specific repos.
+- **AI Agent Guidance**: Auto-discovers root and per-repo `AGENTS.md` definitions and guidelines.
+
+---
+
+### 7. Embedded PTY Ghostty Terminal & Global Command Palette
+- **Embedded Terminal**: Press `⌘3` / click terminal rail to launch a full-featured native PTY terminal simulator.
+- **Global Search in Files (`⇧⌘F`)**: Fast multi-threaded search across all repositories, powered by Ripgrep (`rg`) with automatic fallback to built-in scan.
+
+---
+
+## Safety Invariants
+
+Automation and AI must never compromise code integrity. Nemorous enforces mathematically rigorous safety invariants:
+
+```
+                    ┌────────────────────────────┐
+                    │     Pre-Merge Validation   │
+                    │ (Target branch check / no  │
+                    │  illegal dirty checkout)   │
+                    └─────────────┬──────────────┘
+                                  │
+                                  ▼
+                    ┌────────────────────────────┐
+                    │  Isolated Worktree Sandbox │  ◄── Zero touch on working tree
+                    └─────────────┬──────────────┘
+                                  │
+                    ┌─────────────┴──────────────┐
+                    │                            │
+             [Clean Fast-Forward]         [Merge Conflict]
+                    │                            │
+                    │                   AI Assistant Resolution (CLI)
+                    │                            │
+                    │                            ▼
+                    │            ┌───────────────────────────────┐
+                    │            │   6-Layer Machine Verification│
+                    │            │    VerifyAIMerge Invariants   │
+                    │            ├───────────────────────────────┤
+                    │            │ 1. MERGE_HEAD clean commit    │
+                    │            │ 2. git diff --diff-filter=U=0 │
+                    │            │ 3. Working tree 100% clean    │
+                    │            │ 4. Exact dual-parent matching │
+                    │            │ 5. Strict boundary file check │
+                    │            │ 6. 0 remaining <<<<<<< markers│
+                    │            └───────────────┬───────────────┘
+                    │                            │ (All passed)
+                    ▼                            ▼
+            ┌────────────────────────────────────────────┐
+            │        Human-Confirmed Safe Push           │
+            │  (Strictly forbids destructive --force)    │
+            └────────────────────────────────────────────┘
+```
+
+1. **Working Tree Invariant**: Batch branch switching, switching to main, and `pull --ff-only` safely skip repos with uncommitted changes or auto-stash them; single-file discard requires explicit confirmation.
+2. **Never Force Push**: Any push command categorically bans `--force` and `--force-with-lease`.
+3. **Bounded Undo**: `git reset --soft` is only permitted for commits that have not been pushed to remote.
+4. **AI Merge 6-Layer Machine Verification (`VerifyAIMerge`)**:
+   - **Check 1**: `MERGE_HEAD` must be finalized with a valid merge commit;
+   - **Check 2**: `git diff --diff-filter=U` must report exactly zero unresolved files;
+   - **Check 3**: `git status --porcelain` in the worktree must be completely clean;
+   - **Check 4**: `HEAD` must be a dual-parent commit matching `[preTargetSHA, sourceTipSHA]`;
+   - **Check 5**: Changed files must strictly be a subset of the union of both branches' modified sets—AI is forbidden from modifying arbitrary files;
+   - **Check 6**: Full content scan guarantees 0 leftover `<<<<<<<`, `=======`, `>>>>>>>`, or `|||||||` conflict markers.
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | View / Action | Description |
+|---|---|---|
+| `⌘1` | **Changes & Staging** | Multi-repo hierarchical changes tree, diff view, micro-edit, staging & commit |
+| `⌘2` | **Code Explorer** | Zero-index file viewer, 30+ language highlights, Git blame annotations |
+| `⌘3` | **Git Forest / Terminal** | Unified commit swimlane graph, branch manager, worktree merge |
+| `⌘4` | **Mani Panel** | `mani.yaml` project and task runner (auto-hides when not configured) |
+| `⌘K` / `⌘P` | **Command Palette** | Instant search across files, repos, branch actions, and Mani tasks |
+| `⇧⌘F` | **Find in Files** | Cross-repo full-text search with Ripgrep (`rg`) acceleration |
+| `⌘B` | **Branch Switcher** | Multi-repo branch matrix, create branch, manage branch presets |
+| `⌘⏎` | **Commit** | Commit checked files across all selected repositories (supports `--amend`) |
+| `⌘⇧⏎` | **Commit & Push** | Unified commit and safe push to remote tracking branches |
+| `↑` / `↓` | **Navigate Changes** | Move selection in the changes tree when no text field has focus |
+| `Space` | **Toggle Checkbox** | Toggle check/uncheck state of selected file or directory |
+| `S` / `U` | **Stage / Unstage** | Single-key stage (`S`) or unstage (`U`) for the active change item |
+| `⌘S` | **Save Micro-Edit** | Persist inline edits in diff or code viewer directly to disk |
+| `⌘R` | **Refresh** | Rescan and update status across all Git repositories |
+| `⌘,` | **Settings** | Configure workspace path, themes, AI Agent CLI, update check frequency |
+
+---
+
+## Installation & Downloads
+
+Pre-built binaries for macOS, Windows, and Linux are available under [GitHub Releases](https://github.com/iwangjie/Nemorous/releases/latest):
+
+| Platform | Format | Architecture | Notes |
+|---|---|---|---|
+| **macOS** | `.dmg` | Apple Silicon (`arm64`) & Intel (`amd64`) | Hardware-accelerated Metal GPU rendering |
+| **Windows** | `-setup.exe` / `.tar.gz` | `amd64` / `arm64` | Direct3D 11 native graphics, NSIS installer |
+| **Linux** | `.deb` / `.tar.gz` | `amd64` / `arm64` | Native OpenGL pipeline, tested on Ubuntu / Debian |
+
+### Signed Auto-Updates
+- **Ed25519 Cryptographic Verification**: Every release manifest and archive is signed with private keys; the desktop client validates signatures using built-in public keys.
+- **Smart Background Updates**: Periodically checks for updates in the foreground (interval configurable from 5m to 24h); automatically installs and restarts when the app is in the background and no dirty edits or active tasks are running.
+- **Fast Mirror Acceleration**: Includes automatic mirror fallback (`ghfast.top`) for high-speed downloads worldwide, gracefully falling back to official GitHub Releases.
+
+---
+
+## Building from Source
+
+Nemorous is written in Go and uses [MyGo Native UI](https://mygo.egoist.dev/). No CGO required; builds clean static binaries:
 
 ```bash
-# 静态生命周期检查 (MyGo Vet)
+# 1. Clone repository
+git clone https://github.com/iwangjie/Nemorous.git
+cd Nemorous
+
+# 2. Static lifetime vet
 go tool mygo vet .
 
-# 运行全部单元测试与无头 UI 测试
+# 3. Run all unit and headless UI regression tests
 CGO_ENABLED=0 go test -v ./...
 
-# 构建当前平台原生桌面安装包 (.app / .dmg / .exe / .deb)
+# 4. Build native package for current OS (.app / .dmg / .exe / .deb)
 go tool mygo build
 ```
 
-## 发布（维护者）
+---
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：自动把标签版本写入 `mygo.json`，构建全平台安装包与签名更新清单，并创建 GitHub Release。
+## License
 
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
+Nemorous is open source under the [MIT License](LICENSE). Contributions, bug reports, and pull requests are warmly welcome!
 
-更新签名私钥仅保存在本机 `~/Library/Application Support/Nemorous/update-keys/` 与 GitHub Actions Secret `MYGO_UPDATER_PRIVATE_KEY`，不要提交到仓库。
+<div align="center">
+  <sub>Built with ❤️ by the Nemorous Open Source Team · Forest of Repositories, Unified Glance</sub>
+</div>

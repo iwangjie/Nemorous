@@ -204,10 +204,6 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			}
 		})
 
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.SearchField(c.Key("changes-search"), &a.changesFilterQuery).Bind(&a.changesFilterHandle).Placeholder("搜索改动文件...").Grow(1)
-		})
-
 		ui.Scroll(c).Grow(1).Children(func() {
 			for _, st := range dirtyStatuses {
 				a.buildChangeRepoGroup(c, p, st, filteredByRepo[st.Repo.ID])
@@ -389,7 +385,7 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 }
 
 func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node *changeTreeNode, depth int, ordered []gitops.ChangedFile) {
-	indent := float32(6 + depth*12)
+	indent := float32(20 + depth*16)
 	for _, dir := range node.dirs {
 		dirCopy := dir
 		dirKey := repoID + "::" + dirCopy.relPath
@@ -449,7 +445,7 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node
 		}
 	}
 	for _, cf := range node.files {
-		a.buildChangeFileRow(c, p, cf, indent+14, ordered)
+		a.buildChangeFileRow(c, p, cf, indent, ordered)
 	}
 }
 
@@ -550,6 +546,9 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 				drawIcon(fkc, icoCheck, 10, p.AccentText)
 			}
 		})
+
+		// Spacer matching chevron slot in dir row so kind badge aligns with folder icon
+		ui.Box(fkc).Width(10).Shrink(0)
 
 		ui.Box(fkc).Size(15, 15).Radius(3).Background(kindBg).Center().Shrink(0).Children(func() {
 			ui.Text(fkc, cfCopy.Kind).FontSize(9.5).FontWeight(weightBold).TextColor(kindColor)
