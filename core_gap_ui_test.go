@@ -394,6 +394,21 @@ func TestConflictSmartMergeAndCloseGuard(t *testing.T) {
 	app.showConflict = false
 }
 
+func waitAppUI(t *testing.T, app *App, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		app.uiMu.Lock()
+		ok := cond()
+		app.uiMu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
 func TestBinaryConflictResolution(t *testing.T) {
 	dir := t.TempDir()
 	gitRun(t, dir, "init", "-b", "main")
@@ -417,13 +432,13 @@ func TestBinaryConflictResolution(t *testing.T) {
 	}
 	app := newGapTestApp(t, dir)
 	app.openConflictResolver(app.statuses[0].Repo.ID)
-	waitApp(t, "binary conflict", func() bool { return app.conflictBinary && app.conflictSelected != "" })
+	waitAppUI(t, app, "binary conflict", func() bool { return app.conflictBinary && app.conflictSelected != "" })
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
 	if !tt.HasText("二进制文件冲突") {
 		t.Fatal("binary conflict UI did not render")
 	}
-	app.conflictBinaryApply(conflict.Theirs)
+	app.runUI(func() { app.conflictBinaryApply(conflict.Theirs) })
 	waitApp(t, "binary resolved", func() bool {
 		data, _ := os.ReadFile(path)
 		return len(data) == 3 && data[1] == 0x0c && data[2] == 0x0d

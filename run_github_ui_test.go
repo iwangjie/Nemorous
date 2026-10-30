@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +47,9 @@ func TestRunPanelRunsConfiguration(t *testing.T) {
 }
 
 func TestGitHubModalShowsPRChecksAndComments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake gh CLI is a POSIX shell script")
+	}
 	ws := setupUITestWorkspace(t)
 	repoPath := filepath.Join(ws, "cloud-caring")
 	if _, err := gitops.RunGit(context.Background(), repoPath, "remote", "add", "origin", "git@github.com:acme/app.git"); err != nil {
