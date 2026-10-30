@@ -59,7 +59,7 @@ func TestPullAllRestoresLocalChanges(t *testing.T) {
 	mustGit(seed, "push", "-u", "origin", "main")
 
 	work := filepath.Join(root, "work")
-	mustGit(root, "clone", remote, work)
+	mustGit(root, "clone", "-b", "main", remote, work)
 	if err := os.WriteFile(filepath.Join(work, "local.txt"), []byte("local edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
