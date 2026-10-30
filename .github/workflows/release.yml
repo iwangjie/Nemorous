@@ -108,9 +108,21 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Flatten release assets
+        run: |
+          mkdir release-assets
+          find artifacts -type f -print0 | while IFS= read -r -d '' file; do
+            base="$(basename "$file")"
+            if [ -e "release-assets/$base" ]; then
+              echo "::error::duplicate release asset: $base"
+              exit 1
+            fi
+            cp "$file" "release-assets/$base"
+          done
+
       - name: Write checksums
         run: |
-          cd artifacts
+          cd release-assets
           find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 
       - name: Publish GitHub Release
@@ -118,7 +130,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" artifacts/* --clobber
+            gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber
           else
-            gh release create "${GITHUB_REF_NAME}" artifacts/* --generate-notes
+            gh release create "${GITHUB_REF_NAME}" release-assets/* --generate-notes
           fi
