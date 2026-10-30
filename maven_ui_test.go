@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,9 @@ func TestMavenDependencyGraphUI(t *testing.T) {
 }
 
 func TestMavenPluginUsesConcurrencyAndJVMSettings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
 	if os.Getenv("SKIP_MAVEN_UI_EXEC") == "1" {
 		t.Skip("skip")
 	}
@@ -99,6 +103,9 @@ func TestMavenPluginUsesConcurrencyAndJVMSettings(t *testing.T) {
 }
 
 func TestMavenUsesProjectWrapper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
 	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	ws := t.TempDir()
 	writePom(t, filepath.Join(ws, "demo"), "com.acme", "demo", "1.0.0", "")
@@ -131,6 +138,9 @@ func TestMavenUsesProjectWrapper(t *testing.T) {
 }
 
 func TestMavenBuildChainRunsFromReactorRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
 	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	ws := t.TempDir()
 	parentPom := `<?xml version="1.0"?><project xmlns="http://maven.apache.org/POM/4.0.0">

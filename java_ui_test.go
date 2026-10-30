@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -54,6 +55,9 @@ public class DemoApplicationTest {
 }
 
 func TestJavaPluginRunsMain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
 	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	ws := t.TempDir()
 	write := func(name, body string) {
