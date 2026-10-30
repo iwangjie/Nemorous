@@ -89,6 +89,7 @@ type App struct {
 	activeTab    NavTab
 	showGitPanel bool
 	gitEditorPct float32
+	systemDark   bool // effective system appearance when cfg.Theme == "system"
 
 	// Collapsible UI States (Progressive Disclosure)
 	showDiffOptions       bool
@@ -269,6 +270,7 @@ type App struct {
 }
 
 func NewApp(cfg config.Config) *App {
+	cfg.Theme = normalizeTheme(cfg.Theme)
 	agentName, agentBin := cfg.ResolvedAIAgent()
 	a := &App{
 		cfg:                  cfg,
@@ -320,8 +322,15 @@ func NewApp(cfg config.Config) *App {
 }
 
 func (a *App) palette() Palette {
-	if a.cfg.Theme == "dark" {
+	switch a.cfg.Theme {
+	case "darcula":
+		return darculaPalette()
+	case "dark":
 		return darkPalette()
+	case "system":
+		if a.systemDark {
+			return darkPalette()
+		}
 	}
 	return lightPalette()
 }

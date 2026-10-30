@@ -276,7 +276,7 @@ func (a *App) branchPickerRow(c *ui.Context, p Palette, key, name, age string, c
 		}
 		ui.Text(c, name).FontSize(12).FontWeight(weightMedium).TextColor(p.TextPrimary).SingleLine().Grow(1)
 		if withMe && mine {
-			badgeBox(c, "me", p.Accent, p.AccentSoft, ui.Color{}, 9.5, true)
+			badgeBox(c, "me", p.AccentSoftText, p.AccentSoft, ui.Color{}, 9.5, true)
 		}
 		if age != "" {
 			ui.Text(c, age).FontSize(10.5).TextColor(p.TextMuted).SingleLine()
@@ -554,7 +554,7 @@ func branchMenuPill(c *ui.Context, p Palette, label string, active bool, build f
 	fg := p.TextPrimary
 	if active {
 		bg = p.AccentSoft
-		fg = p.Accent
+		fg = p.AccentSoftText
 	}
 	el := ui.Row(c).Padding(5, 10).Gap(5).Radius(6).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
 	if el.Hovered() {
@@ -562,7 +562,7 @@ func branchMenuPill(c *ui.Context, p Palette, label string, active bool, build f
 	}
 	el.PopoverMenuButton(build)
 	el.Children(func() {
-		drawIcon(c, icoBranch, 12, p.Accent)
+		drawIcon(c, icoBranch, 12, p.AccentSoftText)
 		ui.Text(c, label).FontSize(12).FontWeight(weightMedium).TextColor(fg).SingleLine()
 		drawIcon(c, icoChevronDown, 11, p.TextMuted)
 	})

@@ -315,7 +315,7 @@ func (a *App) buildMergeDetail(c *ui.Context, p Palette, target *aimerge.MergeTa
 				ui.Row(c).Justify(ui.SpaceBetween).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
 					ui.Row(c).Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
 						ui.Text(c, targetCopy.Repo.Name).FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-						badgeBox(c, fmt.Sprintf("%s → %s", targetCopy.SourceBranch, targetCopy.TargetBranch), p.Accent, p.AccentSoft, ui.Color{}, 11, true)
+						badgeBox(c, fmt.Sprintf("%s → %s", targetCopy.SourceBranch, targetCopy.TargetBranch), p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
 					})
 					ui.Row(c).Gap(6).Children(func() {
 						if mergeableTarget(targetCopy) && !hasManual {

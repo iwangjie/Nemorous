@@ -664,21 +664,37 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	app.showManiPanel = false
 	tt.Frame()
 
-	// 7. Open Settings modal and verify omp CLI support
+	// 7. Open Settings modal and verify omp CLI and theme choices
 	app.showSettings = true
 	tt.Frame()
 	if !tt.HasText("omp") {
 		t.Fatal("expected omp option in Settings modal")
 	}
+	if !tt.HasText("Darcula") || !tt.HasText("跟随系统") {
+		t.Fatal("expected the four-way theme selector in Settings")
+	}
 	app.showSettings = false
 
-	// 8. Toggle theme (Light <-> Dark)
+	// 8. Theme selector: light, dark, Darcula, and follow-system
 	if app.cfg.Theme != "light" {
 		t.Fatalf("expected default light theme, got %s", app.cfg.Theme)
 	}
-	app.toggleTheme()
-	tt.Frame()
-	if app.cfg.Theme != "dark" {
-		t.Fatalf("expected dark theme after toggle, got %s", app.cfg.Theme)
+	for _, theme := range []string{"dark", "darcula", "system"} {
+		app.setTheme(theme)
+		if app.cfg.Theme != theme {
+			t.Fatalf("expected theme %s, got %s", theme, app.cfg.Theme)
+		}
+	}
+	app.systemDark = true
+	if !app.palette().IsDark {
+		t.Fatal("expected system theme to use the dark palette under a dark OS")
+	}
+	app.systemDark = false
+	if app.palette().IsDark {
+		t.Fatal("expected system theme to use the light palette under a light OS")
+	}
+	app.setTheme("light")
+	if app.palette().IsDark {
+		t.Fatal("expected light palette after selecting light")
 	}
 }

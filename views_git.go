@@ -58,7 +58,7 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 				fg := p.TextSecondary
 				if active {
 					bg = p.AccentSoft
-					fg = p.Accent
+					fg = p.AccentSoftText
 				}
 				kc := c.Key("git-tab-" + id)
 				el := ui.Row(kc).Padding(5, 10).Gap(5).Radius(6).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
@@ -299,7 +299,7 @@ func gitFilterPill(c *ui.Context, p Palette, key, label string, active bool, bui
 	fg := p.TextSecondary
 	if active {
 		bg = p.AccentSoft
-		fg = p.Accent
+		fg = p.AccentSoftText
 	}
 	kc := c.Key(key)
 	el := ui.Row(kc).Padding(5, 9).Gap(4).Radius(6).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
@@ -723,7 +723,7 @@ func gitLaneColor(lane int, p Palette) ui.Color {
 func gitPrimaryRef(refs []string, p Palette) (string, ui.Color, ui.Color) {
 	for _, ref := range refs {
 		if strings.HasPrefix(ref, "HEAD -> ") {
-			return strings.TrimPrefix(ref, "HEAD -> "), p.Accent, p.AccentSoft
+			return strings.TrimPrefix(ref, "HEAD -> "), p.AccentSoftText, p.AccentSoft
 		}
 	}
 	for _, ref := range refs {
@@ -733,7 +733,7 @@ func gitPrimaryRef(refs []string, p Palette) (string, ui.Color, ui.Color) {
 	}
 	for _, ref := range refs {
 		if !strings.Contains(ref, "/") {
-			return ref, p.Accent, p.AccentSoft
+			return ref, p.AccentSoftText, p.AccentSoft
 		}
 	}
 	if len(refs) > 0 {
@@ -781,8 +781,8 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 			d := a.gitDetail
 			ui.Column(c).Padding(14).Gap(8).Children(func() {
 				ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
-					badgeBox(c, d.RepoName, p.Accent, p.AccentSoft, ui.Color{}, 9.5, true)
-					ui.Text(c, d.ShortHash).Font("SF Mono, Menlo, monospace").FontSize(11).FontWeight(weightSemibold).TextColor(p.Accent)
+					badgeBox(c, d.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 9.5, true)
+					ui.Text(c, d.ShortHash).Font("SF Mono, Menlo, monospace").FontSize(11).FontWeight(weightSemibold).TextColor(p.AccentSoftText)
 					miniBtn(c, p, "复制哈希", func() {
 						a.pendingClipboard = d.Hash
 					})
@@ -1201,7 +1201,7 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 				miniBtn(c, p, "← 返回提交图", func() {
 					a.closeGitCommitDiff()
 				})
-				badgeBox(c, a.gitDiffRepo, p.Accent, p.AccentSoft, ui.Color{}, 10.5, true)
+				badgeBox(c, a.gitDiffRepo, p.AccentSoftText, p.AccentSoft, ui.Color{}, 10.5, true)
 				pathLabel := a.gitDiffPath
 				if a.gitDiffOldPath != "" && a.gitDiffOldPath != a.gitDiffPath {
 					pathLabel = a.gitDiffOldPath + " → " + a.gitDiffPath

@@ -28,7 +28,7 @@ type MergePreset struct {
 type Config struct {
 	WorkspacePath       string         `json:"workspace_path"`
 	RecentWorkspaces    []string       `json:"recent_workspaces"`
-	Theme               string         `json:"theme"`                 // "dark", "light", "system"
+	Theme               string         `json:"theme"`                 // "light", "dark", "darcula", "system"
 	DefaultTargetBranch string         `json:"default_target_branch"` // e.g. "test", "main"
 	AIAgent             string         `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
 	Concurrency         int            `json:"concurrency"`           // parallel git workers (default 8)

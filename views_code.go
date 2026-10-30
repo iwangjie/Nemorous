@@ -386,7 +386,7 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 
 		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
-				badgeBox(c, wf.RepoName, p.Accent, p.AccentSoft, ui.Color{}, 11, true)
+				badgeBox(c, wf.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
 				ui.Text(c, wf.RelPath).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
 				if isModified {
 					badgeBox(c, "未保存", p.Amber, p.AmberSoft, ui.Color{}, 10.5, true)

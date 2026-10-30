@@ -209,7 +209,7 @@ func branchFuzzyInput(
 				drawIcon(c, icoBranch, 12, icCol)
 				ui.Text(c, biCopy.Name).FontSize(12).FontWeight(weightMedium).TextColor(txtCol).SingleLine().Grow(1)
 				if biCopy.Mine {
-					meFg, meBg := p.Accent, p.AccentSoft
+					meFg, meBg := p.AccentSoftText, p.AccentSoft
 					if hi {
 						meFg, meBg = p.AccentText, p.AccentText.Alpha(0.18)
 					}
@@ -312,8 +312,8 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			addEntry("act-refresh", "操作", "刷新仓库状态", "⌘R", p.Accent, func() {
 				a.RefreshAsync()
 			})
-			addEntry("act-theme", "操作", "切换浅色 / 深色外观", "", p.Amber, func() {
-				a.toggleTheme()
+			addEntry("act-theme", "操作", "外观主题", "明亮 / 暗色 / Darcula / 跟随系统", p.Amber, func() {
+				a.showSettings = true
 			})
 
 			for _, st := range a.statuses {
@@ -379,7 +379,7 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 					prCopy := preset
 					pkc := c.Key("preset-row-" + prCopy.Name)
 					ui.Row(pkc).Padding(6, 10).Gap(8).Radius(6).Background(p.Surface).Border(1, p.BorderSubtle).AlignItems(ui.Center).Children(func() {
-						badgeBox(pkc, prCopy.Name, p.Accent, p.AccentSoft, ui.Color{}, 11.5, true)
+						badgeBox(pkc, prCopy.Name, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11.5, true)
 						ui.Text(pkc, formatPresetSummary(prCopy.RepoBranches)).FontSize(11.5).TextColor(p.TextSecondary).Grow(1).MaxLines(1)
 						miniBtn(pkc, p, "填入下方", func() {
 							a.ApplyBranchPreset(prCopy, false)
@@ -621,14 +621,14 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 		// Section 2: Appearance & Editor
 		ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
 			ui.Text(c, "外观与显示").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "主题：").FontSize(12).TextColor(p.TextSecondary)
-				pill(c, p, "浅色", a.cfg.Theme == "light", func() {
-					a.setTheme("light")
-				})
-				pill(c, p, "深色", a.cfg.Theme == "dark", func() {
-					a.setTheme("dark")
-				})
+				for _, choice := range themeChoices {
+					ch := choice
+					pill(c, p, ch.Label, a.cfg.Theme == ch.ID, func() {
+						a.setTheme(ch.ID)
+					})
+				}
 				ui.Spacer(c)
 				ui.Text(c, "代码字号：").FontSize(12).TextColor(p.TextSecondary)
 				miniBtn(c, p, fmt.Sprintf("%.0fpt", a.cfg.EditorFontSize), func() {
@@ -732,17 +732,17 @@ func (a *App) buildDiscardConfirmModal(c *ui.Context, p Palette) {
 	}
 }
 
-func (a *App) toggleTheme() {
-	if a.cfg.Theme == "dark" {
-		a.setTheme("light")
-	} else {
-		a.setTheme("dark")
+func (a *App) setTheme(theme string) {
+	theme = normalizeTheme(theme)
+	a.cfg.Theme = theme
+	if mygo.App.IsReady() {
+		mygo.Theme.SetSource(nativeThemeSource(theme))
+		a.systemDark = mygo.Theme.IsDark()
 	}
-}
-
-func (a *App) setTheme(t string) {
-	a.cfg.Theme = t
 	_ = a.cfg.Save()
+	if a.win != nil {
+		a.win.Invalidate()
+	}
 }
 
 func (a *App) buildCodeTabCloseModal(c *ui.Context, p Palette) {

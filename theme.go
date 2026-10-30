@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -9,6 +10,50 @@ const (
 	weightSemibold = 600
 	weightBold     = 700
 )
+
+// themeChoice is one entry in the appearance selector.
+type themeChoice struct {
+	ID    string
+	Label string
+}
+
+var themeChoices = []themeChoice{
+	{"light", "明亮"},
+	{"dark", "暗色"},
+	{"darcula", "Darcula"},
+	{"system", "跟随系统"},
+}
+
+func normalizeTheme(theme string) string {
+	for _, choice := range themeChoices {
+		if theme == choice.ID {
+			return theme
+		}
+	}
+	return "light"
+}
+
+func themeLabel(theme string) string {
+	for _, choice := range themeChoices {
+		if theme == choice.ID {
+			return choice.Label
+		}
+	}
+	return "明亮"
+}
+
+// nativeThemeSource maps the app theme to the native title bar and menu
+// appearance. Darcula is a dark palette, so it forces a dark native chrome.
+func nativeThemeSource(theme string) mygo.ThemeSource {
+	switch normalizeTheme(theme) {
+	case "light":
+		return mygo.ThemeLight
+	case "dark", "darcula":
+		return mygo.ThemeDark
+	default:
+		return mygo.ThemeSystem
+	}
+}
 
 // Palette implements the Magpie color system:
 // "one quiet surface, real logos, controls that read as pop-up buttons."
@@ -31,11 +76,12 @@ type Palette struct {
 	BorderSubtle ui.Color // --line-2
 	BorderStrong ui.Color // emphasized border
 
-	Accent       ui.Color // --accent (indigo)
-	AccentHover  ui.Color
-	AccentSoft   ui.Color // --accent-soft
-	AccentBorder ui.Color
-	AccentText   ui.Color // --accent-fg
+	Accent         ui.Color // --accent (indigo)
+	AccentHover    ui.Color
+	AccentSoft     ui.Color // --accent-soft
+	AccentSoftText ui.Color // readable accent text on AccentSoft
+	AccentBorder   ui.Color
+	AccentText     ui.Color // --accent-fg
 
 	Green       ui.Color // --green
 	GreenSoft   ui.Color // --green-soft
@@ -79,19 +125,20 @@ func lightPalette() Palette {
 		TextPrimary:   ui.Hex("#1C1C21"),
 		TextSecondary: ui.Hex("#4B4B53"),
 		TextControl:   ui.Hex("#63636B"),
-		TextMuted:     ui.Hex("#85858D"),
+		TextMuted:     ui.Hex("#6F6F78"),
 
 		Border:       ui.Hex("#E3E3E8"),
 		BorderSubtle: ui.Hex("#ECECF0"),
 		BorderStrong: ui.Hex("#D4D4DC"),
 
-		Accent:       ui.Hex("#4F46E5"),
-		AccentHover:  ui.Hex("#4338CA"),
-		AccentSoft:   ui.Hex("#EEEDFD"),
-		AccentBorder: ui.Hex("#C7D2FE"),
-		AccentText:   ui.Hex("#FFFFFF"),
+		Accent:         ui.Hex("#4F46E5"),
+		AccentHover:    ui.Hex("#4338CA"),
+		AccentSoft:     ui.Hex("#EEEDFD"),
+		AccentSoftText: ui.Hex("#4338CA"),
+		AccentBorder:   ui.Hex("#C7D2FE"),
+		AccentText:     ui.Hex("#FFFFFF"),
 
-		Green:       ui.Hex("#189A58"),
+		Green:       ui.Hex("#0F7A45"),
 		GreenSoft:   ui.Hex("#E4F6EC"),
 		GreenBorder: ui.Hex("#A7F3D0"),
 
@@ -99,11 +146,11 @@ func lightPalette() Palette {
 		AmberSoft:   ui.Hex("#FBF0DF"),
 		AmberBorder: ui.Hex("#FDE68A"),
 
-		Danger:       ui.Hex("#D64545"),
+		Danger:       ui.Hex("#C43D3D"),
 		DangerSoft:   ui.Hex("#FBE9E9"),
 		DangerBorder: ui.Hex("#FECACA"),
 
-		Blue:       ui.Hex("#0284C7"),
+		Blue:       ui.Hex("#0369A1"),
 		BlueSoft:   ui.Hex("#E0F2FE"),
 		BlueBorder: ui.Hex("#BAE6FD"),
 
@@ -116,6 +163,57 @@ func lightPalette() Palette {
 func darkPalette() Palette {
 	return Palette{
 		IsDark:       true,
+		AppBg:        ui.Hex("#101114"),
+		RailBg:       ui.Hex("#17181C"),
+		Surface:      ui.Hex("#1B1D22"),
+		Surface2:     ui.Hex("#24262D"),
+		Surface3:     ui.Hex("#0E0F12"),
+		SurfaceHover: ui.Hex("#30333B"),
+		ActiveRowBg:  ui.Hex("#22344A"),
+
+		TextPrimary:   ui.Hex("#F1F3F5"),
+		TextSecondary: ui.Hex("#C3C8D0"),
+		TextControl:   ui.Hex("#AAB1BB"),
+		TextMuted:     ui.Hex("#8B929C"),
+
+		Border:       ui.Hex("#2B2F36"),
+		BorderSubtle: ui.Hex("#24272D"),
+		BorderStrong: ui.Hex("#41464F"),
+
+		Accent:         ui.Hex("#2563EB"),
+		AccentHover:    ui.Hex("#1D4ED8"),
+		AccentSoft:     ui.Hex("#16304F"),
+		AccentSoftText: ui.Hex("#9CC5FF"),
+		AccentBorder:   ui.Hex("#2E5F9E"),
+		AccentText:     ui.Hex("#FFFFFF"),
+
+		Green:       ui.Hex("#5BD18B"),
+		GreenSoft:   ui.Hex("#153A26"),
+		GreenBorder: ui.Hex("#2A6A45"),
+
+		Amber:       ui.Hex("#F5C451"),
+		AmberSoft:   ui.Hex("#3A2E16"),
+		AmberBorder: ui.Hex("#6A5528"),
+
+		Danger:       ui.Hex("#FF7B85"),
+		DangerSoft:   ui.Hex("#3A1D24"),
+		DangerBorder: ui.Hex("#6E303B"),
+
+		Blue:       ui.Hex("#6CB8FF"),
+		BlueSoft:   ui.Hex("#172E45"),
+		BlueBorder: ui.Hex("#2B5378"),
+
+		Purple:       ui.Hex("#C4A7FF"),
+		PurpleSoft:   ui.Hex("#2C2440"),
+		PurpleBorder: ui.Hex("#4F3E70"),
+	}
+}
+
+// darculaPalette follows IntelliJ IDEA's classic dark editor chrome: graphite
+// toolbars, a #2B2B2B editor, muted blue-grey text, and #3574C8 actions.
+func darculaPalette() Palette {
+	return Palette{
+		IsDark:       true,
 		AppBg:        ui.Hex("#2B2B2B"),
 		RailBg:       ui.Hex("#3D3F41"),
 		Surface:      ui.Hex("#2B2B2B"),
@@ -126,20 +224,21 @@ func darkPalette() Palette {
 
 		TextPrimary:   ui.Hex("#BCBEC4"),
 		TextSecondary: ui.Hex("#A9B7C6"),
-		TextControl:   ui.Hex("#9DA5AF"),
-		TextMuted:     ui.Hex("#737980"),
+		TextControl:   ui.Hex("#AEB6C0"),
+		TextMuted:     ui.Hex("#8A919A"),
 
 		Border:       ui.Hex("#323232"),
 		BorderSubtle: ui.Hex("#2C2C2C"),
 		BorderStrong: ui.Hex("#4C5052"),
 
-		Accent:       ui.Hex("#4A88C7"),
-		AccentHover:  ui.Hex("#5C9BD9"),
-		AccentSoft:   ui.Hex("#1E3A5F"),
-		AccentBorder: ui.Hex("#2F5C86"),
-		AccentText:   ui.Hex("#FFFFFF"),
+		Accent:         ui.Hex("#3574C8"),
+		AccentHover:    ui.Hex("#2F6DB5"),
+		AccentSoft:     ui.Hex("#1E3A5F"),
+		AccentSoftText: ui.Hex("#9CC5EA"),
+		AccentBorder:   ui.Hex("#2F5C86"),
+		AccentText:     ui.Hex("#FFFFFF"),
 
-		Green:       ui.Hex("#6AAB73"),
+		Green:       ui.Hex("#82C98F"),
 		GreenSoft:   ui.Hex("#294436"),
 		GreenBorder: ui.Hex("#3B5F45"),
 
@@ -151,7 +250,7 @@ func darkPalette() Palette {
 		DangerSoft:   ui.Hex("#3A2428"),
 		DangerBorder: ui.Hex("#6A3A3D"),
 
-		Blue:       ui.Hex("#4A88C7"),
+		Blue:       ui.Hex("#6CB8FF"),
 		BlueSoft:   ui.Hex("#1D2F42"),
 		BlueBorder: ui.Hex("#31516F"),
 
@@ -297,7 +396,7 @@ func menuPill(c *ui.Context, p Palette, label string, active bool, build func(m 
 	fg := p.TextControl
 	if active {
 		bg = p.AccentSoft
-		fg = p.Accent
+		fg = p.AccentSoftText
 	}
 	el := ui.Row(c).Padding(4, 9).Gap(4).Radius(5).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
 	if el.Hovered() {

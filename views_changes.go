@@ -172,7 +172,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, title).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
 				if filtered {
-					badgeBox(c, fmt.Sprintf("筛出 %d", visibleTotal), p.Accent, p.AccentSoft, ui.Color{}, 10, false)
+					badgeBox(c, fmt.Sprintf("筛出 %d", visibleTotal), p.AccentSoftText, p.AccentSoft, ui.Color{}, 10, false)
 				}
 			})
 			if allTotal > 0 {
@@ -666,7 +666,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 		// Clean Diff Header Bar
 		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
-				badgeBox(c, cf.RepoName, p.Accent, p.AccentSoft, ui.Color{}, 11, true)
+				badgeBox(c, cf.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
 				if cf.OrigPath != "" {
 					ui.Text(c, cf.OrigPath+" → "+cf.Path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
 				} else {

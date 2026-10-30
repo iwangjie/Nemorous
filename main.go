@@ -17,9 +17,18 @@ import (
 
 func main() {
 	cfg := config.Load()
+	cfg.Theme = normalizeTheme(cfg.Theme)
+	mygo.Theme.SetSource(nativeThemeSource(cfg.Theme))
 	app := NewApp(cfg)
 
 	mygo.App.WhenReady(func() {
+		app.systemDark = mygo.Theme.IsDark()
+		mygo.Theme.OnUpdated(func() {
+			app.systemDark = mygo.Theme.IsDark()
+			if app.win != nil {
+				app.win.Invalidate()
+			}
+		})
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu},
 			{Role: mygo.RoleEditMenu},
@@ -451,12 +460,28 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				drawIcon(kc, icon, 15, fg)
 			})
 		}
-		themeIcon := icoMoon
-		if p.IsDark {
-			themeIcon = icoSun
+		themeIcon := icoSun
+		switch a.cfg.Theme {
+		case "dark", "darcula":
+			themeIcon = icoMoon
+		case "system":
+			themeIcon = icoMonitor
 		}
-		utility("nav-theme", themeIcon, "切换浅色 / 深色外观", false, func() {
-			a.toggleTheme()
+		themeKc := c.Key("nav-theme")
+		themeBtn := ui.Row(themeKc).Height(32).FillWidth().Radius(6).Background(ui.Transparent).Cursor(ui.CursorPointer).AlignItems(ui.Center).Justify(ui.Center).Tooltip("外观主题：" + themeLabel(a.cfg.Theme)).Label("外观主题")
+		themeBtn.PopoverMenuButton(func(m *ui.Menu) {
+			for _, choice := range themeChoices {
+				ch := choice
+				if m.Item(ch.Label).Radio(a.cfg.Theme == ch.ID).Chosen() {
+					a.setTheme(ch.ID)
+				}
+			}
+		})
+		if themeBtn.Hovered() {
+			themeBtn.Background(p.SurfaceHover)
+		}
+		themeBtn.Children(func() {
+			drawIcon(themeKc, themeIcon, 15, p.TextControl)
 		})
 		utility("nav-settings", icoSettings, "设置 (⌘,)", a.showSettings, func() {
 			a.showSettings = true
@@ -683,7 +708,7 @@ func (a *App) buildOperationNotification(c *ui.Context, p Palette) {
 			ui.Progress(c, -1).Height(3).FillWidth()
 		} else if clickable {
 			ui.Row(c).Gap(2).AlignItems(ui.Center).Cursor(ui.CursorPointer).Children(func() {
-				ui.Text(c, "查看详情").FontSize(11.5).FontWeight(weightMedium).TextColor(p.Accent)
+				ui.Text(c, "查看详情").FontSize(11.5).FontWeight(weightMedium).TextColor(p.AccentSoftText)
 				drawIcon(c, icoChevronRight, 11, p.Accent)
 			})
 		}

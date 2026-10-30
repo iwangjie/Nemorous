@@ -51,7 +51,7 @@ func (a *App) buildRightToolRail(c *ui.Context, p Palette) {
 func (a *App) maniToolButton(c *ui.Context, p Palette, key string, icon *ui.SVG, tip string, enabled, accent bool, onClick func()) {
 	fg := p.TextControl
 	if accent {
-		fg = p.Accent
+		fg = p.AccentSoftText
 	}
 	if !enabled {
 		fg = p.TextMuted
@@ -127,7 +127,7 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 				a.showSettings = true
 			})
 			if a.maniTaskRunning {
-				ui.Text(c, "运行中…").FontSize(10).TextColor(p.Accent)
+				ui.Text(c, "运行中…").FontSize(10).TextColor(p.AccentSoftText)
 			}
 		})
 
