@@ -154,6 +154,7 @@ func (m *Manager) Root() string { return m.store.Root() }
 func (m *Manager) Load() {
 	if m.opts.AutoInstallDefaults {
 		m.installDefaults()
+		m.updateBuiltinPlugins()
 	}
 	for _, p := range m.store.List() {
 		if !p.State.Enabled {
@@ -191,6 +192,38 @@ func (m *Manager) installDefaults() {
 			continue
 		}
 		_ = m.store.Undismiss(entry.ID)
+	}
+}
+
+// updateBuiltinPlugins keeps bundled plugins in step with the app, without
+// asking users to visit the marketplace after every Nemorous update.
+func (m *Manager) updateBuiltinPlugins() {
+	reg := m.builtinRegistry()
+	if reg == nil {
+		return
+	}
+	want := make(map[string]RegistryPlugin, len(reg.Plugins))
+	for _, entry := range reg.Plugins {
+		if entry.Builtin {
+			want[entry.ID] = entry
+		}
+	}
+	for _, p := range m.store.List() {
+		if p.State.Source != "builtin" {
+			continue
+		}
+		entry, ok := want[p.Manifest.ID]
+		if !ok || CompareVersions(entry.Version, p.Manifest.Version) <= 0 {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		m.defaultInstall = true
+		_, err := m.InstallBuiltin(ctx, entry.ID)
+		m.defaultInstall = false
+		cancel()
+		if err != nil {
+			continue
+		}
 	}
 }
 

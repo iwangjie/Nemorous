@@ -127,10 +127,11 @@ As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenC
 
 ---
 
-### 8. Plugin Engine, Marketplace & Official Maven Tool Window
+### 8. Plugin Engine, Marketplace & Official Tool Windows
 - **Sandboxed Plugin Engine**: Plugins are manifest-declared JavaScript packages running in an embedded goja VM. Tool windows and command-palette entries come from a declarative UI tree; filesystem, process, HTTP, editor and terminal access require explicit permissions.
 - **Full Installer & Marketplace**: Browse the embedded official index or a remote registry, install/update/enable/disable/uninstall in place, or install a local `.zip` package. Remote packages are SHA-256 verified, archives are size- and path-checked, and every operation works offline for bundled plugins.
-- **Official Maven Plugin, IDEA-style**: Discovers `pom.xml` projects across the whole multi-repo workspace, with a module tree, `clean/compile/test/package/install` lifecycle goals, profiles, skip-tests, custom goals, streaming build console, `dependency:tree` analysis, Effective POM, and a configurable `mvn` executable.
+- **Official Maven Plugin, built for large reactors**: Discovers Maven modules across every repository, groups them by parent/module hierarchy, computes dependency waves and version conflicts, explains cross-repo internal edges, and runs `clean/compile/test/package/install` with concurrent builds (`-T 1C` by default), project wrappers, Maven/JVM settings, streaming output, `dependency:tree`, and Effective POM.
+- **Official Java Plugin**: Scans `src/main/java` and `src/test/java` across the workspace, finds main/test classes, runs them through Maven/Gradle or plain `java`, streams output, and opens a JDWP port for remote debugging.
 - **Official Preview & Remote Plugins**: Markdown and CSV are native editor integrations that open automatically in the main editor (split/single/live Markdown with syntax highlighting and saving), joined by private GitLab MR/pipeline/issue integration, code line statistics, and saved SSH hosts that open the embedded terminal.
 
 <picture>

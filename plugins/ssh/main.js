@@ -3,6 +3,7 @@
 
 var state = {
   profiles: [],
+  filter: "",
   selected: -1,
   editing: false,
   formKey: 0,
@@ -169,6 +170,9 @@ function handleAction(action, payload) {
     case "select":
       loadForm(p.index);
       break;
+    case "filter":
+      state.filter = String(p.value || "");
+      break;
     case "new":
       state.selected = -1;
       state.editing = true;
@@ -207,17 +211,32 @@ function handleAction(action, payload) {
 
 function hostList() {
   var items = [];
+  var q = String(state.filter || "").toLowerCase();
   for (var i = 0; i < state.profiles.length; i++) {
     var p = state.profiles[i];
+    var label = p.name || (p.user + "@" + p.host);
+    var hay = (label + " " + p.host + " " + p.user + " " + (p.remoteDir || "")).toLowerCase();
+    if (q && hay.indexOf(q) < 0) continue;
     items.push({
-      text: p.name || (p.user + "@" + p.host),
-      detail: p.host,
+      text: label,
+      detail: (p.user ? p.user + "@" : "") + p.host + (p.port && p.port !== "22" ? ":" + p.port : "") + (p.remoteDir ? " · " + p.remoteDir : ""),
       action: "select",
       payload: { index: i },
       selected: i === state.selected && !state.editing
     });
   }
-  return el("list", { items: items, maxHeight: 130, scroll: true });
+  return el("list", { items: items, maxHeight: 170, scroll: true });
+}
+
+function itemsText() {
+  var n = 0;
+  var q = String(state.filter || "").toLowerCase();
+  for (var i = 0; i < state.profiles.length; i++) {
+    var p = state.profiles[i];
+    var hay = ((p.name || "") + " " + p.host + " " + p.user + " " + (p.remoteDir || "")).toLowerCase();
+    if (!q || hay.indexOf(q) >= 0) n++;
+  }
+  return n + " 个匹配";
 }
 
 function render(panelId) {
@@ -230,7 +249,11 @@ function render(panelId) {
   ] }));
   if (state.status) root.children.push(txt(state.status, { size: 10, tone: "ok" }));
   if (state.error) root.children.push(txt(state.error, { tone: "err", size: 10 }));
-  if (state.profiles.length > 0) root.children.push(hostList());
+  if (state.profiles.length > 0) {
+    root.children.push(el("input", { key: "ssh-filter", value: state.filter, placeholder: "搜索名称 / 主机 / 用户 / 目录", action: "filter" }));
+    root.children.push(hostList());
+    root.children.push(txt(state.filter ? itemsText() : state.profiles.length + " 个主机", { size: 9.5, muted: true }));
+  }
   root.children.push(el("divider"));
   root.children.push(txt(state.editing ? "新建主机" : "编辑主机", { size: 10.5, bold: true }));
   root.children.push(field("名称", "name", state.form.name, "例如 production", 0));

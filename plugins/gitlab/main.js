@@ -338,7 +338,7 @@ function itemList() {
       selected: state.selected && state.selected.id === item.id
     });
   }
-  return el("list", { items: items, scroll: true, maxHeight: 210 });
+  return el("list", { items: items, scroll: true, grow: true });
 }
 
 function detailView() {
@@ -391,8 +391,13 @@ function render(panelId) {
     root.children.push(txt("暂无数据，点击刷新重试", { size: 10.5, muted: true }));
     return root;
   }
-  root.children.push(itemList());
-  root.children.push(el("divider"));
-  root.children.push(detailView());
+  root.children.push(el("row", { grow: true, gap: 6, children: [
+    el("column", { width: 300, heightPercent: 100, gap: 5, children: [
+      el("text", { text: state.tab === "mrs" ? "Merge Requests" : state.tab === "pipelines" ? "Pipelines" : "Issues", size: 10, muted: true }),
+      itemList()
+    ] }),
+    el("divider", { vertical: true }),
+    el("column", { grow: true, heightPercent: 100, gap: 5, scroll: true, children: [detailView()] })
+  ] }));
   return root;
 }

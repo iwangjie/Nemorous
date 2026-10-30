@@ -127,10 +127,11 @@
 
 ---
 
-### 8. 插件引擎、插件市场与官方 Maven 工具窗口
+### 8. 插件引擎、插件市场与官方工具窗口
 - **沙箱化插件引擎**：插件是带 `plugin.json` 清单的 JavaScript 包，运行在内置 goja VM 中。工具窗口与命令面板入口由声明式 UI 树驱动；文件、进程、HTTP、编辑器与终端能力必须显式声明权限。
 - **完整安装器与插件市场**：内置官方索引 + 远程市场，支持安装、更新、启用、禁用、卸载与本地 `.zip` 安装；远程包强制 SHA-256 校验，压缩包做体积与路径越界检查，内置插件离线可用。
-- **官方 Maven 插件（IDEA 风格）**：跨多仓工作区自动发现 `pom.xml`，提供模块树、`clean/compile/test/package/install` 生命周期目标、Profiles、跳过测试、自定义目标、实时构建输出、`dependency:tree` 依赖分析、Effective POM 与可配置的 `mvn` 路径。
+- **官方 Maven 插件（为大型多仓 Reactor 设计）**：跨全部仓库发现 Maven 模块，按父子/模块关系组织，计算构建批次与版本冲突，展示跨仓内部依赖边；支持 `clean/compile/test/package/install`、默认并发构建（`-T 1C`）、项目 wrapper、Maven/JVM 设置、实时输出、`dependency:tree` 与 Effective POM。
+- **官方 Java 插件**：扫描工作区 `src/main/java` 与 `src/test/java`，识别主类/测试类，通过 Maven/Gradle 或原生 `java` 运行并流式输出，可开启 JDWP 端口供远程调试。
 - **官方预览与远程插件**：Markdown/CSV 默认以主编辑器视图打开（Markdown 语法高亮、双栏/单栏/实时预览、本地图片与保存；CSV 表格与搜索）；公司 GitLab 私服 MR/流水线/Issue；代码行数统计与语言分布；SSH 主机保存并直接在底部终端连接。
 
 <picture>

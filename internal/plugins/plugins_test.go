@@ -44,7 +44,7 @@ func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 	m, err := NewManager(Options{
 		Root:       filepath.Join(t.TempDir(), "plugins"),
-		AppVersion: "0.3.0",
+		AppVersion: "0.5.0",
 		Invalidate: func() {},
 		Notify:     func(string, string) {},
 	})
@@ -265,7 +265,7 @@ func TestBuiltinMavenPackageInstalls(t *testing.T) {
 	if !ok {
 		t.Fatal("maven not installed")
 	}
-	if p.Manifest.Version != "1.0.0" {
+	if p.Manifest.Version != "1.1.0" {
 		t.Fatalf("version = %s", p.Manifest.Version)
 	}
 	if p.Manifest.Contributes.Panels[0].ID != "maven" {
@@ -535,5 +535,37 @@ func TestMarketplaceUpdateFlow(t *testing.T) {
 	p, ok := m.store.Get("upd")
 	if !ok || p.Manifest.Version != "1.1.0" {
 		t.Fatalf("update did not install 1.1.0: %+v ok=%v", p, ok)
+	}
+}
+
+func TestBundledPluginsUpdateWithApp(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "plugins")
+	store, err := NewStore(root, "0.5.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := t.TempDir()
+	manifest := `{"id":"maven","name":"Maven","version":"0.9.0","main":"main.js","minAppVersion":"0.5.0","contributes":{"panels":[{"id":"maven","title":"Maven"}]}}`
+	if err := os.WriteFile(filepath.Join(pkg, "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "main.js"), []byte(`function render(){return {type:"text",text:"old"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InstallDir(pkg, "builtin"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(Options{Root: root, AppVersion: "0.5.0", AutoInstallDefaults: true, Invalidate: func() {}, Notify: func(string, string) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Close)
+	m.Load()
+	p, ok := m.store.Get("maven")
+	if !ok {
+		t.Fatal("maven missing after update")
+	}
+	if p.Manifest.Version != "1.1.0" {
+		t.Fatalf("bundled plugin stayed at %s", p.Manifest.Version)
 	}
 }

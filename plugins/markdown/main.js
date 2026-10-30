@@ -146,6 +146,13 @@ function previewText() {
   return state.live ? state.source : state.saved;
 }
 
+function documentStats() {
+  var text = state.source || "";
+  var lines = text === "" ? 0 : text.split(/\r?\n/).length;
+  var chars = text.replace(/\s/g, "").length;
+  return lines + " 行 · " + chars + " 字符";
+}
+
 function toolbar() {
   return el("row", {
     gap: 4,
@@ -210,7 +217,7 @@ function render(panelId) {
     return root;
   }
   root.children.push(toolbar());
-  if (state.status) root.children.push(txt(state.status + (state.dirty ? " · 未保存" : ""), { size: 10, muted: true, mono: true }));
+  if (state.status) root.children.push(txt(state.status + " · " + documentStats() + (state.dirty ? " · 未保存" : ""), { size: 10, muted: true, mono: true }));
   if (state.error) root.children.push(txt(state.error, { tone: "err", size: 10 }));
   if (state.mode === "split") {
     root.children.push(el("row", {

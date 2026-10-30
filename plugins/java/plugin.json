@@ -1,0 +1,36 @@
+{
+  "id": "java",
+  "name": "Java",
+  "version": "1.0.0",
+  "description": "面向 Java 多仓项目的运行与测试面板：识别 Maven/Gradle 模块、扫描主类与测试类、流式运行、远程调试端口与 JDK 版本检测。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.5.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": [
+    "workspace.read",
+    "process.exec"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "java",
+        "title": "Java",
+        "icon": "java"
+      }
+    ],
+    "commands": [
+      {
+        "id": "java.reload",
+        "title": "Java: 重新扫描项目",
+        "action": "refresh"
+      },
+      {
+        "id": "java.tests",
+        "title": "Java: 运行测试",
+        "action": "openTests"
+      }
+    ]
+  }
+}

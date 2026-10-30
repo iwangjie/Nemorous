@@ -1,8 +1,12 @@
 // Nemorous code line statistics plugin.
 
-var MAX_FILES = 900;
-var MAX_BYTES = 4 << 20;
-var SKIP_DIRS = { ".git": 1, "node_modules": 1, "vendor": 1, "dist": 1, "build": 1, "target": 1, ".idea": 1, ".next": 1, "out": 1, "coverage": 1 };
+var MAX_FILES = 2500;
+var MAX_BYTES = 2 << 20;
+var SKIP_DIRS = {
+  ".git": 1, "node_modules": 1, "vendor": 1, "dist": 1, "build": 1, "target": 1,
+  ".idea": 1, ".next": 1, "out": 1, "coverage": 1, "venv": 1, ".venv": 1,
+  "__pycache__": 1, "Pods": 1, ".gradle": 1, ".mvn": 1, "bin": 1, "tmp": 1
+};
 var LANG = {
   go: "Go", js: "JavaScript", mjs: "JavaScript", cjs: "JavaScript", jsx: "JavaScript",
   ts: "TypeScript", tsx: "TypeScript", java: "Java", kt: "Kotlin", kts: "Kotlin",
@@ -23,6 +27,7 @@ var state = {
   blanks: 0,
   files: 0,
   languages: [],
+  dirs: [],
   top: [],
   error: "",
   took: ""
@@ -31,6 +36,7 @@ var state = {
 function onWorkspaceChanged() {
   state.loaded = false;
   state.languages = [];
+  state.dirs = [];
   state.top = [];
   state.error = "";
   nemorous.invalidate();
@@ -103,6 +109,7 @@ function resetStat() {
   state.blanks = 0;
   state.files = 0;
   state.languages = [];
+  state.dirs = [];
   state.top = [];
 }
 
@@ -121,6 +128,7 @@ function scan() {
   var entries = [];
   walk(workspace.path, 0, entries);
   var byLang = {};
+  var byDir = {};
   var files = [];
   for (var i = 0; i < entries.length; i++) {
     var entry = entries[i];
@@ -153,7 +161,12 @@ function scan() {
     if (!byLang[lang]) byLang[lang] = { name: lang, lines: 0, files: 0 };
     byLang[lang].lines += total;
     byLang[lang].files++;
-    files.push({ path: relative(workspace.path, entry.path), lines: total, lang: lang });
+    var relPath = relative(workspace.path, entry.path);
+    var dirName = relPath.indexOf("/") >= 0 ? relPath.split("/")[0] : "(根目录)";
+    if (!byDir[dirName]) byDir[dirName] = { name: dirName, lines: 0, files: 0 };
+    byDir[dirName].lines += total;
+    byDir[dirName].files++;
+    files.push({ path: relPath, lines: total, lang: lang });
   }
   var languages = [];
   for (var name in byLang) {
@@ -161,8 +174,15 @@ function scan() {
     languages.push(byLang[name]);
   }
   languages.sort(function (a, b) { return b.lines - a.lines; });
+  var dirs = [];
+  for (var dn in byDir) {
+    if (!byDir.hasOwnProperty(dn)) continue;
+    dirs.push(byDir[dn]);
+  }
+  dirs.sort(function (a, b) { return b.lines - a.lines; });
   files.sort(function (a, b) { return b.lines - a.lines; });
   state.languages = languages;
+  state.dirs = dirs;
   state.top = files.slice(0, 16);
   state.scanning = false;
   state.loaded = true;
@@ -210,6 +230,18 @@ function render(panelId) {
       fraction: l.lines / state.total,
       tone: i === 0 ? "accent" : ""
     }));
+  }
+  if (state.dirs.length > 1) {
+    root.children.push(txt("目录分布", { size: 10.5, bold: true }));
+    for (var d = 0; d < state.dirs.length && d < 6; d++) {
+      var dir = state.dirs[d];
+      root.children.push(el("bar", {
+        text: dir.name,
+        detail: dir.lines.toLocaleString() + " 行 · " + dir.files + " 文件",
+        fraction: dir.lines / state.total,
+        tone: d === 0 ? "accent" : ""
+      }));
+    }
   }
   root.children.push(el("divider"));
   root.children.push(txt("最大文件", { size: 10.5, bold: true }));
