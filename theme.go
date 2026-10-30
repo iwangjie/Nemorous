@@ -59,9 +59,9 @@ func nativeThemeSource(theme string) mygo.ThemeSource {
 // "one quiet surface, real logos, controls that read as pop-up buttons."
 type Palette struct {
 	IsDark       bool
-	AppBg        ui.Color // --bg: quiet canvas
-	RailBg       ui.Color // --card-2: secondary quiet surface
-	Surface      ui.Color // --card: elevated primary card / content surface
+	AppBg        ui.Color // --bg: editor/content canvas (IDEA paints the editor dark)
+	RailBg       ui.Color // --card-2: tool window chrome (sidebar, toolbars, status bar)
+	Surface      ui.Color // --card: elevated primary card / content surface (editor cards)
 	Surface2     ui.Color // --pill: control / secondary surface
 	Surface3     ui.Color // --seg-track: segmented control track
 	SurfaceHover ui.Color // --pill-hover
@@ -209,15 +209,18 @@ func darkPalette() Palette {
 	}
 }
 
-// darculaPalette follows IntelliJ IDEA's classic dark editor chrome: graphite
-// toolbars, a #2B2B2B editor, muted blue-grey text, and #3574C8 actions.
+// darculaPalette follows IntelliJ IDEA's classic dark editor chrome: #3D3F41
+// tool windows and toolbars wrapped around a #2B2B2B editor, muted blue-grey
+// text, #45494A buttons and #3574C8 actions. Regions keep IDEA's mapping:
+// tool windows, toolbars and the status bar use RailBg, while editor content
+// and cards use Surface/AppBg.
 func darculaPalette() Palette {
 	return Palette{
 		IsDark:       true,
 		AppBg:        ui.Hex("#2B2B2B"),
 		RailBg:       ui.Hex("#3D3F41"),
 		Surface:      ui.Hex("#2B2B2B"),
-		Surface2:     ui.Hex("#3D3F41"),
+		Surface2:     ui.Hex("#45494A"),
 		Surface3:     ui.Hex("#323232"),
 		SurfaceHover: ui.Hex("#4C5052"),
 		ActiveRowBg:  ui.Hex("#0D293E"),

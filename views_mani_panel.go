@@ -93,7 +93,7 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 		}
 	}
 
-	ui.Column(c).Grow(1).FillHeight().Background(p.Surface).BorderWidth(0, 0, 0, 1).BorderColor(p.Border).Children(func() {
+	ui.Column(c).Grow(1).FillHeight().Background(p.RailBg).BorderWidth(0, 0, 0, 1).BorderColor(p.Border).Children(func() {
 		// Header
 		ui.Row(c).Height(40).Padding(0, 12).Justify(ui.SpaceBetween).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Grow(1).Children(func() {
@@ -181,7 +181,7 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 			rkc := c.Key("mani-root")
 			rootRow := ui.Row(rkc).Height(28).Padding(0, 10).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 			if rootRow.Hovered() {
-				rootRow.Background(p.RailBg)
+				rootRow.Background(p.SurfaceHover)
 			}
 			if rootRow.Clicked() {
 				a.maniRootCollapsed = !a.maniRootCollapsed
@@ -204,7 +204,7 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 				kc := c.Key("mani-sec-" + key)
 				hdr := ui.Row(kc).Height(24).Padding(0, 10, 0, 22).Gap(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 				if hdr.Hovered() {
-					hdr.Background(p.RailBg)
+					hdr.Background(p.SurfaceHover)
 				}
 				if hdr.Clicked() {
 					*collapsed = !*collapsed
@@ -228,11 +228,11 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 					taskName := name
 					selected := a.selectedManiTask == taskName
 					tkc := c.Key("mani-task-" + taskName)
-					row := ui.Row(tkc).Height(26).Padding(0, 10, 0, 34).Gap(5).Background(p.Surface).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+					row := ui.Row(tkc).Height(26).Padding(0, 10, 0, 34).Gap(5).Background(p.RailBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 					if selected {
 						row.Background(p.ActiveRowBg)
 					} else if row.Hovered() {
-						row.Background(p.RailBg)
+						row.Background(p.SurfaceHover)
 					}
 					if row.Clicked() {
 						a.selectedManiTask = taskName
@@ -274,9 +274,9 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 					rCopy := repo
 					badge := repoBadgeColors(rCopy.ColorIndex, p.IsDark)
 					pkc := c.Key("mani-proj-" + rCopy.ID)
-					row := ui.Row(pkc).Height(26).Padding(0, 10, 0, 34).Gap(5).Background(p.Surface).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+					row := ui.Row(pkc).Height(26).Padding(0, 10, 0, 34).Gap(5).Background(p.RailBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 					if row.Hovered() {
-						row.Background(p.RailBg)
+						row.Background(p.SurfaceHover)
 					}
 					row.PopoverMenu(func(m *ui.Menu) {
 						m.Submenu("执行 Mani 任务", func(sm *ui.Menu) {
@@ -331,7 +331,7 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 			if a.maniTaskRunning {
 				progressH = 2
 			}
-			ui.Column(c).Height(resultH+progressH).Shrink(0).Background(p.Surface).BorderWidth(1, 0, 0, 0).BorderColor(p.Border).Children(func() {
+			ui.Column(c).Height(resultH+progressH).Shrink(0).Background(p.RailBg).BorderWidth(1, 0, 0, 0).BorderColor(p.Border).Children(func() {
 				ui.Row(c).Height(28).Padding(0, 10).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 					title := a.maniLastTask
 					if title == "" {
@@ -365,7 +365,7 @@ func (a *App) buildManiPanel(c *ui.Context, p Palette) {
 						rkc := c.Key("mani-result-" + rCopy.RepoID)
 						row := ui.Row(rkc).Height(24).Padding(0, 10).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 						if row.Hovered() {
-							row.Background(p.RailBg)
+							row.Background(p.SurfaceHover)
 						}
 						if row.Clicked() {
 							a.maniResultTitle = a.maniLastTask + " · " + rCopy.RepoName
