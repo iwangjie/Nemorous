@@ -40,6 +40,91 @@ func initTestRepo(t *testing.T, dir string, branch string, files map[string]stri
 	mustGit("commit", "-m", "initial commit")
 }
 
+func TestPullAllRestoresLocalChanges(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	if _, err := gitops.RunGit(ctx, root, "init", "--bare", remote); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(root, "seed")
+	initTestRepo(t, seed, "main", map[string]string{"app.txt": "v1\n", "local.txt": "keep\n"})
+	mustGit := func(dir string, args ...string) {
+		t.Helper()
+		if _, err := gitops.RunGit(ctx, dir, args...); err != nil {
+			t.Fatalf("git %v in %s failed: %v", args, dir, err)
+		}
+	}
+	mustGit(seed, "remote", "add", "origin", remote)
+	mustGit(seed, "push", "-u", "origin", "main")
+
+	work := filepath.Join(root, "work")
+	mustGit(root, "clone", remote, work)
+	if err := os.WriteFile(filepath.Join(work, "local.txt"), []byte("local edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "app.txt"), []byte("remote v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(seed, "commit", "-am", "remote v2")
+	mustGit(seed, "push")
+
+	res := gitops.PullAll(ctx, []mani.DiscoveredRepo{{Name: "work", AbsPath: work}}, 1)
+	if len(res) != 1 || res[0].Status != "OK" {
+		t.Fatalf("expected OK pull, got %+v", res)
+	}
+	if res[0].Message != "main 已快进更新" {
+		t.Fatalf("expected concise pull message, got %q", res[0].Message)
+	}
+	content, err := os.ReadFile(filepath.Join(work, "local.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "local edit\n" {
+		t.Fatalf("local change was not restored, got %q", content)
+	}
+	head, _ := gitops.RunGit(ctx, work, "log", "-1", "--format=%s")
+	if head != "remote v2" {
+		t.Fatalf("pull did not fast-forward, head=%q", head)
+	}
+	stashes, _ := gitops.RunGit(ctx, work, "stash", "list")
+	if strings.TrimSpace(stashes) != "" {
+		t.Fatalf("autostash should be popped, got %q", stashes)
+	}
+}
+
+func TestRepoLogGlobAndCommitVersions(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initTestRepo(t, dir, "main", map[string]string{"src/a.go": "v1\n", "b.py": "print(1)\n"})
+	if err := os.WriteFile(filepath.Join(dir, "src", "a.go"), []byte("v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitops.RunGit(ctx, dir, "commit", "-am", "update a"); err != nil {
+		t.Fatal(err)
+	}
+	repo := gitops.RepoStatus{Repo: mani.DiscoveredRepo{ID: "demo", Name: "demo", AbsPath: dir}}
+	commits, err := gitops.RepoLog(ctx, repo, gitops.LogOptions{Limit: 10})
+	if err != nil || len(commits) < 2 {
+		t.Fatalf("expected commit history, got %v / %v", commits, err)
+	}
+	oldText, newText, err := gitops.CommitFileVersions(ctx, dir, commits[0].Hash, "src/a.go", "", "M")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldText != "v1\n" || newText != "v2\n" {
+		t.Fatalf("unexpected commit versions: old=%q new=%q", oldText, newText)
+	}
+
+	globbed, err := gitops.RepoLog(ctx, repo, gitops.LogOptions{Path: "*.go", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(globbed) == 0 {
+		t.Fatal("rg-style *.go glob should match nested src/a.go")
+	}
+}
+
 func TestMultiRepoDiscoveryAndOperations(t *testing.T) {
 	ctx := context.Background()
 	wsDir := t.TempDir()

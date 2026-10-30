@@ -72,13 +72,6 @@ func finalizeCodeTree(node *codeTreeDir) {
 	}
 }
 
-func (a *App) buildCodeView(c *ui.Context, p Palette) {
-	ui.Split(c, &a.codeSplit,
-		func() { a.buildCodeLeftPane(c, p) },
-		func() { a.buildCodeRightPane(c, p) },
-	).Grow(1).Fill()
-}
-
 // codeRepoGroup is one repository's slice of the code explorer tree.
 type codeRepoGroup struct {
 	repoID   string
@@ -120,15 +113,20 @@ func (a *App) codeRepoGroups(query string) []codeRepoGroup {
 			groups[idx].files = append(groups[idx].files, wf)
 		}
 	}
+	sort.Slice(groups, func(i, j int) bool {
+		return strings.ToLower(groups[i].repoName) < strings.ToLower(groups[j].repoName)
+	})
 	a.codeGroupsKey = key
 	a.codeGroups = groups
 	return groups
 }
 
 const (
-	codeTreeIndent      = 14
-	codeTreeRowHeight   = 28
-	codeTreeChevronSlot = 17
+	codeTreeIndent      = 12
+	codeTreeRowHeight   = 22
+	codeTreeChevronSlot = 15
+	codeTreeRootHeight  = 24
+	codeTreeRepoHeight  = 24
 )
 
 // codeFileIconColor tints file icons by type, so the tree reads at a glance
@@ -156,22 +154,49 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 	query := strings.ToLower(strings.TrimSpace(a.codeFilterQuery))
 	groups := a.codeRepoGroups(query)
 
-	ui.Column(c).Fill().Padding(12).Gap(8).Background(p.RailBg).Children(func() {
+	ui.Column(c).Fill().Padding(8).Gap(6).Background(p.RailBg).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.SearchField(c.Key("code-search"), &a.codeFilterQuery).Bind(&a.codeFilterHandle).Placeholder("搜索文件名或路径...").Grow(1)
 			if len(a.expandedCodeRepos) > 0 {
 				miniBtn(c, p, "全部收起", func() {
 					a.expandedCodeRepos = make(map[string]bool)
 					a.expandedCodeDirs = make(map[string]bool)
+					a.codeRootCollapsed = true
 				})
 			}
 		})
 
-		// One continuous explorer: repositories are top-level folders, and their
-		// contents connect to the repo header with the same indentation rails.
-		ui.Column(c).Grow(1).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
+		// One continuous explorer: workspace root → repositories → directories.
+		ui.Column(c).Grow(1).Background(p.Surface).Children(func() {
 			ui.Scroll(c).Grow(1).Children(func() {
-				for idx, grp := range groups {
+				rootName := filepath.Base(a.cfg.WorkspacePath)
+				if rootName == "" || rootName == "." {
+					rootName = "workspace"
+				}
+				rootExpanded := query != "" || !a.codeRootCollapsed
+				rkc := c.Key("croot")
+				rootRow := ui.Row(rkc).Height(codeTreeRootHeight).Padding(0, 10).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+				if rootRow.Hovered() {
+					rootRow.Background(p.RailBg)
+				}
+				if rootRow.Clicked() && query == "" {
+					a.codeRootCollapsed = !a.codeRootCollapsed
+				}
+				rootRow.Children(func() {
+					chev := icoChevronRight
+					if rootExpanded {
+						chev = icoChevronDown
+					}
+					drawIcon(rkc, chev, 10, p.TextMuted)
+					drawIcon(rkc, icoFolder, 13, p.TextControl)
+					ui.Text(rkc, rootName).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1)
+					ui.Text(rkc, displayPath(a.cfg.WorkspacePath)).FontSize(10.5).TextColor(p.TextMuted).MaxLines(1).Grow(1)
+				})
+
+				if !rootExpanded {
+					return
+				}
+				for _, grp := range groups {
 					grpCopy := grp
 					expanded := query != "" || a.expandedCodeRepos[grpCopy.repoID]
 					badge := repoBadgeColors(grpCopy.colorIdx, p.IsDark)
@@ -183,10 +208,7 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 					}
 
 					gkc := c.Key("cgrp-" + grpCopy.repoID)
-					hdr := ui.Row(gkc).Height(34).Padding(0, 10).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-					if idx > 0 {
-						hdr.BorderWidth(1, 0, 0, 0).BorderColor(p.BorderSubtle)
-					}
+					hdr := ui.Row(gkc).Height(codeTreeRepoHeight).Padding(0, 10, 0, 10+codeTreeIndent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 					if hdr.Hovered() {
 						hdr.Background(p.RailBg)
 					}
@@ -198,20 +220,20 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 						}
 					}
 					hdr.Children(func() {
+						drawCodeTreeGuides(gkc, p, 1)
 						chev := icoChevronRight
 						if expanded {
 							chev = icoChevronDown
 						}
-						drawIcon(gkc, chev, 11, p.TextMuted)
-						ui.Box(gkc).Size(17, 17).Radius(4).Background(badge.Bg).Center().Children(func() {
-							ui.Text(gkc, grpCopy.monogram).FontSize(9).FontWeight(weightBold).TextColor(badge.Text)
+						drawIcon(gkc, chev, 10, p.TextMuted)
+						ui.Box(gkc).Size(15, 15).Radius(3).Background(badge.Bg).Center().Children(func() {
+							ui.Text(gkc, grpCopy.monogram).FontSize(8.5).FontWeight(weightBold).TextColor(badge.Text)
 						})
-						ui.Text(gkc, grpCopy.repoName).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).Grow(1)
-						ui.Text(gkc, fmt.Sprintf("%d", len(grpCopy.files))).FontSize(11).TextColor(p.TextMuted)
+						ui.Text(gkc, grpCopy.repoName).FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
 					})
 
 					if expanded {
-						a.renderCodeTreeNode(gkc, p, grpCopy.repoID, treeRoot, 1, query != "")
+						a.renderCodeTreeNode(gkc, p, grpCopy.repoID, treeRoot, 2, query != "")
 					}
 				}
 			})
@@ -229,7 +251,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		expanded := forceExpand || a.expandedCodeDirs[dirKey]
 
 		dkc := c.Key("dir-" + dirKey)
-		dRow := ui.Row(dkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent).Gap(6).Background(p.Surface).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+		dRow := ui.Row(dkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent).Gap(5).Background(p.Surface).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 		if dRow.Hovered() {
 			dRow.Background(p.RailBg)
 		}
@@ -242,9 +264,9 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 			if expanded {
 				chev = icoChevronDown
 			}
-			drawIcon(dkc, chev, 11, p.TextMuted)
-			drawIcon(dkc, icoFolder, 13, p.TextControl)
-			ui.Text(dkc, subCopy.name).FontSize(12).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
+			drawIcon(dkc, chev, 10, p.TextMuted)
+			drawIcon(dkc, icoFolder, 12, p.TextControl)
+			ui.Text(dkc, subCopy.name).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
 		})
 
 		if expanded {
@@ -266,7 +288,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		base := filepath.Base(wf.RelPath)
 
 		fkc := c.Key("wf-" + wf.RepoID + "::" + wf.RelPath)
-		fRow := ui.Row(fkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent+codeTreeChevronSlot).Gap(6).Background(rowBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+		fRow := ui.Row(fkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent+codeTreeChevronSlot).Gap(5).Background(rowBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 		if fRow.Hovered() && !selected {
 			fRow.Background(p.RailBg)
 		}
@@ -275,8 +297,8 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		}
 		fRow.Children(func() {
 			drawCodeTreeGuides(fkc, p, depth)
-			drawIcon(fkc, icoFile, 13, codeFileIconColor(base, p))
-			ui.Text(fkc, base).FontSize(12).TextColor(textCol).MaxLines(1).Grow(1)
+			drawIcon(fkc, icoFile, 12, codeFileIconColor(base, p))
+			ui.Text(fkc, base).FontSize(11.5).TextColor(textCol).MaxLines(1).Grow(1)
 		})
 	}
 }

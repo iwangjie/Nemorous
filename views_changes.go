@@ -10,13 +10,6 @@ import (
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
-func (a *App) buildChangesView(c *ui.Context, p Palette) {
-	ui.Split(c, &a.changesSplit,
-		func() { a.buildChangesLeftPane(c, p) },
-		func() { a.buildDiffRightPane(c, p) },
-	).Grow(1).Fill()
-}
-
 // changeTreeNode is the directory hierarchy of one repository's changed files.
 type changeTreeNode struct {
 	name    string
@@ -170,7 +163,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 		}
 	}
 
-	ui.Column(c).Fill().Padding(12).Gap(10).Background(p.RailBg).Children(func() {
+	ui.Column(c).Fill().Padding(8).Gap(8).Background(p.Surface).Children(func() {
 		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			title := "本地变更"
 			if allTotal > 0 {
@@ -212,7 +205,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			ui.SearchField(c.Key("changes-search"), &a.changesFilterQuery).Bind(&a.changesFilterHandle).Placeholder("搜索改动文件...").Grow(1)
 		})
 
-		ui.Scroll(c).Grow(1).Gap(8).Children(func() {
+		ui.Scroll(c).Grow(1).Gap(4).Children(func() {
 			for _, st := range dirtyStatuses {
 				a.buildChangeRepoGroup(c, p, st, filteredByRepo[st.Repo.ID])
 			}
@@ -228,7 +221,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 							})
 						}
 						pill(c, p, "合并到 "+a.mergeTargetBranch, true, func() {
-							a.activeTab = TabMerge
+							a.enterGitMerge()
 							a.TriggerMergeScan()
 						})
 						if len(a.lastBatchResults) > 0 {
@@ -297,10 +290,10 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 	collapsed := a.collapsedChangeRepos[stCopy.Repo.ID]
 
 	gkc := c.Key("grp-" + stCopy.Repo.ID)
-	ui.Column(gkc).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
-		hdr := ui.Row(gkc).Padding(8, 10).Gap(7).Background(p.Surface).AlignItems(ui.Center)
-		if !collapsed || len(visible) == 0 {
-			hdr.BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+	ui.Column(gkc).Children(func() {
+		hdr := ui.Row(gkc).Height(26).Padding(0, 8).Gap(5).Background(p.RailBg).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+		if hdr.Hovered() {
+			hdr.Background(p.SurfaceHover)
 		}
 		repoMenu := func(m *ui.Menu) {
 			if m.Item("全选本仓").Chosen() {
@@ -336,6 +329,17 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 			if m.Item("恢复本仓贮藏").Chosen() {
 				a.stashRepo(stCopy.Repo, true)
 			}
+			if a.maniAvailable() {
+				m.Separator()
+				m.Submenu("执行 Mani 任务", func(sm *ui.Menu) {
+					for _, name := range a.maniTaskNames() {
+						taskName := name
+						if sm.Item(taskName).Chosen() {
+							a.TriggerManiTaskForRepo(taskName, stCopy.Repo.ID)
+						}
+					}
+				})
+			}
 			m.Separator()
 			if m.Item("在文件管理器中显示").Chosen() {
 				_ = revealPath(stCopy.Repo.AbsPath)
@@ -346,7 +350,7 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 		}
 		hdr.PopoverMenu(repoMenu)
 		hdr.Children(func() {
-			chkBox := ui.Box(gkc).Size(15, 15).Radius(4).Cursor(ui.CursorPointer).Center().Shrink(0)
+			chkBox := ui.Box(gkc).Size(14, 14).Radius(3).Cursor(ui.CursorPointer).Center().Shrink(0)
 			if repoAllChecked {
 				chkBox.Background(p.Accent)
 			} else {
@@ -360,7 +364,7 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 			}
 			chkBox.Children(func() {
 				if repoAllChecked {
-					drawIcon(gkc, icoCheck, 11, p.AccentText)
+					drawIcon(gkc, icoCheck, 10, p.AccentText)
 				}
 			})
 
@@ -369,35 +373,34 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 				chev = icoChevronRight
 			}
 			chevEl := ui.Row(gkc).Padding(1, 0).Cursor(ui.CursorPointer).Shrink(0)
-			chevEl.Children(func() { drawIcon(gkc, chev, 11, p.TextMuted) })
+			chevEl.Children(func() { drawIcon(gkc, chev, 10, p.TextMuted) })
 			if chevEl.Clicked() {
 				a.collapsedChangeRepos[stCopy.Repo.ID] = !collapsed
 			}
 
-			ui.Box(gkc).Size(18, 18).Radius(4).Background(badge.Bg).Center().Shrink(0).Children(func() {
-				ui.Text(gkc, stCopy.Repo.Monogram).FontSize(9.5).FontWeight(weightBold).TextColor(badge.Text)
+			ui.Box(gkc).Size(16, 16).Radius(3).Background(badge.Bg).Center().Shrink(0).Children(func() {
+				ui.Text(gkc, stCopy.Repo.Monogram).FontSize(9).FontWeight(weightBold).TextColor(badge.Text)
 			})
-			ui.Text(gkc, stCopy.Repo.Name).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
-			badgeBox(gkc, stCopy.Branch, p.TextControl, p.Surface2, ui.Color{}, 10.5, false)
+			ui.Text(gkc, stCopy.Repo.Name).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+			badgeBox(gkc, stCopy.Branch, p.TextControl, p.Surface2, ui.Color{}, 9.5, false)
 			ui.Spacer(gkc)
 			if stagedCount > 0 {
-				badgeBox(gkc, fmt.Sprintf("已暂存 %d", stagedCount), p.Green, p.GreenSoft, ui.Color{}, 10, true)
+				badgeBox(gkc, fmt.Sprintf("已暂存 %d", stagedCount), p.Green, p.GreenSoft, ui.Color{}, 9.5, true)
 			}
-			ui.Text(gkc, fmt.Sprintf("%d", len(visible))).FontSize(11).TextColor(p.TextMuted)
-			more := ui.Row(gkc).Padding(1, 3).Radius(4).Cursor(ui.CursorPointer).Shrink(0)
-			if more.Hovered() {
-				more.Background(p.Surface2)
+			ui.Text(gkc, fmt.Sprintf("%d", len(visible))).FontSize(10).TextColor(p.TextMuted)
+			if hdr.Hovered() {
+				more := ui.Row(gkc).Size(16, 16).Radius(3).Center().Cursor(ui.CursorPointer).Shrink(0)
+				more.PopoverMenu(repoMenu)
+				more.Children(func() {
+					drawIcon(gkc, icoMore, 10, p.TextMuted)
+				})
 			}
-			more.PopoverMenu(repoMenu)
-			more.Children(func() {
-				drawIcon(gkc, icoMore, 13, p.TextMuted)
-			})
 		})
 
 		if !collapsed {
 			if len(visible) == 0 {
-				ui.Row(gkc).Padding(8, 10).Children(func() {
-					ui.Text(gkc, "当前筛选无匹配文件").FontSize(11).TextColor(p.TextMuted)
+				ui.Row(gkc).Height(22).Padding(0, 8, 0, 20).Children(func() {
+					ui.Text(gkc, "当前筛选无匹配文件").FontSize(10.5).TextColor(p.TextMuted)
 				})
 			} else {
 				treeKey := a.changeFilterKey(stCopy.Repo.ID)
@@ -414,7 +417,7 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, st gitops.RepoStatu
 }
 
 func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node *changeTreeNode, depth int, ordered []gitops.ChangedFile) {
-	indent := float32(10 + depth*14)
+	indent := float32(8 + depth*12)
 	for _, dir := range node.dirs {
 		dirCopy := dir
 		dirKey := repoID + "::" + dirCopy.relPath
@@ -422,9 +425,9 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node
 		children := collectChangeFiles(dirCopy)
 
 		dkc := c.Key("cdir-" + dirKey)
-		dRow := ui.Row(dkc).Padding(5, 10, 5, indent).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+		dRow := ui.Row(dkc).Height(22).Padding(0, 8, 0, indent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 		if dRow.Hovered() {
-			dRow.Background(p.RailBg)
+			dRow.Background(p.SurfaceHover)
 		}
 		dRow.PopoverMenu(func(m *ui.Menu) {
 			if m.Item("勾选此目录").Chosen() {
@@ -453,10 +456,10 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, repoID string, node
 			if !collapsed {
 				chev = icoChevronDown
 			}
-			drawIcon(dkc, chev, 11, p.TextMuted)
-			drawIcon(dkc, icoFolder, 13, p.TextMuted)
-			ui.Text(dkc, dirCopy.name).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextSecondary).MaxLines(1).Grow(1)
-			ui.Text(dkc, fmt.Sprintf("%d", len(children))).FontSize(10.5).TextColor(p.TextMuted)
+			drawIcon(dkc, chev, 9, p.TextMuted)
+			drawIcon(dkc, icoFolder, 11, p.TextMuted)
+			ui.Text(dkc, dirCopy.name).FontSize(11).FontWeight(weightMedium).TextColor(p.TextSecondary).MaxLines(1).Grow(1)
+			ui.Text(dkc, fmt.Sprintf("%d", len(children))).FontSize(9.5).TextColor(p.TextMuted)
 		})
 
 		if !collapsed {
@@ -474,7 +477,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 	isSelected := a.selectedChangeKey == key
 	isChecked := a.checkedChanges[key]
 
-	rowBg := p.Surface
+	rowBg := ui.Transparent
 	if isSelected {
 		rowBg = p.ActiveRowBg
 	}
@@ -482,12 +485,10 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 	kindBg := kindChipBg(cfCopy.Kind, p)
 
 	fkc := c.Key("cf-" + key)
-	// The height fits the hover stage/discard buttons, so revealing them never
-	// reflows the tree.
-	fRow := ui.Row(fkc).Padding(6, 10, 6, indent).Gap(6).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer).Height(35)
-	fRow.BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+	// Compact single-line row; stage/discard actions live in the right-click menu.
+	fRow := ui.Row(fkc).Height(24).Padding(0, 8, 0, indent).Gap(5).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if fRow.Hovered() && !isSelected {
-		fRow.Background(p.RailBg)
+		fRow.Background(p.SurfaceHover)
 	}
 	if fRow.RightClicked() {
 		a.selectChangedFile(cfCopy)
@@ -548,7 +549,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 		}
 	})
 	fRow.Children(func() {
-		fChk := ui.Box(fkc).Size(15, 15).Radius(4).Cursor(ui.CursorPointer).Center().Shrink(0)
+		fChk := ui.Box(fkc).Size(14, 14).Radius(3).Cursor(ui.CursorPointer).Center().Shrink(0)
 		if isChecked {
 			fChk.Background(p.Accent)
 		} else {
@@ -564,18 +565,17 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 		}
 		fChk.Children(func() {
 			if isChecked {
-				drawIcon(fkc, icoCheck, 11, p.AccentText)
+				drawIcon(fkc, icoCheck, 10, p.AccentText)
 			}
 		})
 
-		ui.Box(fkc).Size(17, 17).Radius(3).Background(kindBg).Center().Shrink(0).Children(func() {
-			ui.Text(fkc, cfCopy.Kind).FontSize(10).FontWeight(weightBold).TextColor(kindColor)
+		ui.Box(fkc).Size(15, 15).Radius(3).Background(kindBg).Center().Shrink(0).Children(func() {
+			ui.Text(fkc, cfCopy.Kind).FontSize(9.5).FontWeight(weightBold).TextColor(kindColor)
 		})
 
 		baseName := filepath.Base(cfCopy.Path)
-		dirName := filepath.Dir(cfCopy.Path)
 
-		info := ui.Row(fkc).Grow(1).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+		info := ui.Row(fkc).Grow(1).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 		if info.Clicked() {
 			if info.ClickModifiers()&ui.Shift != 0 {
 				a.toggleChangeRange(ordered, key)
@@ -584,52 +584,23 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 			}
 		}
 		info.Children(func() {
-			nameText := ui.Text(fkc, baseName).FontSize(12).FontWeight(weightMedium).TextColor(kindColor).MaxLines(1)
+			nameText := ui.Text(fkc, baseName).FontSize(11.5).FontWeight(weightMedium).TextColor(kindColor).MaxLines(1)
 			if cfCopy.Kind == "D" {
 				nameText.Strikethrough()
-			}
-			if dirName != "." && uiColumnDepthHint(dirName) {
-				ui.Text(fkc, dirName).FontSize(10.5).TextColor(p.TextMuted).MaxLines(1)
 			}
 			if cfCopy.Staged {
 				stageBadge := "已暂存"
 				if cfCopy.Unstaged {
 					stageBadge = "部分暂存"
 				}
-				badgeBox(fkc, stageBadge, p.Green, p.GreenSoft, ui.Color{}, 10, false)
+				badgeBox(fkc, stageBadge, p.Green, p.GreenSoft, ui.Color{}, 9.5, false)
 			}
 			ui.Spacer(fkc)
 			if !isSelected && (cfCopy.AddedLines > 0 || cfCopy.DeletedLines > 0) {
-				ui.Text(fkc, fmt.Sprintf("+%d -%d", cfCopy.AddedLines, cfCopy.DeletedLines)).FontSize(10.5).TextColor(p.TextMuted).Shrink(0)
+				ui.Text(fkc, fmt.Sprintf("+%d -%d", cfCopy.AddedLines, cfCopy.DeletedLines)).FontSize(9.5).TextColor(p.TextMuted).Shrink(0)
 			}
 		})
-
-		if isSelected || fRow.Hovered() {
-			ui.Row(fkc).Gap(4).Shrink(0).Children(func() {
-				stageLabel := "暂存"
-				if cfCopy.Staged {
-					stageLabel = "取消暂存"
-				}
-				miniBtn(fkc, p, stageLabel, func() {
-					a.stageChangeFiles([]gitops.ChangedFile{cfCopy}, !cfCopy.Staged)
-				})
-				miniBtn(fkc, p, "还原", func() {
-					a.pendingDiscard = &PendingDiscard{
-						RepoPath:  cfCopy.RepoPath,
-						RepoName:  cfCopy.RepoName,
-						RelPath:   cfCopy.Path,
-						Untracked: cfCopy.Untracked,
-					}
-				})
-			})
-		}
 	})
-}
-
-// uiColumnDepthHint keeps the muted directory hint only for shallow trees; deep
-// paths are already obvious from the indentation.
-func uiColumnDepthHint(dirName string) bool {
-	return strings.Count(dirName, "/") <= 1
 }
 
 func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFiles int) {
@@ -644,7 +615,7 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 
 	canCommit, commitHint := a.commitAvailability(checkedFiles)
 
-	ui.Column(c).Padding(10).Gap(8).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
+	ui.Column(c).Padding(8).Gap(6).Radius(8).Background(p.RailBg).Border(1, p.Border).Children(func() {
 		ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").Lines(2, 6).FillWidth()
 
 		ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {

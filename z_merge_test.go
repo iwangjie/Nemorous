@@ -27,7 +27,7 @@ func TestMergeShots(t *testing.T) {
 	app.syncMergeSelection(app.mergeTargets)
 	app.selectedMergeRepoID = app.repos[1].ID
 	app.manualMerges[app.repos[1].ID] = ManualMerge{RepoPath: app.repos[1].AbsPath, Path: "/tmp/nemorous-manual-demo", Conflicts: []string{"main.go"}}
-	app.activeTab = TabMerge
+	app.enterGitMerge()
 	app.mergeScanAt = app.lastRefresh
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()

@@ -46,7 +46,7 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 
 	ui.Column(c).Grow(1).Fill().Padding(18, 22).Gap(12).Background(p.AppBg).Children(func() {
 		ui.Column(c).Padding(12, 16).Gap(10).Radius(10).Background(p.Surface).Border(1, p.Border).Children(func() {
-			ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Wrap().Justify(ui.SpaceBetween).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					drawIcon(c, icoMerge, 15, p.Accent)
 					ui.Text(c, "合并到目标分支：").FontSize(13).FontWeight(weightSemibold).TextColor(p.TextPrimary)
@@ -130,12 +130,14 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 		})
 
 		showDetail := a.mergeRunning || a.aiVerifyReport != nil || selectedTarget != nil
-		ui.Row(c).Grow(1).FillWidth().Gap(14).AlignItems(ui.Stretch).Children(func() {
+		if showDetail {
+			ui.SplitPercent(c, &a.mergeDetailPct,
+				func() { a.buildMergeTable(c, p) },
+				func() { a.buildMergeDetail(c, p, selectedTarget) },
+			).Grow(1).FillHeight()
+		} else {
 			a.buildMergeTable(c, p)
-			if showDetail {
-				a.buildMergeDetail(c, p, selectedTarget)
-			}
-		})
+		}
 	})
 }
 
@@ -189,17 +191,17 @@ func (a *App) buildMergeTable(c *ui.Context, p Palette) {
 					}
 				})
 			})
-			ui.Box(c).Width(220).Children(func() {
-				ui.Text(c, "仓库").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
+			ui.Box(c).Width(150).Children(func() {
+				ui.Text(c, "仓库").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
 			})
-			ui.Box(c).Width(230).Children(func() {
-				ui.Text(c, "合并方向").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
+			ui.Box(c).Width(160).Children(func() {
+				ui.Text(c, "合并方向").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
 			})
 			ui.Box(c).Grow(1).Children(func() {
-				ui.Text(c, "状态说明").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
+				ui.Text(c, "状态说明").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
 			})
-			ui.Box(c).Width(230).AlignItems(ui.End).Children(func() {
-				ui.Text(c, "操作").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted)
+			ui.Box(c).Width(190).AlignItems(ui.End).Children(func() {
+				ui.Text(c, "操作").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
 			})
 		})
 
@@ -244,14 +246,14 @@ func (a *App) buildMergeTable(c *ui.Context, p Palette) {
 						})
 					})
 
-					ui.Row(kc).Width(220).Gap(10).AlignItems(ui.Center).Shrink(0).Children(func() {
+					ui.Row(kc).Width(150).Gap(10).AlignItems(ui.Center).Shrink(0).Children(func() {
 						ui.Box(kc).Size(26, 26).Radius(6).Background(badge.Bg).Center().Shrink(0).Children(func() {
 							ui.Text(kc, targetCopy.Repo.Monogram).FontSize(10.5).FontWeight(weightBold).TextColor(badge.Text)
 						})
 						ui.Text(kc, targetCopy.Repo.Name).FontSize(13).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1)
 					})
 
-					ui.Row(kc).Width(230).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+					ui.Row(kc).Width(160).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 						source := targetCopy.SourceBranch
 						if targetCopy.Detached {
 							source = "(detached)"
@@ -279,7 +281,7 @@ func (a *App) buildMergeTable(c *ui.Context, p Palette) {
 						}
 					})
 
-					ui.Row(kc).Width(230).Justify(ui.End).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+					ui.Row(kc).Width(190).Justify(ui.End).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 						if hasManual {
 							miniBtn(kc, p, "处理冲突", func() {
 								a.selectedMergeRepoID = targetCopy.Repo.ID
@@ -305,13 +307,13 @@ func (a *App) buildMergeTable(c *ui.Context, p Palette) {
 }
 
 func (a *App) buildMergeDetail(c *ui.Context, p Palette, target *aimerge.MergeTarget) {
-	ui.Column(c).Width(440).FillHeight().Radius(10).Background(p.Surface).Border(1, p.Border).Shrink(0).Children(func() {
+	ui.Column(c).FillWidth().FillHeight().Radius(10).Background(p.Surface).Border(1, p.Border).Children(func() {
 		if target != nil {
 			targetCopy := *target
 			manual, hasManual := a.manualMerges[targetCopy.Repo.ID]
 			ui.Column(c).Padding(14).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
-				ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Row(c).Justify(ui.SpaceBetween).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Row(c).Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
 						ui.Text(c, targetCopy.Repo.Name).FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
 						badgeBox(c, fmt.Sprintf("%s → %s", targetCopy.SourceBranch, targetCopy.TargetBranch), p.Accent, p.AccentSoft, ui.Color{}, 11, true)
 					})

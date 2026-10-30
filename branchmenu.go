@@ -213,11 +213,24 @@ func (a *App) buildBranchPicker(c *ui.Context, p Palette, anchor ui.Element, cur
 		panel.Width(420).Padding(8).Gap(6).Radius(10).Background(p.Surface).Border(1, p.Border).Shadow(0, 8, 24, 0, shadow)
 		panel.Children(func() {
 			query := strings.TrimSpace(a.branchPickerQuery)
-			input := ui.SearchField(c.Key("branch-picker-q"), &a.branchPickerQuery).Bind(&a.branchPickerHandle).
-				Placeholder("搜索分支、操作、仓库…").AutoFocus().FillWidth()
-			if input.Submitted() {
-				a.pickBranch(a.firstBranchMatch(query))
-			}
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				input := ui.SearchField(c.Key("branch-picker-q"), &a.branchPickerQuery).Bind(&a.branchPickerHandle).
+					Placeholder("搜索分支、操作、仓库…").AutoFocus().Grow(1)
+				if input.Submitted() {
+					a.pickBranch(a.firstBranchMatch(query))
+				}
+				fetch := ui.Box(c).Size(28, 28).Radius(6).Center().Shrink(0).Cursor(ui.CursorPointer).
+					Background(p.Surface2).Tooltip("获取远端分支 (Fetch)")
+				if fetch.Hovered() {
+					fetch.Background(p.SurfaceHover)
+				}
+				if fetch.Clicked() {
+					a.TriggerBatchFetch()
+				}
+				fetch.Children(func() {
+					drawIcon(c, icoFetch, 14, p.TextMuted)
+				})
+			})
 
 			ui.Scroll(c).MaxHeight(500).Gap(1).Children(func() {
 				switch {
@@ -299,6 +312,7 @@ func (a *App) branchPickerHomeActions(c *ui.Context, p Palette, query string) in
 		{"push", "推送待推送仓库", "", icoPush, a.TriggerPushAllAhead},
 		{"switch", "切换或新建分支…", "⌘B", icoBranch, a.openBranchSwitchModal},
 		{"refresh", "刷新仓库状态", "⌘R", icoRefresh, a.RefreshAsync},
+		{"default", "全部切回默认分支", "", icoHome, a.TriggerSwitchToMain},
 	}
 	shown := 0
 	for _, act := range actions {

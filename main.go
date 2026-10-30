@@ -191,27 +191,61 @@ func (a *App) BuildUI(c *ui.Context) {
 	ui.Column(c).Bind(&a.rootHandle).Fill().Background(p.AppBg).TextColor(p.TextPrimary).Children(func() {
 		a.buildTopHeaderBar(c, p)
 
-		if a.showTopMoreMenu {
-			a.buildCollapsibleMoreToolbar(c, p)
-		}
-
-		// Main Content Stage: left tool rail + the active view.
+		// IDEA-style layout: left tree | editor above the bottom Git tool window.
 		ui.Row(c).Grow(1).FillWidth().Children(func() {
 			a.buildVerticalNav(c, p)
+
 			ui.Column(c).Grow(1).FillHeight().Children(func() {
-				switch a.activeTab {
-				case TabCode:
-					a.buildCodeView(c, p)
-				case TabOverview:
-					a.buildOverviewView(c, p)
-				case TabMerge:
-					a.buildMergeView(c, p)
-				case TabMani:
-					a.buildManiView(c, p)
-				default:
-					a.buildChangesView(c, p)
+				editorArea := func() {
+					center := func() {
+						editor := func() {
+							if a.gitDiffOpen {
+								a.buildGitCommitDiffPane(c, p)
+								return
+							}
+							if a.activeTab == TabCode {
+								a.buildCodeRightPane(c, p)
+							} else {
+								a.buildDiffRightPane(c, p)
+							}
+						}
+						ui.Column(c).FillHeight().Children(editor)
+					}
+					if a.activeTab == TabCode {
+						ui.Split(c, &a.codeSplit,
+							func() { a.buildCodeLeftPane(c, p) },
+							center,
+						).Fill()
+					} else {
+						ui.Split(c, &a.changesSplit,
+							func() { a.buildChangesLeftPane(c, p) },
+							center,
+						).Fill()
+					}
+				}
+				workArea := func() {
+					if a.maniAvailable() && a.showManiPanel {
+						ui.SplitPercent(c, &a.maniContentPct,
+							func() { ui.Column(c).FillHeight().Children(editorArea) },
+							func() { a.buildManiPanel(c, p) },
+						).Fill()
+					} else {
+						ui.Column(c).FillHeight().Children(editorArea)
+					}
+				}
+				if a.showGitPanel {
+					ui.SplitVerticalPercent(c, &a.gitEditorPct,
+						func() { ui.Column(c).FillHeight().Children(workArea) },
+						func() { a.buildGitView(c, p) },
+					).Fill()
+				} else {
+					workArea()
 				}
 			})
+
+			if a.maniAvailable() {
+				a.buildRightToolRail(c, p)
+			}
 		})
 
 		a.buildStatusBar(c, p)
@@ -226,6 +260,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildUndoConfirmModal(c, p)
 		a.buildFileHistoryModal(c, p)
 		a.buildOpLogModal(c, p)
+		a.buildManiResultModal(c, p)
 	})
 }
 
@@ -287,18 +322,17 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	}
 	if c.Shortcut(ui.Cmd, ui.Key1) {
 		a.activeTab = TabChanges
+		a.gitDiffOpen = false
 	}
 	if c.Shortcut(ui.Cmd, ui.Key2) {
 		a.activeTab = TabCode
+		a.gitDiffOpen = false
 	}
 	if c.Shortcut(ui.Cmd, ui.Key3) {
-		a.activeTab = TabOverview
+		a.showGitPanel = !a.showGitPanel
 	}
-	if c.Shortcut(ui.Cmd, ui.Key4) {
-		a.activeTab = TabMerge
-	}
-	if c.Shortcut(ui.Cmd, ui.Key5) {
-		a.activeTab = TabMani
+	if c.Shortcut(ui.Cmd, ui.Key4) && a.maniAvailable() {
+		a.showManiPanel = !a.showManiPanel
 	}
 }
 
@@ -318,13 +352,15 @@ func (a *App) navDisplayMenu(m *ui.Menu) {
 // on the left. Icons only by default; right-click switches to icons + labels.
 func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 	labels := a.cfg.NavShowLabels
-	width := float32(52)
+	width := float32(40)
 	itemH := float32(32)
+	padding := float32(4)
 	if labels {
 		width = 72
 		itemH = 52
+		padding = 6
 	}
-	nav := ui.Column(c).Width(width).FillHeight().Padding(6).Gap(4).Background(p.RailBg).BorderWidth(0, 0, 0, 1).BorderColor(p.Border)
+	nav := ui.Column(c).Width(width).FillHeight().Padding(padding).Gap(4).Background(p.RailBg).BorderWidth(0, 0, 0, 1).BorderColor(p.Border)
 	nav.PopoverMenu(a.navDisplayMenu)
 	nav.Children(func() {
 		item := func(tab NavTab, icon *ui.SVG, label string) {
@@ -348,6 +384,7 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 			}
 			if row.Clicked() {
 				a.activeTab = tab
+				a.gitDiffOpen = false
 			}
 			row.Children(func() {
 				drawIcon(kc, icon, 15, iconCol)
@@ -356,13 +393,73 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				}
 			})
 		}
-		item(TabChanges, icoCommit, "变更")
+		item(TabChanges, icoCommit, "提交")
 		item(TabCode, icoFile, "文件")
-		item(TabOverview, icoGrid, "仓库")
-		item(TabMerge, icoMerge, "合并")
-		if a.maniCfg != nil && len(a.maniCfg.Tasks) > 0 {
-			item(TabMani, icoTerminal, "脚本")
+		gitActive := a.showGitPanel
+		gitBg := ui.Transparent
+		gitFg := p.TextControl
+		if gitActive {
+			gitBg = p.Accent
+			gitFg = p.AccentText
 		}
+		gitKc := c.Key("nav-git")
+		gitRow := ui.Column(gitKc).Height(itemH).FillWidth().Radius(6).Background(gitBg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Justify(ui.Center).Tooltip("Git").Label("Git")
+		gitRow.PopoverMenu(a.navDisplayMenu)
+		if labels {
+			gitRow.Gap(2)
+		}
+		if gitRow.Hovered() && !gitActive {
+			gitRow.Background(p.SurfaceHover)
+			gitFg = p.TextPrimary
+		}
+		if gitRow.Clicked() {
+			if a.showGitPanel {
+				a.showGitPanel = false
+			} else {
+				a.showGitPanel = true
+				a.expandGitForMerge()
+			}
+		}
+		gitRow.Children(func() {
+			drawIcon(gitKc, icoBranch, 15, gitFg)
+			if labels {
+				ui.Text(gitKc, "Git").FontSize(10.5).FontWeight(weightMedium).TextColor(gitFg).SingleLine()
+			}
+		})
+
+		// Utility icons live at the bottom of the rail, away from daily work.
+		ui.Spacer(c)
+		ui.Box(c).Height(1).FillWidth().Background(p.Border)
+		utility := func(key string, icon *ui.SVG, tooltip string, active bool, onClick func()) {
+			bg := ui.Transparent
+			fg := p.TextControl
+			if active {
+				bg = p.Surface2
+				fg = p.TextPrimary
+			}
+			kc := c.Key(key)
+			btn := ui.Row(kc).Height(32).FillWidth().Radius(6).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Justify(ui.Center).Tooltip(tooltip).Label(tooltip)
+			if btn.Hovered() {
+				btn.Background(p.SurfaceHover)
+				fg = p.TextPrimary
+			}
+			if btn.Clicked() {
+				onClick()
+			}
+			btn.Children(func() {
+				drawIcon(kc, icon, 15, fg)
+			})
+		}
+		themeIcon := icoMoon
+		if p.IsDark {
+			themeIcon = icoSun
+		}
+		utility("nav-theme", themeIcon, "切换浅色 / 深色外观", false, func() {
+			a.toggleTheme()
+		})
+		utility("nav-settings", icoSettings, "设置 (⌘,)", a.showSettings, func() {
+			a.showSettings = true
+		})
 	})
 }
 
@@ -453,49 +550,7 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 				a.cmdPaletteQuery = ""
 				a.cmdInputHandle.Focus()
 			})
-
-			// Collapsible "More" button for less-frequent workspace actions
-			ghostBtn(c, p, icoMore, "", a.showTopMoreMenu, func() {
-				a.showTopMoreMenu = !a.showTopMoreMenu
-			})
-
-			themeIcon := icoMoon
-			if p.IsDark {
-				themeIcon = icoSun
-			}
-			ghostBtn(c, p, themeIcon, "", false, func() {
-				a.toggleTheme()
-			})
-
-			ghostBtn(c, p, icoSettings, "", a.showSettings, func() {
-				a.showSettings = true
-			})
 		})
-	})
-}
-
-// buildCollapsibleMoreToolbar renders low-frequency batch operations only when expanded.
-func (a *App) buildCollapsibleMoreToolbar(c *ui.Context, p Palette) {
-	ui.Row(c).Padding(7, 16).Gap(8).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "批量操作：").FontSize(11.5).TextColor(p.TextMuted)
-		iconPill(c, p, icoRefresh, "刷新状态 (⌘R)", false, func() {
-			a.RefreshAsync()
-			a.showTopMoreMenu = false
-		})
-		miniBtn(c, p, "获取远端分支 (Fetch)", func() {
-			a.TriggerBatchFetch()
-			a.showTopMoreMenu = false
-		})
-		miniBtn(c, p, "全部切回默认主分支", func() {
-			a.TriggerSwitchToMain()
-			a.showTopMoreMenu = false
-		})
-		if a.maniCfg != nil && len(a.maniCfg.Tasks) > 0 {
-			miniBtn(c, p, "执行批量脚本 (mani.yaml)", func() {
-				a.activeTab = TabMani
-				a.showTopMoreMenu = false
-			})
-		}
 	})
 }
 
@@ -513,7 +568,7 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 					a.showOpLog = true
 				})
 			}
-			hint := "⌘1-4 切换视图 · ⌘K 搜索 · ⌘B 切换分支 · ⌘Enter 提交 · ⌘S 保存"
+			hint := "⌘1 提交 · ⌘2 文件 · ⌘3 Git · ⌘4 Mani · ⌘K 搜索 · ⌘B 分支 · ⌘Enter 提交"
 			if a.activeTab == TabChanges {
 				hint = "↑↓ 选择 · 空格勾选 · S/U 暂存 · ⌘Enter 提交"
 			}
@@ -572,32 +627,64 @@ func (a *App) buildOperationNotification(c *ui.Context, p Palette) {
 	}
 
 	closed := false
-	card := ui.Column(c).Width(340).Padding(10, 12).Gap(6).Radius(8).Background(p.Surface).Border(1, p.Border).Shadow(0, 6, 18, 0, shadow)
+	card := ui.Column(c).Width(340).Padding(16).Gap(8).Radius(8).Background(p.Surface).Border(1, p.Border).Shadow(0, 6, 18, 0, shadow)
+	if clickable && !running {
+		card.MinHeight(96).Justify(ui.SpaceBetween)
+	} else if running {
+		card.MinHeight(68)
+	} else {
+		card.MinHeight(60)
+	}
 	if clickable {
 		card.Cursor(ui.CursorPointer)
 	}
 	card.Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			drawIcon(c, icon, 14, iconCol)
-			ui.Text(c, message).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).Grow(1).MaxLines(2)
-			if !running {
-				xb := ui.Box(c).Size(16, 16).Radius(3).Center().Cursor(ui.CursorPointer)
+		ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
+				drawIcon(c, icon, 14, iconCol)
+				textSize := float32(12)
+				if running {
+					textSize = 11.5
+				}
+				ui.Text(c, message).FontSize(textSize).FontWeight(weightMedium).TextColor(p.TextPrimary).Grow(1).MaxLines(2)
+			})
+			if !running || a.commandCancel != nil {
+				xb := ui.Box(c).Size(18, 18).Radius(4).Center().Cursor(ui.CursorPointer)
+				tip := "关闭"
+				if running {
+					tip = "停止当前操作"
+				}
+				xb.Tooltip(tip)
 				if xb.Hovered() {
 					xb.Background(p.SurfaceHover)
 				}
 				if xb.Clicked() {
 					closed = true
-					a.notify = nil
+					if running {
+						a.cancelCommand()
+					} else {
+						a.notify = nil
+					}
 				}
 				xb.Children(func() {
-					drawIcon(c, icoClose, 10, p.TextMuted)
+					col := p.TextMuted
+					if xb.Hovered() {
+						col = p.TextPrimary
+						if running {
+							col = p.Danger
+						}
+					}
+					drawIcon(c, icoClose, 10, col)
 				})
 			}
 		})
 		if running {
 			ui.Progress(c, -1).Height(3).FillWidth()
 		} else if clickable {
-			ui.Text(c, "点击查看详情").FontSize(10.5).TextColor(p.Accent)
+			ui.Row(c).Gap(2).AlignItems(ui.Center).Cursor(ui.CursorPointer).Children(func() {
+				ui.Text(c, "查看详情").FontSize(11.5).FontWeight(weightMedium).TextColor(p.Accent)
+				drawIcon(c, icoChevronRight, 11, p.Accent)
+			})
 		}
 	})
 	if !closed && clickable && card.Clicked() {

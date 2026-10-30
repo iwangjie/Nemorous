@@ -38,6 +38,7 @@ type Config struct {
 	EditorSoftWrap      bool           `json:"editor_soft_wrap"`
 	NavShowLabels       bool           `json:"nav_show_labels"`
 	IncludeRootRepo     bool           `json:"include_root_repo"`
+	ManiEnabled         bool           `json:"mani_enabled"`
 	ProtectedBranches   []string       `json:"protected_branches"`
 	BranchPresets       []BranchPreset `json:"branch_presets,omitempty"`
 	MergePresets        []MergePreset  `json:"merge_presets,omitempty"`
@@ -62,6 +63,7 @@ func Default() Config {
 		EditorFontSize:      14,
 		EditorSoftWrap:      true,
 		IncludeRootRepo:     true,
+		ManiEnabled:         true,
 		ProtectedBranches:   []string{"main", "master", "test", "dev", "prod", "production"},
 	}
 }

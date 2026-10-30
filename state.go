@@ -23,11 +23,8 @@ import (
 type NavTab string
 
 const (
-	TabChanges  NavTab = "changes"  // 变更
-	TabCode     NavTab = "code"     // 文件
-	TabOverview NavTab = "overview" // 仓库
-	TabMerge    NavTab = "merge"    // 合并
-	TabMani     NavTab = "mani"     // 脚本
+	TabChanges NavTab = "changes" // 提交
+	TabCode    NavTab = "code"    // 文件
 )
 
 // PendingDiscard represents a file awaiting user confirmation before discard.
@@ -89,34 +86,38 @@ type App struct {
 	cfg config.Config
 
 	// Navigation & Filter
-	activeTab      NavTab
-	overviewFilter string // "all", "dirty", "ahead", "behind"
-	selectedRepoID string // selected repo for detail inspection
+	activeTab    NavTab
+	showGitPanel bool
+	gitEditorPct float32
 
 	// Collapsible UI States (Progressive Disclosure)
 	showDiffOptions       bool
 	showCodeOptions       bool
-	showTopMoreMenu       bool
 	showMergeAdvanced     bool
 	showMergeCheckDetails bool
-	showRepoDetailDrawer  bool
 	expandedCodeRepos     map[string]bool // "repoID" -> expanded in file tree
 	expandedCodeDirs      map[string]bool // "repoID::dirRelPath" -> expanded in file tree
+	codeRootCollapsed     bool            // workspace root row collapse state
 
 	// Resizable Split Widths (in DIPs)
 	changesSplit float32
 	codeSplit    float32
 
 	// Discovered Workspace Data
-	repos                 []mani.DiscoveredRepo
-	maniCfg               *mani.Config
-	statuses              []gitops.RepoStatus
-	statusByID            map[string]gitops.RepoStatus
-	workspaceFiles        []gitops.WorkspaceFile
-	lastRefresh           time.Time
-	lastFullRefresh       time.Time
-	isRefreshing          bool
-	busyLabel             string
+	repos           []mani.DiscoveredRepo
+	maniCfg         *mani.Config
+	statuses        []gitops.RepoStatus
+	statusByID      map[string]gitops.RepoStatus
+	workspaceFiles  []gitops.WorkspaceFile
+	lastRefresh     time.Time
+	lastFullRefresh time.Time
+	isRefreshing    bool
+	busyLabel       string
+	commandCancel   context.CancelFunc
+	commandID       uint64
+	// refreshAfterCommand retries a refresh that was invalidated by a command,
+	// so a stale pre-command snapshot is never published.
+	refreshAfterCommand   bool
 	watchPending          map[string]bool
 	watchPendingFiles     bool
 	watchPendingWorkspace bool
@@ -155,9 +156,54 @@ type App struct {
 	branchSwitchResults []gitops.OpResult
 	presetNameInput     string // e.g. "AAA 需求"
 
+	// Git Management State
+	gitSubTab            string // "history" or "merge"
+	gitFilterText        string
+	gitFilterAuthor      string
+	gitAuthorMe          bool
+	gitAuthorSuggestions []string
+	gitAuthorsLoaded     bool
+	gitAuthorsLoading    bool
+	gitFilterPath        string
+	gitPathCache         []string
+	gitPathCacheKey      string
+	gitFilterRepoID      string
+	gitFilterBranch      string
+	gitSinceDays         int
+	gitFilterHandle      ui.Handle
+	gitLogLoaded         bool
+	gitLogSeq            uint64
+	gitLogGroups         []gitRepoLog
+	gitLogTargets        []gitops.RepoStatus
+	gitUnifiedRows       []gitCommitRow
+	gitUnifiedMaxLanes   int
+	gitUnifiedLimit      int
+	gitLogTotal          int
+	gitGroupLoading      map[string]bool
+	gitSelectedCommit    string
+	gitAutoSelected      bool
+	gitDetail            *gitops.CommitDetail
+	gitDetailLoading     bool
+	gitDetailSeq         uint64
+	gitCollapsedRepos    map[string]bool
+	gitRemoteOpen        map[string]bool
+	gitLeftWidth         float32
+	gitCenterPct         float32
+	maniContentPct       float32
+	gitDiffOpen          bool
+	gitDiffLoading       bool
+	gitDiffRepo          string
+	gitDiffPath          string
+	gitDiffOldPath       string
+	gitDiffHash          string
+	gitDiffErr           string
+	gitDiffSeq           uint64
+	gitCommitDiff        *editor.DiffState
+
 	// Branches & AI Merge State
 	mergeTargetBranch   string
 	mergeTargets        []aimerge.MergeTarget
+	mergeDetailPct      float32
 	mergeCheckedRepos   map[string]bool
 	mergePresetInput    string
 	mergeRunning        bool
@@ -179,11 +225,21 @@ type App struct {
 	codeTabIdx      int
 
 	// Mani Tasks State
-	selectedManiTask string
-	maniParamBranch  string
-	maniParamTarget  string
-	maniTaskRunning  bool
-	maniResults      []mani.TaskResult
+	showManiPanel         bool
+	maniRootCollapsed     bool
+	maniTasksCollapsed    bool
+	maniProjectsCollapsed bool
+	maniParamsOpen        bool
+	selectedManiTask      string
+	maniLastTask          string
+	maniLastScope         string
+	maniParamBranch       string
+	maniParamTarget       string
+	maniTaskRunning       bool
+	maniResults           []mani.TaskResult
+	showManiResult        bool
+	maniResultTitle       string
+	maniResultOutput      string
 
 	// Modals & Overlays
 	showCmdPalette      bool
@@ -209,6 +265,7 @@ type App struct {
 
 	watcherCancel context.CancelFunc
 	mu            sync.Mutex
+	uiMu          sync.Mutex
 }
 
 func NewApp(cfg config.Config) *App {
@@ -216,7 +273,16 @@ func NewApp(cfg config.Config) *App {
 	a := &App{
 		cfg:                  cfg,
 		activeTab:            TabChanges,
-		overviewFilter:       "all",
+		gitEditorPct:         62,
+		gitSubTab:            "history",
+		gitCollapsedRepos:    make(map[string]bool),
+		gitGroupLoading:      make(map[string]bool),
+		gitRemoteOpen:        make(map[string]bool),
+		gitLeftWidth:         250,
+		gitCenterPct:         62,
+		gitUnifiedLimit:      80,
+		maniContentPct:       72,
+		mergeDetailPct:       66,
 		statusByID:           make(map[string]gitops.RepoStatus),
 		watchPending:         make(map[string]bool),
 		checkedChanges:       make(map[string]bool),
@@ -281,9 +347,59 @@ func parseInlineMode(m string) editor.DiffInline {
 func (a *App) runUI(fn func()) {
 	if a.win != nil {
 		a.win.Update(fn)
-	} else {
-		fn()
+		return
 	}
+	// Headless tests have no window loop; serialize background callbacks so
+	// concurrent repo loads cannot mutate UI state maps at the same time.
+	a.uiMu.Lock()
+	defer a.uiMu.Unlock()
+	fn()
+}
+
+// startCommand marks a cancelable batch command and returns its context.
+func (a *App) startCommand(label string) (context.Context, uint64) {
+	if a.commandCancel != nil {
+		a.commandCancel()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.commandCancel = cancel
+	a.commandID++
+	a.busyLabel = label
+	return ctx, a.commandID
+}
+
+// finishCommand clears the progress label when id is still the current command.
+func (a *App) finishCommand(id uint64) bool {
+	if a.commandID != id {
+		return false
+	}
+	a.busyLabel = ""
+	a.commandCancel = nil
+	if a.refreshAfterCommand {
+		a.refreshAfterCommand = false
+		a.refreshInternal(true)
+	}
+	return true
+}
+
+// commandActive reports whether a batch command currently owns the repositories.
+// Refreshes are held back so autostash's transient clean worktree never reaches
+// the changes list; the command refreshes once when it completes.
+func (a *App) commandActive() bool {
+	return a.commandCancel != nil
+}
+
+// cancelCommand stops the running batch command and dismisses its progress.
+func (a *App) cancelCommand() {
+	if a.commandCancel != nil {
+		a.commandCancel()
+	}
+	a.commandCancel = nil
+	a.commandID++
+	a.refreshAfterCommand = false
+	a.busyLabel = ""
+	a.showToast("warn", "已取消当前操作")
+	a.RefreshAsync()
 }
 
 func (a *App) showToast(kind, msg string) {
@@ -327,7 +443,7 @@ func (a *App) setBatchResults(res []gitops.OpResult) {
 // overlayOpen reports whether a dialog owns the keyboard.
 func (a *App) overlayOpen() bool {
 	return a.showCmdPalette || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
-		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil
+		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil || a.showManiResult
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -416,8 +532,13 @@ func (a *App) LoadWorkspaceSync(wsPath string) {
 	statuses := gitops.InspectRepos(ctx, repos, a.cfg.Concurrency)
 	wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
 
+	a.gitAuthorsLoaded = false
+	a.gitAuthorsLoading = false
+	a.gitAuthorSuggestions = nil
+	a.gitPathCacheKey = ""
 	a.applySnapshot(repos, maniCfg, statuses, wsFiles)
 	a.lastFullRefresh = time.Now()
+	a.codeRootCollapsed = false
 	a.mergeTargets = nil
 	a.mergeScanAt = time.Time{}
 }
@@ -434,6 +555,9 @@ func (a *App) RefreshWorkspaceAsync() {
 	if a.cfg.WorkspacePath == "" {
 		return
 	}
+	if a.commandActive() {
+		return
+	}
 	if a.isRefreshing {
 		a.watchPendingWorkspace = true
 		return
@@ -442,6 +566,7 @@ func (a *App) RefreshWorkspaceAsync() {
 	wsPath := a.cfg.WorkspacePath
 	incRoot := a.cfg.IncludeRootRepo
 	conc := a.cfg.Concurrency
+	epoch := a.commandID
 	go func() {
 		ctx := context.Background()
 		repos, maniCfg := mani.DiscoverRepos(wsPath, incRoot)
@@ -449,6 +574,15 @@ func (a *App) RefreshWorkspaceAsync() {
 		wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
 		a.runUI(func() {
 			a.isRefreshing = false
+			if a.commandActive() || a.commandID != epoch {
+				a.watchPendingWorkspace = true
+				a.refreshAfterCommand = true
+				if !a.commandActive() {
+					a.refreshAfterCommand = false
+					a.refreshInternal(true)
+				}
+				return
+			}
 			a.applySnapshot(repos, maniCfg, statuses, wsFiles)
 			a.lastFullRefresh = time.Now()
 		})
@@ -458,6 +592,9 @@ func (a *App) RefreshWorkspaceAsync() {
 // RefreshReposAsync re-inspects only the repositories touched by a file event.
 func (a *App) RefreshReposAsync(ids map[string]bool, listFiles bool) {
 	if len(ids) == 0 {
+		return
+	}
+	if a.commandActive() {
 		return
 	}
 	if a.isRefreshing {
@@ -480,6 +617,7 @@ func (a *App) RefreshReposAsync(ids map[string]bool, listFiles bool) {
 	}
 	a.isRefreshing = true
 	conc := a.cfg.Concurrency
+	epoch := a.commandID
 	go func() {
 		ctx := context.Background()
 		statuses := gitops.InspectRepos(ctx, targets, conc)
@@ -492,6 +630,18 @@ func (a *App) RefreshReposAsync(ids map[string]bool, listFiles bool) {
 		}
 		a.runUI(func() {
 			a.isRefreshing = false
+			if a.commandActive() || a.commandID != epoch {
+				for _, repo := range targets {
+					a.watchPending[repo.ID] = true
+				}
+				a.watchPendingFiles = a.watchPendingFiles || listFiles
+				a.refreshAfterCommand = true
+				if !a.commandActive() {
+					a.refreshAfterCommand = false
+					a.refreshInternal(true)
+				}
+				return
+			}
 			a.applyRepoUpdates(statuses, files)
 			a.flushWatchQueue()
 		})
@@ -649,18 +799,23 @@ func (a *App) refreshInternal(showBusy bool) {
 	if a.isRefreshing || a.cfg.WorkspacePath == "" {
 		return
 	}
+	if a.commandActive() {
+		return
+	}
 	// Silent refreshes only re-inspect repository status; file listings refresh
 	// at most every 30 seconds.
 	full := showBusy || a.lastFullRefresh.IsZero() || time.Since(a.lastFullRefresh) > 30*time.Second
 
 	a.isRefreshing = true
+	const refreshLabel = "正在刷新仓库状态..."
 	if showBusy {
-		a.busyLabel = "正在刷新仓库状态..."
+		a.busyLabel = refreshLabel
 	}
 	wsPath := a.cfg.WorkspacePath
 	incRoot := a.cfg.IncludeRootRepo
 	conc := a.cfg.Concurrency
 	cachedFiles := a.workspaceFiles
+	epoch := a.commandID
 
 	go func() {
 		ctx := context.Background()
@@ -672,8 +827,18 @@ func (a *App) refreshInternal(showBusy bool) {
 		}
 		a.runUI(func() {
 			a.isRefreshing = false
-			if showBusy {
+			if showBusy && a.busyLabel == refreshLabel {
 				a.busyLabel = ""
+			}
+			if a.commandActive() || a.commandID != epoch {
+				// A command may be autostashing; do not publish its transient
+				// clean worktree. The command refreshes when it completes.
+				a.refreshAfterCommand = true
+				if !a.commandActive() {
+					a.refreshAfterCommand = false
+					a.refreshInternal(true)
+				}
+				return
 			}
 			if full {
 				a.lastFullRefresh = time.Now()
@@ -689,8 +854,17 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 	a.repos = repos
 	a.mu.Unlock()
 	a.maniCfg = maniCfg
+	if !a.cfg.ManiEnabled || maniCfg == nil || len(maniCfg.Tasks) == 0 {
+		a.showManiPanel = false
+	}
 	a.statuses = statuses
+	for _, st := range statuses {
+		if _, ok := a.gitCollapsedRepos[st.Repo.ID]; !ok {
+			a.gitCollapsedRepos[st.Repo.ID] = true
+		}
+	}
 	a.workspaceFiles = wsFiles
+	a.gitPathCacheKey = ""
 	a.lastRefresh = time.Now()
 
 	byID := make(map[string]gitops.RepoStatus, len(statuses))
@@ -725,10 +899,6 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 		}
 	}
 	a.statusByID = byID
-
-	if a.selectedRepoID == "" && len(repos) > 0 {
-		a.selectedRepoID = repos[0].ID
-	}
 
 	// Keep selected changed file and its DiffView buffer live in real time!
 	if a.selectedChangeKey != "" {
@@ -777,6 +947,7 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 }
 
 func (a *App) selectChangedFile(cf gitops.ChangedFile) {
+	a.gitDiffOpen = false
 	a.selectedChangeKey = cf.Key()
 	cfCopy := cf
 	a.selectedChangeFile = &cfCopy
@@ -888,6 +1059,7 @@ func (a *App) revealCodeFile(wf gitops.WorkspaceFile) {
 // selectCodeFile opens wf in a tab, or activates its existing tab without
 // reloading, so unsaved edits survive switching.
 func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
+	a.gitDiffOpen = false
 	wf = a.normalizeWorkspaceFile(wf)
 	for i, tab := range a.codeTabs {
 		if tab.file.RepoID == wf.RepoID && tab.file.RelPath == wf.RelPath {
@@ -1321,13 +1493,15 @@ func (a *App) triggerCheckedBranchSwitch(createMissing bool) {
 
 // TriggerBatchFetch runs git fetch across all repos.
 func (a *App) TriggerBatchFetch() {
-	a.busyLabel = "正在获取远端更新 (Fetch)..."
 	repos := append([]mani.DiscoveredRepo(nil), a.repos...)
 	conc := a.cfg.Concurrency
+	ctx, cmdID := a.startCommand("正在获取远端更新 (Fetch)...")
 	go func() {
-		ctx := context.Background()
 		res := gitops.FetchAll(ctx, repos, conc)
 		a.runUI(func() {
+			if !a.finishCommand(cmdID) {
+				return
+			}
 			a.setBatchResults(res)
 			a.showToast("ok", fmt.Sprintf("已更新 %d 个仓库的远端分支信息", len(res)))
 			a.RefreshAsync()
@@ -1337,14 +1511,16 @@ func (a *App) TriggerBatchFetch() {
 
 // TriggerBatchPull runs git pull --ff-only across all clean repos.
 func (a *App) TriggerBatchPull() {
-	a.busyLabel = "正在拉取更新..."
 	repos := append([]mani.DiscoveredRepo(nil), a.repos...)
 	conc := a.cfg.Concurrency
+	ctx, cmdID := a.startCommand("正在拉取更新...")
 	go func() {
-		ctx := context.Background()
 		res := gitops.PullAll(ctx, repos, conc)
 		okCnt, skipCnt, failCnt := countOpResults(res)
 		a.runUI(func() {
+			if !a.finishCommand(cmdID) {
+				return
+			}
 			a.setBatchResults(res)
 			a.showToast("ok", fmt.Sprintf("拉取完成：%d 成功，%d 跳过，%d 失败", okCnt, skipCnt, failCnt))
 			a.RefreshAsync()
@@ -1354,14 +1530,16 @@ func (a *App) TriggerBatchPull() {
 
 // TriggerSwitchToMain switches all clean repos back to their default branch and pulls.
 func (a *App) TriggerSwitchToMain() {
-	a.busyLabel = "正在切回默认分支并拉取更新..."
 	repos := append([]mani.DiscoveredRepo(nil), a.repos...)
 	conc := a.cfg.Concurrency
+	ctx, cmdID := a.startCommand("正在切回默认分支并拉取更新...")
 	go func() {
-		ctx := context.Background()
 		res := gitops.SwitchToMainAll(ctx, repos, conc)
 		okCnt, skipCnt, failCnt := countOpResults(res)
 		a.runUI(func() {
+			if !a.finishCommand(cmdID) {
+				return
+			}
 			a.setBatchResults(res)
 			a.showToast("ok", fmt.Sprintf("已切回默认分支：%d 成功，%d 跳过，%d 失败", okCnt, skipCnt, failCnt))
 			a.RefreshAsync()
@@ -1387,14 +1565,16 @@ func (a *App) TriggerBatchSwitch(targetBranch string, createIfMissing bool) {
 		a.showToast("warn", "请输入分支名称")
 		return
 	}
-	a.busyLabel = "正在切换分支至 " + targetBranch + "..."
 	repos := append([]mani.DiscoveredRepo(nil), a.repos...)
 	conc := a.cfg.Concurrency
+	ctx, cmdID := a.startCommand("正在切换分支至 " + targetBranch + "...")
 	go func() {
-		ctx := context.Background()
 		res := gitops.SwitchBranchAll(ctx, repos, targetBranch, createIfMissing, conc)
 		okCnt, skipCnt, failCnt := countOpResults(res)
 		a.runUI(func() {
+			if !a.finishCommand(cmdID) {
+				return
+			}
 			a.setBatchResults(res)
 			a.showBranchModal = false
 			a.showToast("ok", fmt.Sprintf("已切换至 %s：%d 成功，%d 跳过，%d 失败", targetBranch, okCnt, skipCnt, failCnt))
@@ -1495,13 +1675,15 @@ func (a *App) TriggerCommit(pushAfter bool) {
 		return
 	}
 
-	a.busyLabel = fmt.Sprintf("正在提交 %d 个仓库...", len(targets))
 	conc := a.cfg.Concurrency
+	ctx, cmdID := a.startCommand(fmt.Sprintf("正在提交 %d 个仓库...", len(targets)))
 	go func() {
-		ctx := context.Background()
 		res := gitops.BatchCommit(ctx, targets, msg, pushAfter, conc)
 		okCnt, _, failCnt := countOpResults(res)
 		a.runUI(func() {
+			if !a.finishCommand(cmdID) {
+				return
+			}
 			a.setBatchResults(res)
 			if failCnt == 0 {
 				a.commitMessage = ""
@@ -1527,13 +1709,15 @@ func (a *App) TriggerPushAllAhead() {
 		a.showToast("ok", "所有仓库均已推送，无需推送")
 		return
 	}
-	a.busyLabel = fmt.Sprintf("正在推送 %d 个仓库...", len(aheadRepos))
 	conc := a.cfg.Concurrency
+	ctx, cmdID := a.startCommand(fmt.Sprintf("正在推送 %d 个仓库...", len(aheadRepos)))
 	go func() {
-		ctx := context.Background()
 		res := gitops.BatchPush(ctx, aheadRepos, conc)
 		okCnt, _, failCnt := countOpResults(res)
 		a.runUI(func() {
+			if !a.finishCommand(cmdID) {
+				return
+			}
 			a.setBatchResults(res)
 			a.showToast("ok", fmt.Sprintf("推送完成：%d 成功，%d 失败", okCnt, failCnt))
 			a.RefreshAsync()
@@ -1584,8 +1768,49 @@ func (a *App) TriggerAIMergeConflict(plan aimerge.RepoMergePlan) {
 	}()
 }
 
-// TriggerManiTask runs the selected mani.yaml task across projects in parallel.
+// maniAvailable reports whether the Mani tool window should be shown.
+func (a *App) maniAvailable() bool {
+	return a.cfg.ManiEnabled && a.maniCfg != nil && len(a.maniCfg.Tasks) > 0
+}
+
+// maniExtraEnv carries the optional B and TARGET task parameters.
+func (a *App) maniExtraEnv() map[string]string {
+	extra := map[string]string{}
+	if a.maniParamBranch != "" {
+		extra["B"] = a.maniParamBranch
+	}
+	if a.maniParamTarget != "" {
+		extra["TARGET"] = a.maniParamTarget
+	}
+	return extra
+}
+
+// TriggerManiTask runs the selected mani.yaml task across all projects in parallel.
 func (a *App) TriggerManiTask(taskName string, extraEnv map[string]string) {
+	if extraEnv == nil {
+		extraEnv = a.maniExtraEnv()
+	}
+	a.runManiTask(taskName, extraEnv, nil, "")
+}
+
+// TriggerManiTaskForRepo runs a task only in one project directory.
+func (a *App) TriggerManiTaskForRepo(taskName, repoID string) {
+	var target mani.DiscoveredRepo
+	found := false
+	for _, r := range a.repos {
+		if r.ID == repoID {
+			target = r
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	a.runManiTask(taskName, a.maniExtraEnv(), []mani.DiscoveredRepo{target}, target.Name)
+}
+
+func (a *App) runManiTask(taskName string, extraEnv map[string]string, targets []mani.DiscoveredRepo, scope string) {
 	if a.maniCfg == nil || a.maniTaskRunning {
 		return
 	}
@@ -1594,20 +1819,35 @@ func (a *App) TriggerManiTask(taskName string, extraEnv map[string]string) {
 		return
 	}
 	a.selectedManiTask = taskName
+	a.maniLastTask = taskName
+	a.maniLastScope = scope
 	a.maniTaskRunning = true
-	a.busyLabel = "正在执行脚本: " + taskName + "..."
+	if !a.showManiPanel {
+		a.busyLabel = "正在执行脚本: " + taskName + "..."
+	}
 	wsDir := a.cfg.WorkspacePath
 	repos := append([]mani.DiscoveredRepo(nil), a.repos...)
 	conc := a.cfg.Concurrency
 
 	go func() {
 		ctx := context.Background()
-		res := mani.RunTask(ctx, wsDir, taskName, spec, repos, extraEnv, conc)
+		var res []mani.TaskResult
+		if len(targets) > 0 {
+			res = mani.RunTaskOn(ctx, spec, targets, extraEnv, conc)
+		} else {
+			res = mani.RunTask(ctx, wsDir, taskName, spec, repos, extraEnv, conc)
+		}
 		a.runUI(func() {
 			a.maniTaskRunning = false
 			a.busyLabel = ""
 			a.maniResults = res
-			a.showToast("ok", fmt.Sprintf("脚本 %s 执行完成（%d 个仓库）", taskName, len(res)))
+			if !a.showManiPanel {
+				where := fmt.Sprintf("%d 个仓库", len(res))
+				if scope != "" {
+					where = scope
+				}
+				a.showToast("ok", fmt.Sprintf("脚本 %s 执行完成（%s）", taskName, where))
+			}
 			a.RefreshAsync()
 		})
 	}()

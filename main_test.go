@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
@@ -151,12 +153,210 @@ func TestNotificationOpensOperationDetails(t *testing.T) {
 	app.setBatchResults([]gitops.OpResult{{Status: "OK"}})
 	app.showToast("ok", "推送完成：1 成功")
 	tt.Frame()
-	if err := tt.Click("点击查看详情"); err != nil {
+	if err := tt.Click("查看详情"); err != nil {
 		t.Fatalf("result card should offer details: %v", err)
 	}
 	tt.Frame()
 	if !app.showOpLog {
 		t.Fatal("clicking the result card should open the operation log")
+	}
+}
+
+func TestGitLaneAssignment(t *testing.T) {
+	entries := []gitops.CommitEntry{
+		{Hash: "r", Subject: "release", Parents: []string{"m"}},
+		{Hash: "m", Subject: "merge", Parents: []string{"a", "f"}},
+		{Hash: "f", Subject: "feature", Parents: []string{"i"}},
+		{Hash: "a", Subject: "main", Parents: []string{"i"}},
+		{Hash: "i", Subject: "init"},
+	}
+	rows, maxLanes := buildGitRows(entries)
+	if maxLanes != 2 {
+		t.Fatalf("expected two lanes, got %d", maxLanes)
+	}
+	if len(rows) != len(entries) {
+		t.Fatalf("expected %d rows, got %d", len(entries), len(rows))
+	}
+	if rows[1].Lane != 0 || len(rows[1].Parents) != 2 || rows[1].Parents[0] == rows[1].Parents[1] {
+		t.Fatalf("merge commit should fork into two parents, got %+v", rows[1])
+	}
+	if rows[2].Lane == rows[3].Lane {
+		t.Fatal("feature and main should occupy separate lanes")
+	}
+	if len(rows[2].Before) != 2 || len(rows[2].After) != 2 {
+		t.Fatalf("both lanes should be active around the feature commit, got %+v", rows[2])
+	}
+}
+
+func TestGitHistoryFiltersAndDetail(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = setupUITestWorkspace(t)
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(cfg.WorkspacePath)
+	app.TriggerGitLog()
+	waitGitLog(t, app)
+	if len(app.gitLogGroups) != 2 || app.gitLogTotal == 0 {
+		t.Fatalf("expected both repositories in one forest, got %d groups / %d commits", len(app.gitLogGroups), app.gitLogTotal)
+	}
+	waitGitDetail(t, app)
+	if app.gitDetail == nil || len(app.gitDetail.Files) == 0 {
+		t.Fatal("expected the selected commit to load its changed files")
+	}
+
+	app.setGitBranchFilter("cloud-caring", "legacy/old-archive")
+	waitGitLog(t, app)
+	if len(app.gitLogGroups) != 1 || app.gitLogGroups[0].Status.Repo.ID != "cloud-caring" {
+		t.Fatalf("branch filter should select cloud-caring, got %+v", app.gitLogGroups)
+	}
+	rows := app.gitLogGroups[0].Rows
+	if len(rows) != 2 || rows[0].Entry.Subject != "old commit" {
+		t.Fatalf("expected the legacy tip and its parent, got %+v", rows)
+	}
+
+	app.gitFilterBranch = ""
+	app.gitFilterRepoID = ""
+	app.gitFilterText = "init"
+	app.reloadGitLog()
+	waitGitLog(t, app)
+	for _, group := range app.gitLogGroups {
+		for _, row := range group.Rows {
+			if !strings.Contains(strings.ToLower(row.Entry.Subject), "init") {
+				t.Fatalf("text filter leaked %q", row.Entry.Subject)
+			}
+		}
+	}
+}
+
+func waitGitLog(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for (len(app.gitGroupLoading) > 0 || len(app.gitLogGroups) < len(app.gitLogTargets) || !app.gitLogLoaded) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(app.gitGroupLoading) > 0 || len(app.gitLogGroups) < len(app.gitLogTargets) || !app.gitLogLoaded {
+		t.Fatal("timed out waiting for git history")
+	}
+}
+
+func waitGitDetail(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for app.gitDetailLoading && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.gitDetailLoading {
+		t.Fatal("timed out waiting for commit details")
+	}
+}
+
+func TestGitAuthorMePathAndRegex(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = setupUITestWorkspace(t)
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(cfg.WorkspacePath)
+
+	app.gitAuthorMe = true
+	app.TriggerGitLog()
+	waitGitLog(t, app)
+	if len(app.gitLogGroups) == 0 || app.gitLogTotal == 0 {
+		t.Fatal("author=me should load commits for the configured git identity")
+	}
+	for _, group := range app.gitLogGroups {
+		for _, row := range group.Rows {
+			if row.Entry.Author != "Test" {
+				t.Fatalf("author=me leaked author %q", row.Entry.Author)
+			}
+		}
+	}
+
+	app.gitAuthorMe = false
+	app.gitFilterRepoID = "cloud-caring"
+	app.gitFilterText = "old|init"
+	app.reloadGitLog()
+	waitGitLog(t, app)
+	for _, group := range app.gitLogGroups {
+		for _, row := range group.Rows {
+			if !strings.Contains(strings.ToLower(row.Entry.Subject), "old") && !strings.Contains(strings.ToLower(row.Entry.Subject), "init") {
+				t.Fatalf("regex filter leaked %q", row.Entry.Subject)
+			}
+		}
+	}
+
+	dirs := app.gitPathSuggestions()
+	found := false
+	for _, dir := range dirs {
+		if strings.Contains(dir, "src/") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected path autocomplete directories, got %+v", dirs)
+	}
+
+	app.TriggerGitAuthors()
+	deadline := time.Now().Add(3 * time.Second)
+	for app.gitAuthorsLoading && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	foundAuthor := false
+	for _, author := range app.gitAuthorSuggestions {
+		if author == "Test" {
+			foundAuthor = true
+			break
+		}
+	}
+	if !foundAuthor {
+		t.Fatalf("expected Test in author suggestions, got %+v", app.gitAuthorSuggestions)
+	}
+}
+
+func TestManiTaskRunsScoped(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = setupUITestWorkspace(t)
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(cfg.WorkspacePath)
+
+	app.TriggerManiTask("status", nil)
+	waitManiTask(t, app)
+	if len(app.maniResults) != 2 {
+		t.Fatalf("expected status to run in both mani projects, got %+v", app.maniResults)
+	}
+
+	app.maniResults = nil
+	app.TriggerManiTaskForRepo("status", "cloud-caring")
+	waitManiTask(t, app)
+	if len(app.maniResults) != 1 || app.maniResults[0].RepoID != "cloud-caring" {
+		t.Fatalf("expected a scoped run in cloud-caring, got %+v", app.maniResults)
+	}
+}
+
+func waitManiTask(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for app.maniTaskRunning && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.maniTaskRunning {
+		t.Fatal("timed out waiting for mani task")
+	}
+}
+
+func TestManiHiddenWhenDisabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = setupUITestWorkspace(t)
+	cfg.IncludeRootRepo = false
+	cfg.ManiEnabled = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(cfg.WorkspacePath)
+	if app.maniAvailable() {
+		t.Fatal("mani integration should be unavailable when disabled")
+	}
+	if app.showManiPanel {
+		t.Fatal("the tool window should stay closed when integration is disabled")
 	}
 }
 
@@ -173,7 +373,7 @@ func TestBranchPickerViews(t *testing.T) {
 
 	app.showBranchPicker = true
 	tt.Frame()
-	for _, want := range []string{"拉取全部仓库", "推送待推送仓库", "切换或新建分支…", "我的最近提交", "全部分支与分支组合…"} {
+	for _, want := range []string{"拉取全部仓库", "推送待推送仓库", "切换或新建分支…", "全部切回默认分支", "我的最近提交", "全部分支与分支组合…"} {
 		if !tt.HasText(want) {
 			t.Fatalf("expected %q in the branch picker", want)
 		}
@@ -190,6 +390,70 @@ func TestBranchPickerViews(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("分支") || !tt.HasText("main") {
 		t.Fatal("expected branch search results")
+	}
+}
+
+func TestCommandLifecycleClearsProgress(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = ""
+	app := NewApp(cfg)
+	app.isRefreshing = true
+	_, id := app.startCommand("正在获取远端更新 (Fetch)...")
+	if app.busyLabel == "" {
+		t.Fatal("starting a command should show its progress")
+	}
+	if !app.finishCommand(id) {
+		t.Fatal("the current command should finish")
+	}
+	if app.busyLabel != "" {
+		t.Fatal("finishing a command must clear progress even when a refresh is running")
+	}
+}
+
+func TestRefreshHeldDuringCommand(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = t.TempDir()
+	app := NewApp(cfg)
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app.commandCancel = cancel
+	app.RefreshAsync()
+	if app.isRefreshing {
+		t.Fatal("refresh must be held while a command owns the repositories")
+	}
+}
+
+func TestFinishCommandStartsDeferredRefresh(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = t.TempDir()
+	app := NewApp(cfg)
+	_, id := app.startCommand("正在拉取更新...")
+	app.refreshAfterCommand = true
+	if !app.finishCommand(id) {
+		t.Fatal("the current command should finish")
+	}
+	if !app.isRefreshing {
+		t.Fatal("a refresh held back by the command should start when it finishes")
+	}
+}
+
+func TestCancelCommandStopsAndClearsProgress(t *testing.T) {
+	cfg := config.Default()
+	cfg.WorkspacePath = ""
+	app := NewApp(cfg)
+	ctx, id := app.startCommand("正在拉取更新...")
+	app.cancelCommand()
+	if ctx.Err() == nil {
+		t.Fatal("canceling a command should cancel its context")
+	}
+	if app.busyLabel != "" {
+		t.Fatal("canceling a command should dismiss its progress")
+	}
+	if app.notify == nil || app.notify.Message != "已取消当前操作" {
+		t.Fatalf("expected a cancellation notice, got %+v", app.notify)
+	}
+	if app.finishCommand(id) {
+		t.Fatal("a canceled command's callback must not finish a newer command")
 	}
 }
 
@@ -289,29 +553,7 @@ func TestNemorousHeadlessUI(t *testing.T) {
 		t.Fatal("expected Chinese filename 中文模块.go after expanding src/main/go in file tree")
 	}
 
-	// 3. Navigate to Repositories Overview (仓库) and verify recent/stale branch activity folding
-	if err := tt.Click("仓库"); err != nil {
-		t.Fatalf("failed to click Repositories tab: %v", err)
-	}
-	if app.activeTab != TabOverview {
-		t.Fatalf("expected TabOverview, got %s", app.activeTab)
-	}
-	if !tt.HasText("cloud-caring") || !tt.HasText("risk-cloud") {
-		t.Fatal("expected discovered repositories in Overview table")
-	}
-	// Repository inspector shows a tier-ordered branch dropdown instead of a flat pill wall.
-	app.selectedRepoID = "cloud-caring"
-	app.showRepoDetailDrawer = true
-	tt.Frame()
-	if !tt.HasText("我的分支优先") || !tt.HasText("切换分支") {
-		t.Fatal("expected tier-ordered branch dropdown in repository inspector")
-	}
-	if tt.HasText("近期活跃分支") {
-		t.Fatal("flat branch pill wall should be gone from the inspector")
-	}
-	app.showRepoDetailDrawer = false
-
-	// 4. Open Branch Switch Modal, verify the 7-day activity sections are gone, fuzzy branch search & saving a multi-project branch preset ("AAA 需求")
+	// 3. Open Branch Switch Modal, verify the 7-day activity sections are gone, fuzzy branch search & saving a multi-project branch preset ("AAA 需求")
 	app.openBranchSwitchModal()
 	tt.Frame()
 	if !tt.HasText("切换分支与分支组合") {
@@ -376,12 +618,31 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	app.showBranchModal = false
 	tt.Frame()
 
-	// 5. Navigate to Merge view (合并)
-	if err := tt.Click("合并"); err != nil {
-		t.Fatalf("failed to click Merge tab: %v", err)
+	// 5. Navigate to the Git hub; history is the default sub-tab
+	if err := tt.Click("Git"); err != nil {
+		t.Fatalf("failed to click Git tab: %v", err)
 	}
-	if app.activeTab != TabMerge {
-		t.Fatalf("expected TabMerge, got %s", app.activeTab)
+	if !app.showGitPanel {
+		t.Fatal("expected the Git tool window to open")
+	}
+	if app.gitEditorPct != 62 {
+		t.Fatalf("expected history to keep the default editor/Git split, got %.1f", app.gitEditorPct)
+	}
+	if app.gitSubTab != "history" {
+		t.Fatalf("expected Git history sub-tab by default, got %s", app.gitSubTab)
+	}
+	if !tt.HasText("提交图") || !tt.HasText("全部分支") {
+		t.Fatal("expected Git history tabs and filters")
+	}
+	if err := tt.Click("合并"); err != nil {
+		t.Fatalf("failed to switch to merge sub-tab: %v", err)
+	}
+	tt.Frame()
+	if app.gitSubTab != "merge" {
+		t.Fatalf("expected merge sub-tab, got %s", app.gitSubTab)
+	}
+	if app.gitEditorPct > 40 {
+		t.Fatalf("expected the merge workflow to expand the Git tool window, got top split %.1f", app.gitEditorPct)
 	}
 	if !tt.HasText("合并到目标分支：") {
 		t.Fatal("expected merge target header in Merge view")
@@ -390,16 +651,18 @@ func TestNemorousHeadlessUI(t *testing.T) {
 		t.Fatal("expected repository selection, merge presets and return-to-development controls")
 	}
 
-	// 6. Navigate to Scripts view (脚本)
-	if err := tt.Click("脚本"); err != nil {
-		t.Fatalf("failed to click Scripts tab: %v", err)
+	// 6. Open the Mani tool window from the right rail
+	if err := tt.Click("Mani"); err != nil {
+		t.Fatalf("failed to click Mani rail icon: %v", err)
 	}
-	if app.activeTab != TabMani {
-		t.Fatalf("expected TabMani, got %s", app.activeTab)
+	if !app.showManiPanel {
+		t.Fatal("expected Mani tool window to open")
 	}
-	if !tt.HasText("批量脚本 (mani.yaml)") {
-		t.Fatal("expected mani scripts title in Scripts view")
+	if !tt.HasText("运行参数") || !tt.HasText("任务") || !tt.HasText("项目") {
+		t.Fatal("expected Maven-style Mani tree in the tool window")
 	}
+	app.showManiPanel = false
+	tt.Frame()
 
 	// 7. Open Settings modal and verify omp CLI support
 	app.showSettings = true

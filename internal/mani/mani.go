@@ -32,10 +32,10 @@ type ProjectSpec struct {
 
 // SpecDef represents an execution spec in mani.yaml.
 type SpecDef struct {
-	Output   string `yaml:"output"`
-	Parallel bool   `yaml:"parallel"`
-	Forks    int    `yaml:"forks"`
-	OmitEmpty bool  `yaml:"omit_empty"`
+	Output    string `yaml:"output"`
+	Parallel  bool   `yaml:"parallel"`
+	Forks     int    `yaml:"forks"`
+	OmitEmpty bool   `yaml:"omit_empty"`
 }
 
 // TaskSpec represents a task entry in mani.yaml.
@@ -295,9 +295,6 @@ func computeMonogram(name string) string {
 
 // RunTask executes a mani.yaml task across the target repositories in parallel.
 func RunTask(ctx context.Context, workspaceDir string, taskName string, task TaskSpec, repos []DiscoveredRepo, extraEnv map[string]string, concurrency int) []TaskResult {
-	if concurrency <= 0 {
-		concurrency = 8
-	}
 	// Filter repos if task targets only mani projects or cwd
 	var targets []DiscoveredRepo
 	if task.IsCwdTarget() {
@@ -321,7 +318,19 @@ func RunTask(ctx context.Context, workspaceDir string, taskName string, task Tas
 			targets = repos
 		}
 	}
+	return runTaskTargets(ctx, task, targets, extraEnv, concurrency)
+}
 
+// RunTaskOn runs a task on an explicit set of project targets, used by the
+// per-project context menu in the Mani tool window.
+func RunTaskOn(ctx context.Context, task TaskSpec, targets []DiscoveredRepo, extraEnv map[string]string, concurrency int) []TaskResult {
+	return runTaskTargets(ctx, task, targets, extraEnv, concurrency)
+}
+
+func runTaskTargets(ctx context.Context, task TaskSpec, targets []DiscoveredRepo, extraEnv map[string]string, concurrency int) []TaskResult {
+	if concurrency <= 0 {
+		concurrency = 8
+	}
 	results := make([]TaskResult, len(targets))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup

@@ -306,7 +306,7 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 				a.TriggerSwitchToMain()
 			})
 			addEntry("act-merge", "操作", "合并分支到 "+a.mergeTargetBranch, "检查冲突并合并", p.Purple, func() {
-				a.activeTab = TabMerge
+				a.enterGitMerge()
 				a.TriggerMergeScan()
 			})
 			addEntry("act-refresh", "操作", "刷新仓库状态", "⌘R", p.Accent, func() {
@@ -315,18 +315,6 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			addEntry("act-theme", "操作", "切换浅色 / 深色外观", "", p.Amber, func() {
 				a.toggleTheme()
 			})
-
-			for _, st := range a.statuses {
-				stCopy := st
-				sub := "分支 " + st.Branch
-				if st.Repo.Description != "" && st.Repo.Description != st.Repo.Name && st.Repo.Description != "." {
-					sub += " · " + st.Repo.Description
-				}
-				addEntry("repo-"+st.Repo.ID, "仓库", st.Repo.Name, sub, p.Blue, func() {
-					a.selectedRepoID = stCopy.Repo.ID
-					a.activeTab = TabOverview
-				})
-			}
 
 			for _, st := range a.statuses {
 				for _, cf := range st.Files {
@@ -687,6 +675,25 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 					_ = a.cfg.Save()
 				}
 			})
+		})
+		// Section 4: Mani Task Integration
+		ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+			ui.Text(c, "Mani 任务集成").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				if ui.Checkbox(c, &a.cfg.ManiEnabled, "启用 mani.yaml 任务面板").Changed() {
+					_ = a.cfg.Save()
+					if !a.cfg.ManiEnabled {
+						a.showManiPanel = false
+					}
+				}
+				ui.Spacer(c)
+				status := "未检测到 mani.yaml"
+				if a.maniCfg != nil && len(a.maniCfg.Tasks) > 0 {
+					status = fmt.Sprintf("%d 个任务 · %d 个项目", len(a.maniCfg.Tasks), len(a.maniCfg.Projects))
+				}
+				ui.Text(c, status).FontSize(11).TextColor(p.TextMuted)
+			})
+			ui.Text(c, "启用后右侧出现 Mani 工具图标；右键项目节点可指定项目执行任务。关闭后不再展示。").FontSize(10.5).TextColor(p.TextMuted)
 		})
 	})
 }

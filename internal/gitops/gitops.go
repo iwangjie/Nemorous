@@ -799,26 +799,52 @@ func FetchAll(ctx context.Context, repos []mani.DiscoveredRepo, concurrency int)
 	})
 }
 
-// PullAll runs safe fast-forward pull across all repositories in parallel (skipping dirty repos).
+// PullAll runs safe fast-forward pulls across all repositories in parallel.
+// Local changes are stashed before the pull and restored afterwards, matching
+// the "stash → pull → unstash" behavior IDEA applies to a dirty worktree.
 func PullAll(ctx context.Context, repos []mani.DiscoveredRepo, concurrency int) []OpResult {
 	return runParallelOp(repos, concurrency, func(r mani.DiscoveredRepo) (string, string, error) {
 		b, err := RunGit(ctx, r.AbsPath, "branch", "--show-current")
 		if err != nil || b == "" {
 			return "SKIP", "detached HEAD", nil
 		}
-		porcelain, _ := RunGit(ctx, r.AbsPath, "status", "--porcelain")
-		if strings.TrimSpace(porcelain) != "" {
-			return "SKIP", fmt.Sprintf("%s (工作区有未提交改动，已安全跳过)", b), nil
-		}
 		if _, err := RunGit(ctx, r.AbsPath, "rev-parse", "--abbrev-ref", "@{u}"); err != nil {
 			return "SKIP", fmt.Sprintf("%s (未关联远程跟踪分支)", b), nil
 		}
-		out, err := RunGit(ctx, r.AbsPath, "pull", "--ff-only", "--quiet")
-		if err != nil {
-			return "FAIL", fmt.Sprintf("%s (非快进或远端冲突: %v)", b, err), err
+		if unmerged, _ := RunGit(ctx, r.AbsPath, "ls-files", "-u"); strings.TrimSpace(unmerged) != "" {
+			return "SKIP", fmt.Sprintf("%s (存在未解决的冲突，先解决后再拉取)", b), nil
 		}
-		_ = out
-		return "OK", fmt.Sprintf("%s 已快进更新", b), nil
+		porcelain, _ := RunGit(ctx, r.AbsPath, "status", "--porcelain")
+		dirty := strings.TrimSpace(porcelain) != ""
+		if dirty {
+			if _, err := RunGit(ctx, r.AbsPath, "stash", "push", "--include-untracked", "-m", "nemorous: pull autostash"); err != nil {
+				return "FAIL", fmt.Sprintf("%s 自动暂存本地改动失败: %v", b, err), err
+			}
+		}
+
+		before, _ := RunGit(ctx, r.AbsPath, "rev-parse", "HEAD")
+		_, pullErr := RunGit(ctx, r.AbsPath, "pull", "--ff-only", "--quiet")
+		after, _ := RunGit(ctx, r.AbsPath, "rev-parse", "HEAD")
+		if pullErr != nil {
+			if dirty {
+				if _, popErr := RunGit(ctx, r.AbsPath, "stash", "pop"); popErr != nil {
+					return "FAIL", fmt.Sprintf("%s 拉取失败，且恢复本地改动失败（改动保留在 stash）: %v", b, popErr), pullErr
+				}
+				return "FAIL", fmt.Sprintf("%s 拉取失败，已恢复本地改动: %v", b, pullErr), pullErr
+			}
+			return "FAIL", fmt.Sprintf("%s (非快进或远端冲突: %v)", b, pullErr), pullErr
+		}
+		if dirty {
+			if _, popErr := RunGit(ctx, r.AbsPath, "stash", "pop"); popErr != nil {
+				return "FAIL", fmt.Sprintf("%s 已更新，但恢复本地改动发生冲突（改动保留在 stash，解决后 git stash drop）: %v", b, popErr), popErr
+			}
+		}
+
+		updated := before != "" && after != "" && before != after
+		if updated {
+			return "OK", fmt.Sprintf("%s 已快进更新", b), nil
+		}
+		return "OK", fmt.Sprintf("%s 已是最新", b), nil
 	})
 }
 
