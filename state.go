@@ -121,6 +121,12 @@ type App struct {
 	changesSplit float32
 	codeSplit    float32
 
+	// Commit box height, dragged from the divider above it. Zero keeps the
+	// content height; changesCommitAutoH remembers that height so the first
+	// drag starts from it.
+	changesCommitH     float32
+	changesCommitAutoH float32
+
 	// Discovered Workspace Data
 	repos           []mani.DiscoveredRepo
 	maniCfg         *mani.Config

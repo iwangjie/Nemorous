@@ -300,8 +300,55 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			}
 		})
 
-		a.buildCommitBox(c, p, checkedRepos, checkedFiles)
+		a.buildCommitResizer(c, p)
+		box := a.buildCommitBox(c, p, checkedRepos, checkedFiles, a.changesCommitH)
+		if a.changesCommitH == 0 {
+			if h := box.Bounds().H; h > 0 {
+				a.changesCommitAutoH = h
+			}
+		}
 	})
+}
+
+// buildCommitResizer draws the divider above the commit box: drag it, or focus
+// it and use Up/Down, to grow or shrink the commit box like the editor splits.
+func (a *App) buildCommitResizer(c *ui.Context, p Palette) {
+	kc := c.Key("changes-commit-resizer")
+	grip := ui.Row(kc).Height(6).FillWidth().Cursor(ui.CursorResizeNS).Focusable().
+		AlignItems(ui.Center).Tooltip("拖动调整提交框高度").Label("调整提交框高度")
+	_, dy, held := grip.Dragged()
+	if held && dy != 0 {
+		a.resizeCommitBox(-dy)
+	}
+	if grip.DoubleClicked() {
+		a.changesCommitH = 0
+	}
+	if grip.Shortcut(0, ui.KeyUp) {
+		a.resizeCommitBox(20)
+	}
+	if grip.Shortcut(0, ui.KeyDown) {
+		a.resizeCommitBox(-20)
+	}
+	grip.Children(func() {
+		line := p.BorderSubtle
+		if grip.Hovered() || held || grip.FocusVisible() {
+			line = p.Accent
+		}
+		ui.Box(c).Height(1).FillWidth().Background(line)
+	})
+}
+
+// resizeCommitBox keeps the commit box between the action row's height and a
+// size that still leaves room for the changes list.
+func (a *App) resizeCommitBox(delta float32) {
+	base := a.changesCommitH
+	if base <= 0 {
+		base = a.changesCommitAutoH
+	}
+	if base <= 0 {
+		base = 160
+	}
+	a.changesCommitH = min(max(base+delta, 160), 420)
 }
 
 func (a *App) changeFileMatchesQuery(repoName string, f gitops.ChangedFile) bool {
@@ -739,7 +786,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 	})
 }
 
-func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFiles int) {
+func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFiles int, height float32) ui.Element {
 	commitBtnLabel := "提交"
 	if checkedFiles > 0 {
 		if checkedRepos > 1 {
@@ -751,13 +798,26 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 
 	canCommit, commitHint := a.commitAvailability(checkedFiles)
 
-	ui.Column(c).Gap(4).Children(func() {
+	box := ui.Column(c).Gap(4)
+	if height > 0 {
+		box = box.Height(height)
+	}
+	box.Children(func() {
 		ui.Row(c).Padding(2, 4).AlignItems(ui.Center).Children(func() {
 			ui.Checkbox(c, &a.commitAmend, "修正")
 		})
 
-		ui.Column(c).Padding(8).Gap(6).Radius(4).Background(p.AppBg).Border(1, p.Border).Children(func() {
-			ta := ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").Lines(2, 6).FillWidth()
+		card := ui.Column(c).Padding(8).Gap(6).Radius(4).Background(p.AppBg).Border(1, p.Border)
+		if height > 0 {
+			card = card.Grow(1)
+		}
+		card.Children(func() {
+			ta := ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").FillWidth()
+			if height > 0 {
+				ta = ta.Grow(1).MinHeight(40)
+			} else {
+				ta = ta.Lines(2, 6)
+			}
 			ta.Background(p.AppBg).Border(0, p.Border).Radius(3).Padding(4, 6)
 
 			ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
@@ -778,6 +838,7 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 			}
 		})
 	})
+	return box
 }
 
 func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
