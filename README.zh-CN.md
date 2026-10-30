@@ -127,6 +127,20 @@
 
 ---
 
+### 8. 插件引擎、插件市场与官方 Maven 工具窗口
+- **沙箱化插件引擎**：插件是带 `plugin.json` 清单的 JavaScript 包，运行在内置 goja VM 中。工具窗口与命令面板入口由声明式 UI 树驱动；读取工作区文件、启动进程必须显式声明 `workspace.read` / `process.exec` 权限。
+- **完整安装器与插件市场**：内置官方索引 + 远程市场，支持安装、更新、启用、禁用、卸载与本地 `.zip` 安装；远程包强制 SHA-256 校验，压缩包做体积与路径越界检查，内置插件离线可用。
+- **官方 Maven 插件（IDEA 风格）**：跨多仓工作区自动发现 `pom.xml`，提供模块树、`clean/compile/test/package/install` 生命周期目标、Profiles、跳过测试、自定义目标、实时构建输出、`dependency:tree` 依赖分析、Effective POM 与可配置的 `mvn` 路径。
+
+<picture>
+  <img src="docs/screenshots/06_maven_plugin_light.png" width="49%" alt="官方 Maven 工具窗口">
+  <img src="docs/screenshots/07_plugin_market_light.png" width="49%" alt="插件市场">
+</picture>
+
+插件开发指南：[docs/plugins.md](docs/plugins.md)。
+
+---
+
 ## 安全不变量 (Safety Invariants)
 
 在工程实践中，自动化工具与 AI 最致命的问题是“毁坏代码”或“误推历史”。Nemorous 在底层架构上确立了严密的数学级安全不变量：

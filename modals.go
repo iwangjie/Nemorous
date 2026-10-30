@@ -328,6 +328,22 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 				a.ZoomReset()
 			})
 
+			for _, panel := range a.pluginPanels() {
+				panel := panel
+				addEntry("plugin-panel-"+panel.Ref, "插件", "打开 "+panel.Title, panel.PluginName+" · 工具窗口", p.Purple, func() {
+					a.openPluginPanel(panel.Ref)
+				})
+			}
+			for _, cmd := range a.pluginCommands() {
+				cmd := cmd
+				addEntry("plugin-cmd-"+cmd.CommandID, "插件", cmd.Title, cmd.PluginName+" · 插件命令", p.Purple, func() {
+					a.runPluginCommand(cmd)
+				})
+			}
+			addEntry("plugin-market", "操作", "插件市场", "安装、更新、禁用或卸载插件", p.Purple, func() {
+				a.openPluginMarket()
+			})
+
 			for _, st := range a.statuses {
 				for _, cf := range st.Files {
 					cfCopy := cf
@@ -726,6 +742,7 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 					})
 					ui.Text(c, "启用后右侧出现 Mani 工具图标；右键项目节点可指定项目执行任务。关闭后不再展示。").FontSize(10.5).TextColor(p.TextMuted)
 				})
+				a.buildPluginSettingsSection(c, p)
 				a.buildUpdateSettings(c, p)
 			})
 		})

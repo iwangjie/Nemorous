@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+- **插件引擎 (Plugin Engine)**：
+  - 插件为带 `plugin.json` 清单的 JavaScript 包，运行于内置 goja VM；清单声明 `workspace.read` / `process.exec` 权限，未声明的宿主 API 直接拒绝。
+  - 工具窗口通过声明式 UI 树渲染（列/行、文本、按钮、输入框、复选、列表、代码控制台、徽章），命令面板自动收录插件命令。
+  - 插件状态、私有存储与启用开关持久化；升级保留存储，卸载同时清理包与数据。
+- **插件市场与安装器 (Marketplace & Installer)**：
+  - 内置官方索引 + 远程 `plugins/registry.json` 合并，远程失败自动回退内置索引，支持自定义市场地址。
+  - 市场内安装、更新、启用/禁用、卸载；支持本地 `.zip` 安装；远程包下载后强制 SHA-256 校验。
+  - 安装包体积/文件数限制、路径穿越与符号链接拦截、入口与清单校验；内置官方插件离线可装。
+- **首个官方插件：Maven（IDEA 风格）**：
+  - 跨多仓工作区递归发现 `pom.xml`（模块树、多仓去重、深度/隐藏目录保护）。
+  - 生命周期目标 `clean/compile/test/package/install`、自定义目标、Profiles、跳过测试、停止构建。
+  - 实时构建输出（自动跟随末尾）、成功/失败状态、`dependency:tree` 缩进依赖树、Effective POM、`mvn` 路径与额外参数设置。
+- **测试与文档**：
+  - 新增插件引擎单测/集成测试（渲染、动作、权限边界、存储持久化、市场安装/更新/校验和、zip 越界）与真实 Maven 端到端测试（扫描→打包→依赖树→Effective POM→卸载）。
+  - 新增插件开发指南 [docs/plugins.md](docs/plugins.md) 与中英 README、插件市场/Maven 工具窗口截图。
+
 ## 0.2.2
 
 - 修复 Darcula 主题的区域配色，使其真正还原 IntelliJ IDEA：

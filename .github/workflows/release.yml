@@ -87,6 +87,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go tool mygo vet .
+          go vet ./...
           go test ./...
 
       - name: Build signed release packages

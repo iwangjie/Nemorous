@@ -22,29 +22,42 @@ func (a *App) maniTaskNames() []string {
 	return names
 }
 
-// buildRightToolRail renders the secondary tool stripe on the far right. It is
-// only present when the Mani integration is enabled and a config was found.
+// buildRightToolRail renders the secondary tool stripe on the far right:
+// Mani tasks and every installed plugin's tool window.
 func (a *App) buildRightToolRail(c *ui.Context, p Palette) {
-	ui.Column(c).Width(40).FillHeight().Padding(4).Gap(4).Background(p.RailBg).BorderWidth(0, 0, 0, 1).BorderColor(p.Border).Children(func() {
-		active := a.showManiPanel
+	railButton := func(key string, icon *ui.SVG, label, tooltip string, active bool, onClick func()) {
 		bg := ui.Transparent
 		fg := p.TextControl
 		if active {
 			bg = p.Accent
 			fg = p.AccentText
 		}
-		kc := c.Key("rail-mani")
-		btn := ui.Column(kc).Height(32).FillWidth().Radius(6).Background(bg).Center().Cursor(ui.CursorPointer).Tooltip("Mani 任务").Label("Mani")
+		kc := c.Key(key)
+		btn := ui.Column(kc).Height(32).FillWidth().Radius(6).Background(bg).Center().Cursor(ui.CursorPointer).Tooltip(tooltip).Label(label)
 		if btn.Hovered() && !active {
 			btn.Background(p.SurfaceHover)
 			fg = p.TextPrimary
 		}
 		if btn.Clicked() {
-			a.showManiPanel = !a.showManiPanel
+			onClick()
 		}
 		btn.Children(func() {
-			drawIcon(kc, icoTerminal, 15, fg)
+			drawIcon(kc, icon, 15, fg)
 		})
+	}
+	ui.Column(c).Width(40).FillHeight().Padding(4).Gap(4).Background(p.RailBg).BorderWidth(0, 0, 0, 1).BorderColor(p.Border).Children(func() {
+		if a.maniAvailable() {
+			railButton("rail-mani", icoTerminal, "Mani", "Mani 任务", a.showManiPanel, func() {
+				a.pluginPanel = ""
+				a.showManiPanel = !a.showManiPanel
+			})
+		}
+		for _, panel := range a.pluginPanels() {
+			panel := panel
+			railButton("rail-plugin-"+panel.Ref, a.pluginIcon(panel), panel.Title, panel.Title+" · "+panel.PluginName, a.pluginPanel == panel.Ref, func() {
+				a.togglePluginPanel(panel.Ref)
+			})
+		}
 	})
 }
 

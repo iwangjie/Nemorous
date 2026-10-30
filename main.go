@@ -46,9 +46,11 @@ func main() {
 		app.win.OnClosed(func() {
 			app.closeTerminal()
 			app.shutdownUpdates()
+			app.closePluginManager()
 		})
 		app.win.OnFocus(func() { app.runUI(func() { app.handleAppForeground() }) })
 		app.win.OnBlur(func() { app.runUI(func() { app.handleAppBackground() }) })
+		app.initPluginManager()
 		if cfg.WorkspacePath != "" {
 			app.LoadWorkspaceAsync(cfg.WorkspacePath)
 		}
@@ -243,7 +245,12 @@ func (a *App) BuildUI(c *ui.Context) {
 					}
 				}
 				workArea := func() {
-					if a.maniAvailable() && a.showManiPanel {
+					if a.pluginPanel != "" && a.pluginMgr != nil {
+						ui.SplitPercent(c, &a.pluginPanelPct,
+							func() { ui.Column(c).FillHeight().Children(editorArea) },
+							func() { a.buildPluginPanel(c, p) },
+						).Fill()
+					} else if a.maniAvailable() && a.showManiPanel {
 						ui.SplitPercent(c, &a.maniContentPct,
 							func() { ui.Column(c).FillHeight().Children(editorArea) },
 							func() { a.buildManiPanel(c, p) },
@@ -272,7 +279,7 @@ func (a *App) BuildUI(c *ui.Context) {
 				}
 			})
 
-			if a.maniAvailable() {
+			if a.maniAvailable() || len(a.pluginPanels()) > 0 {
 				a.buildRightToolRail(c, p)
 			}
 		})
@@ -293,6 +300,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildFileHistoryModal(c, p)
 		a.buildOpLogModal(c, p)
 		a.buildManiResultModal(c, p)
+		a.buildPluginMarketModal(c, p)
 	})
 }
 

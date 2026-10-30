@@ -31,6 +31,9 @@ jobs:
       - name: Run MyGo static lifetime vet
         run: go tool mygo vet .
 
+      - name: Vet all packages
+        run: go vet ./...
+
       - name: Run unit and headless UI tests
         env:
           CGO_ENABLED: "0"

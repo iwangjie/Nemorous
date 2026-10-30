@@ -19,6 +19,7 @@ import (
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/gitops"
 	"github.com/iwangjie/nemorous/internal/mani"
+	"github.com/iwangjie/nemorous/internal/plugins"
 )
 
 // NavTab identifies the primary workspace view.
@@ -149,22 +150,22 @@ type App struct {
 	codeGroups          []codeRepoGroup
 
 	// Changes & Diff View State
-	selectedChangeKey    string
-	selectedChangeFile   *gitops.ChangedFile
-	checkedChanges       map[string]bool // ChangeFile.Key() -> selected for batch commit
-	diffState            *editor.DiffState
-	diffStagedOnly       bool
-	diffEditable         bool
-	diffModified         bool
-	commitMessage        string
-	commitAmend          bool
-	lastBatchResults     []gitops.OpResult
-	pendingClipboard     string
-	changesFilterQuery   string
-	changesFilterHandle  ui.Handle
-	lastCheckedKey       string
-	collapsedChangeRepos map[string]bool
-	collapsedChangeDirs  map[string]bool // "repoID::dirRelPath" -> collapsed
+	selectedChangeKey        string
+	selectedChangeFile       *gitops.ChangedFile
+	checkedChanges           map[string]bool // ChangeFile.Key() -> selected for batch commit
+	diffState                *editor.DiffState
+	diffStagedOnly           bool
+	diffEditable             bool
+	diffModified             bool
+	commitMessage            string
+	commitAmend              bool
+	lastBatchResults         []gitops.OpResult
+	pendingClipboard         string
+	changesFilterQuery       string
+	changesFilterHandle      ui.Handle
+	lastCheckedKey           string
+	collapsedChangeRepos     map[string]bool
+	collapsedChangeDirs      map[string]bool // "repoID::dirRelPath" -> collapsed
 	collapsedStagedSection   bool
 	collapsedUnstagedSection bool
 	stagedSectionInit        bool
@@ -263,6 +264,22 @@ type App struct {
 	showManiResult        bool
 	maniResultTitle       string
 	maniResultOutput      string
+
+	// Plugin engine & marketplace
+	pluginMgr             *plugins.Manager
+	pluginPanel           string // active plugin panel ref, "maven:maven"
+	pluginPanelPct        float32
+	showPluginMarket      bool
+	pluginMarketQuery     string
+	pluginMarketTab       string // "market" or "installed"
+	pluginMarketBusy      map[string]bool
+	pluginMarketErr       string
+	pluginMarketDraft     string
+	pluginMarketConfirm   string
+	pluginRegistryLoading bool
+	pluginScroll          map[string]*ui.ScrollState
+	pluginScrollText      map[string]string
+	pluginIconCache       map[string]*ui.SVG
 
 	// Signed GitHub auto-update state
 	updateLoopCancel    context.CancelFunc
@@ -369,6 +386,11 @@ func NewApp(cfg config.Config) *App {
 		repoBranchTrees:        make(map[string]*branchNode),
 		changeTreeCache:        make(map[string]*changeTreeNode),
 		codeTreeCache:          make(map[string]*codeTreeDir),
+		pluginMarketBusy:       make(map[string]bool),
+		pluginScroll:           make(map[string]*ui.ScrollState),
+		pluginScrollText:       make(map[string]string),
+		pluginIconCache:        make(map[string]*ui.SVG),
+		pluginPanelPct:         72,
 		changesSplit:           320,
 		codeSplit:              290,
 		codeTabIdx:             -1,
@@ -531,7 +553,7 @@ func (a *App) setBatchResults(res []gitops.OpResult) {
 func (a *App) overlayOpen() bool {
 	return a.showCmdPalette || a.showGlobalSearch || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
 		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil ||
-		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog
+		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -944,6 +966,7 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 	a.mu.Lock()
 	a.repos = repos
 	a.mu.Unlock()
+	a.syncPluginsWorkspace(repos)
 	a.maniCfg = maniCfg
 	if !a.cfg.ManiEnabled || maniCfg == nil || len(maniCfg.Tasks) == 0 {
 		a.showManiPanel = false
