@@ -242,7 +242,12 @@ func (a *App) BuildUI(c *ui.Context) {
 						ui.Column(c).FillHeight().Children(editorArea)
 					}
 				}
-				if a.showGitPanel {
+				if a.showLogPanel {
+					ui.SplitVerticalPercent(c, &a.logEditorPct,
+						func() { ui.Column(c).FillHeight().Children(workArea) },
+						func() { a.buildLogPanel(c, p) },
+					).Fill()
+				} else if a.showGitPanel {
 					ui.SplitVerticalPercent(c, &a.gitEditorPct,
 						func() { ui.Column(c).FillHeight().Children(workArea) },
 						func() { a.buildGitView(c, p) },
@@ -342,6 +347,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		a.gitDiffOpen = false
 	}
 	if c.Shortcut(ui.Cmd, ui.Key3) {
+		a.showLogPanel = false
 		a.showGitPanel = !a.showGitPanel
 	}
 	if c.Shortcut(ui.Cmd, ui.Key4) && a.maniAvailable() {
@@ -433,6 +439,7 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 			if a.showGitPanel {
 				a.showGitPanel = false
 			} else {
+				a.showLogPanel = false
 				a.showGitPanel = true
 				a.expandGitForMerge()
 			}
@@ -442,6 +449,46 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 			if labels {
 				ui.Text(gitKc, "Git").FontSize(10.5).FontWeight(weightMedium).TextColor(gitFg).SingleLine()
 			}
+		})
+
+		toolRow := func(key string, icon *ui.SVG, label string, active bool, onClick func()) {
+			bg := ui.Transparent
+			fg := p.TextControl
+			if active {
+				bg = p.Accent
+				fg = p.AccentText
+			}
+			kc := c.Key(key)
+			row := ui.Column(kc).Height(itemH).FillWidth().Radius(6).Background(bg).Cursor(ui.CursorPointer).
+				AlignItems(ui.Center).Justify(ui.Center).Tooltip(label).Label(label)
+			row.PopoverMenu(a.navDisplayMenu)
+			if labels {
+				row.Gap(2)
+			}
+			if row.Hovered() && !active {
+				row.Background(p.SurfaceHover)
+				fg = p.TextPrimary
+			}
+			if row.Clicked() {
+				onClick()
+			}
+			row.Children(func() {
+				drawIcon(kc, icon, 15, fg)
+				if labels {
+					ui.Text(kc, label).FontSize(10.5).FontWeight(weightMedium).TextColor(fg).SingleLine()
+				}
+			})
+		}
+		toolRow("nav-logs", icoLog, "日志", a.showLogPanel, func() {
+			if a.showLogPanel {
+				a.showLogPanel = false
+			} else {
+				a.showGitPanel = false
+				a.showLogPanel = true
+			}
+		})
+		toolRow("nav-terminal", icoTerminal, "终端", false, func() {
+			a.openSystemTerminal()
 		})
 
 		utility := func(key string, icon *ui.SVG, tooltip string, active bool, onClick func()) {

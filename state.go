@@ -89,6 +89,7 @@ type App struct {
 	activeTab    NavTab
 	showGitPanel bool
 	gitEditorPct float32
+	logEditorPct float32
 	systemDark   bool // effective system appearance when cfg.Theme == "system"
 
 	// Collapsible UI States (Progressive Disclosure)
@@ -264,6 +265,8 @@ type App struct {
 	branchPickerRepoID  string
 	branchPickerHandle  ui.Handle
 	showOpLog           bool
+	showLogPanel        bool
+	logTab              string
 	pendingDiscard      *PendingDiscard
 	pendingCodeTabClose *codeTab
 	pendingUndo         *PendingUndo
@@ -279,6 +282,9 @@ type App struct {
 	watcherCancel context.CancelFunc
 	mu            sync.Mutex
 	uiMu          sync.Mutex
+	logMu         sync.Mutex
+	commandLog    []appLogEntry
+	runtimeLog    []appLogEntry
 }
 
 func NewApp(cfg config.Config) *App {
@@ -288,7 +294,9 @@ func NewApp(cfg config.Config) *App {
 		cfg:                  cfg,
 		activeTab:            TabChanges,
 		gitEditorPct:         62,
+		logEditorPct:         62,
 		gitSubTab:            "history",
+		logTab:               "command",
 		gitCollapsedRepos:    make(map[string]bool),
 		gitGroupLoading:      make(map[string]bool),
 		gitRemoteOpen:        make(map[string]bool),
@@ -319,6 +327,7 @@ func NewApp(cfg config.Config) *App {
 		aiAgentBin:           agentBin,
 		maniParamTarget:      cfg.DefaultTargetBranch,
 	}
+	a.logRuntimeDetail("INFO", "应用启动", strings.TrimSpace(cfg.WorkspacePath))
 	a.diffState = &editor.DiffState{
 		Old:           editor.NewBuffer(""),
 		New:           editor.NewBuffer(""),
@@ -386,6 +395,7 @@ func (a *App) startCommand(label string) (context.Context, uint64) {
 	a.commandCancel = cancel
 	a.commandID++
 	a.busyLabel = label
+	a.logCommand("RUN", label, "")
 	return ctx, a.commandID
 }
 
@@ -419,11 +429,13 @@ func (a *App) cancelCommand() {
 	a.commandID++
 	a.refreshAfterCommand = false
 	a.busyLabel = ""
+	a.logCommand("CANCEL", "已取消当前操作", "")
 	a.showToast("warn", "已取消当前操作")
 	a.RefreshAsync()
 }
 
 func (a *App) showToast(kind, msg string) {
+	a.logRuntime(kind, msg)
 	now := time.Now()
 	// A batch result is announced in the same UI update as its toast: fold the
 	// toast into that card instead of replacing it with a plain notification.
@@ -440,6 +452,10 @@ func (a *App) showToast(kind, msg string) {
 // the full rows for the operation log.
 func (a *App) setBatchResults(res []gitops.OpResult) {
 	a.lastBatchResults = res
+	for _, row := range res {
+		detail := fmt.Sprintf("%dms", row.Duration.Milliseconds())
+		a.logCommand(row.Status, row.RepoName+" · "+row.Message, detail)
+	}
 	now := time.Now()
 	if len(res) == 0 {
 		if a.notify != nil && a.notify.Clickable {
@@ -562,6 +578,7 @@ func (a *App) LoadWorkspaceSync(wsPath string) {
 	a.codeRootCollapsed = false
 	a.mergeTargets = nil
 	a.mergeScanAt = time.Time{}
+	a.logRuntimeDetail("INFO", fmt.Sprintf("工作区加载完成：%d 个仓库", len(repos)), wsPath)
 }
 
 // reposSnapshot returns a copy of the discovered repositories for background work.
@@ -787,6 +804,7 @@ func (a *App) LoadWorkspaceAsync(wsPath string) {
 	a.cfg.AddRecentWorkspace(wsPath)
 	a.busyLabel = "正在载入工作区..."
 	a.isRefreshing = true
+	a.logRuntimeDetail("INFO", "开始载入工作区", wsPath)
 	a.mergeTargets = nil
 	a.mergeScanAt = time.Time{}
 	incRoot := a.cfg.IncludeRootRepo
@@ -801,6 +819,7 @@ func (a *App) LoadWorkspaceAsync(wsPath string) {
 			a.busyLabel = ""
 			a.applySnapshot(repos, maniCfg, statuses, wsFiles)
 			a.lastFullRefresh = time.Now()
+			a.logRuntimeDetail("INFO", fmt.Sprintf("工作区加载完成：%d 个仓库", len(repos)), wsPath)
 			a.flushWatchQueue()
 		})
 	}()
@@ -882,6 +901,9 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 	for _, st := range statuses {
 		if _, ok := a.gitCollapsedRepos[st.Repo.ID]; !ok {
 			a.gitCollapsedRepos[st.Repo.ID] = true
+		}
+		if st.Err != nil {
+			a.logRuntimeDetail("err", "仓库状态读取失败："+st.Repo.Name, st.Err.Error())
 		}
 	}
 	a.workspaceFiles = wsFiles
