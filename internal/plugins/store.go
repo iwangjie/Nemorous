@@ -27,6 +27,7 @@ type InstalledState struct {
 type State struct {
 	RegistryURL string                    `json:"registryUrl,omitempty"`
 	Installed   map[string]InstalledState `json:"installed"`
+	Dismissed   map[string]bool           `json:"dismissed,omitempty"`
 }
 
 // Plugin is one installed package.
@@ -72,7 +73,7 @@ func (s *Store) Root() string { return s.root }
 func (s *Store) load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.state = State{Installed: make(map[string]InstalledState)}
+	s.state = State{Installed: make(map[string]InstalledState), Dismissed: make(map[string]bool)}
 	if data, err := os.ReadFile(s.statePath()); err == nil {
 		_ = json.Unmarshal(data, &s.state)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -80,6 +81,9 @@ func (s *Store) load() error {
 	}
 	if s.state.Installed == nil {
 		s.state.Installed = make(map[string]InstalledState)
+	}
+	if s.state.Dismissed == nil {
+		s.state.Dismissed = make(map[string]bool)
 	}
 	return s.reconcileLocked()
 }
@@ -308,6 +312,29 @@ func (s *Store) SetEnabled(id string, enabled bool) error {
 	}
 	st.Enabled = enabled
 	s.state.Installed[id] = st
+	return s.saveLocked()
+}
+
+// Dismissed reports whether the user removed a default plugin on purpose.
+func (s *Store) Dismissed(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.Dismissed[id]
+}
+
+// Dismiss records that a default plugin should not be reinstalled silently.
+func (s *Store) Dismiss(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Dismissed[id] = true
+	return s.saveLocked()
+}
+
+// Undismiss forgets a default-plugin dismissal after a manual install.
+func (s *Store) Undismiss(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.state.Dismissed, id)
 	return s.saveLocked()
 }
 

@@ -1,0 +1,43 @@
+{
+  "id": "markdown",
+  "name": "Markdown",
+  "version": "1.0.0",
+  "description": "IDEA 风格的 Markdown 阅读与编辑：双栏、预览、实时刷新、保存与当前文件识别。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.5.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": [
+    "workspace.read",
+    "workspace.write",
+    "editor.read"
+  ],
+  "contributes": {
+    "panels": [],
+    "commands": [
+      {
+        "id": "markdown.open",
+        "title": "Markdown: 打开当前文件预览",
+        "action": "openActive"
+      },
+      {
+        "id": "markdown.refresh",
+        "title": "Markdown: 刷新预览",
+        "action": "refresh"
+      }
+    ],
+    "editors": [
+      {
+        "id": "preview",
+        "title": "Markdown",
+        "patterns": [
+          "*.md",
+          "*.markdown",
+          "*.mdown"
+        ],
+        "priority": 10
+      }
+    ]
+  }
+}

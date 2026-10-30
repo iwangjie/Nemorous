@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+
+- **官方插件扩展**：
+  - **Markdown 编辑器集成**：打开 `.md` 自动切换为主编辑器视图，不占用侧栏；源码带 Markdown 语法高亮、行号与多光标，支持双栏/单栏预览、实时刷新、本地图片与保存。
+  - **CSV 编辑器集成**：打开 `.csv/.tsv` 自动切换为主编辑器表格视图，推断分隔符，原生可调整列宽、列头搜索与大文件截断。
+  - **GitLab**：连接公司 GitLab 私服，自动从仓库 remote 识别项目；查看 Merge Request、流水线、Issue，批准 MR、发送评论并在浏览器打开。
+  - **Code Stats**：扫描工作区，统计总行数、代码/注释/空行、文件数、语言分布条形图与最大文件排行。
+  - **SSH**：保存主机、端口、用户、私钥与远程目录，一键在内置 PTY 终端打开真实 SSH 会话。
+- **插件引擎底层增强**：
+  - 新增 `markdown`、`table`、`textarea`、`codeeditor`、`bar` UI 节点，以及百分比尺寸、竖向分隔线、密码输入与编辑器软换行；原生 Markdown、表格、语法高亮编辑器与进度条渲染。
+  - 新增编辑器贡献点：插件按文件名模式接管代码标签页内容，打开文件即进入插件视图，可随时切回原文；Markdown/CSV 默认静默安装。
+  - 新增 `workspace.write`、`network.http`、`editor.read`、`terminal.open`、`ui.open` 权限及 `fs.write`、异步 `http.request`、`editor.activeFile`、`openURL`、`terminal.open/close` API。
+  - 活动文件变化通知、插件面板自动加宽与 symlink 安全的新文件写入。
+- **测试与文档**：新增插件节点、HTTP、文件写入、活动文件、终端 API、Markdown 保存与 GitLab 私服流程测试；更新插件开发文档与中英 README。
+
 ## 0.4.1
 
 - **0.4 功能 UI/UX 精修**：

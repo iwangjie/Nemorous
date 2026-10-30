@@ -398,7 +398,11 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		if a.activeTab == TabChanges {
 			a.saveDiffMicroEdit()
 		} else if a.activeTab == TabCode {
-			a.saveCodeMicroEdit()
+			if ref := a.activePluginEditorRef(); ref != "" && a.pluginMgr != nil {
+				a.pluginMgr.Dispatch(ref, "save", nil)
+			} else {
+				a.saveCodeMicroEdit()
+			}
 		}
 	}
 	// The embedded terminal needs plain Space/S/U/arrows as shell input;

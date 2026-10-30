@@ -1,0 +1,20 @@
+{
+  "id": "gitlab",
+  "name": "GitLab",
+  "version": "1.0.0",
+  "description": "连接公司 GitLab 私服：自动识别仓库项目、MR、流水线、Issue、批准与评论。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.5.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": ["workspace.read", "network.http", "ui.open"],
+  "contributes": {
+    "panels": [
+      { "id": "gitlab", "title": "GitLab", "icon": "gitlab" }
+    ],
+    "commands": [
+      { "id": "gitlab.open", "title": "GitLab: 打开 Merge Requests", "action": "open" }
+    ]
+  }
+}

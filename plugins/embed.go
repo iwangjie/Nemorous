@@ -8,5 +8,5 @@ import "embed"
 // plugin packages. The app installs and uninstalls them like any other
 // plugin, so uninstalling one leaves no surprise when it is reinstalled.
 //
-//go:embed registry.json maven
+//go:embed registry.json maven markdown csv gitlab code-stats ssh
 var Builtin embed.FS

@@ -128,13 +128,19 @@ As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenC
 ---
 
 ### 8. Plugin Engine, Marketplace & Official Maven Tool Window
-- **Sandboxed Plugin Engine**: Plugins are manifest-declared JavaScript packages running in an embedded goja VM. Tool windows and command-palette entries come from a declarative UI tree; filesystem and process access require explicit `workspace.read` / `process.exec` permissions.
+- **Sandboxed Plugin Engine**: Plugins are manifest-declared JavaScript packages running in an embedded goja VM. Tool windows and command-palette entries come from a declarative UI tree; filesystem, process, HTTP, editor and terminal access require explicit permissions.
 - **Full Installer & Marketplace**: Browse the embedded official index or a remote registry, install/update/enable/disable/uninstall in place, or install a local `.zip` package. Remote packages are SHA-256 verified, archives are size- and path-checked, and every operation works offline for bundled plugins.
 - **Official Maven Plugin, IDEA-style**: Discovers `pom.xml` projects across the whole multi-repo workspace, with a module tree, `clean/compile/test/package/install` lifecycle goals, profiles, skip-tests, custom goals, streaming build console, `dependency:tree` analysis, Effective POM, and a configurable `mvn` executable.
+- **Official Preview & Remote Plugins**: Markdown and CSV are native editor integrations that open automatically in the main editor (split/single/live Markdown with syntax highlighting and saving), joined by private GitLab MR/pipeline/issue integration, code line statistics, and saved SSH hosts that open the embedded terminal.
 
 <picture>
   <img src="docs/screenshots/06_maven_plugin_light.png" width="49%" alt="Official Maven tool window">
   <img src="docs/screenshots/07_plugin_market_light.png" width="49%" alt="Plugin marketplace">
+</picture>
+
+<picture>
+  <img src="docs/screenshots/14_markdown_plugin_light.png" width="49%" alt="Markdown split preview with tables and code highlighting">
+  <img src="docs/screenshots/15_gitlab_plugin_light.png" width="49%" alt="GitLab private server merge requests, approvals and comments">
 </picture>
 
 Plugin authoring guide: [docs/plugins.md](docs/plugins.md).

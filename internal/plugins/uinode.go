@@ -12,6 +12,8 @@ const (
 	maxNodeDepth = 24
 	maxNodeText  = 220 << 10
 	maxListItems = 600
+	maxTableRows = 2000
+	maxTableCols = 64
 	maxPayload   = 64 << 10
 )
 
@@ -24,13 +26,17 @@ type Node struct {
 	Text        string `json:"text,omitempty"`
 	Detail      string `json:"detail,omitempty"`
 	Placeholder string `json:"placeholder,omitempty"`
+	BasePath    string `json:"basePath,omitempty"`
+	Language    string `json:"language,omitempty"`
 	Value       string `json:"value,omitempty"`
 	Action      string `json:"action,omitempty"`
 	Payload     any    `json:"payload,omitempty"`
 
-	Items    []Item   `json:"items,omitempty"`
-	Options  []string `json:"options,omitempty"`
-	Children []*Node  `json:"children,omitempty"`
+	Items    []Item     `json:"items,omitempty"`
+	Options  []string   `json:"options,omitempty"`
+	Headers  []string   `json:"headers,omitempty"`
+	Rows     [][]string `json:"rows,omitempty"`
+	Children []*Node    `json:"children,omitempty"`
 
 	Grow      bool `json:"grow,omitempty"`
 	Scroll    bool `json:"scroll,omitempty"`
@@ -42,16 +48,22 @@ type Node struct {
 	Small     bool `json:"small,omitempty"`
 	Disabled  bool `json:"disabled,omitempty"`
 	Checked   bool `json:"checked,omitempty"`
+	Password  bool `json:"password,omitempty"`
+	SoftWrap  bool `json:"softWrap,omitempty"`
+	Vertical  bool `json:"vertical,omitempty"`
 	Active    bool `json:"active,omitempty"`
 	AutoFocus bool `json:"autoFocus,omitempty"`
 
-	Width     float64 `json:"width,omitempty"`
-	Height    float64 `json:"height,omitempty"`
-	MaxHeight float64 `json:"maxHeight,omitempty"`
-	Gap       float64 `json:"gap,omitempty"`
-	Padding   float64 `json:"padding,omitempty"`
-	Size      float64 `json:"size,omitempty"`
-	Tone      string  `json:"tone,omitempty"`
+	Fraction      float64 `json:"fraction,omitempty"`
+	Width         float64 `json:"width,omitempty"`
+	WidthPercent  float64 `json:"widthPercent,omitempty"`
+	Height        float64 `json:"height,omitempty"`
+	HeightPercent float64 `json:"heightPercent,omitempty"`
+	MaxHeight     float64 `json:"maxHeight,omitempty"`
+	Gap           float64 `json:"gap,omitempty"`
+	Padding       float64 `json:"padding,omitempty"`
+	Size          float64 `json:"size,omitempty"`
+	Tone          string  `json:"tone,omitempty"`
 }
 
 // Item is a row of a list node.
@@ -69,7 +81,8 @@ type Item struct {
 
 var nodeTypes = map[string]bool{
 	"column": true, "row": true, "text": true, "button": true,
-	"input": true, "checkbox": true, "list": true, "code": true,
+	"input": true, "textarea": true, "codeeditor": true, "checkbox": true, "list": true, "code": true,
+	"markdown": true, "table": true, "bar": true,
 	"badge": true, "divider": true, "spacer": true, "spinner": true,
 }
 
@@ -109,18 +122,35 @@ func normalizeNode(n *Node, depth int, count, text *int) error {
 	if !nodeTypes[n.Type] {
 		return fmt.Errorf("render: unknown node type %q", n.Type)
 	}
-	n.Text = trimText(n.Text, maxNodeText)
+	textLimit := maxNodeText
+	if n.Type == "markdown" || n.Type == "textarea" || n.Type == "codeeditor" {
+		textLimit = 512 << 10
+	}
+	if n.Type == "markdown" {
+		n.Text = trimTextHead(n.Text, textLimit)
+	} else {
+		n.Text = trimText(n.Text, textLimit)
+	}
 	n.Detail = trimText(n.Detail, 8<<10)
-	n.Placeholder = trimText(n.Placeholder, 200)
-	n.Value = trimText(n.Value, 4<<10)
-	n.Key = trimText(n.Key, 120)
-	n.Action = trimText(n.Action, 120)
+	n.Placeholder = trimTextHead(n.Placeholder, 200)
+	n.BasePath = trimTextHead(n.BasePath, 4096)
+	n.Language = trimTextHead(n.Language, 80)
+	if n.Type == "textarea" || n.Type == "codeeditor" {
+		n.Value = trimTextHead(n.Value, textLimit)
+	} else {
+		n.Value = trimText(n.Value, 4<<10)
+	}
+	n.Key = trimTextHead(n.Key, 512)
+	n.Action = trimTextHead(n.Action, 120)
 	*text += len(n.Text) + len(n.Detail) + len(n.Value)
 	if *text > 4<<20 {
 		return fmt.Errorf("render: too much text")
 	}
 	if n.Width < 0 || n.Width > 2000 || n.Height < 0 || n.Height > 4000 || n.MaxHeight < 0 || n.MaxHeight > 4000 {
 		return fmt.Errorf("render: invalid size")
+	}
+	if n.WidthPercent < 0 || n.WidthPercent > 100 || n.HeightPercent < 0 || n.HeightPercent > 100 {
+		return fmt.Errorf("render: invalid percentage size")
 	}
 	if n.Gap < 0 || n.Gap > 64 {
 		n.Gap = 0
@@ -145,6 +175,36 @@ func normalizeNode(n *Node, depth int, count, text *int) error {
 	}
 	for i, opt := range n.Options {
 		n.Options[i] = trimText(opt, 200)
+	}
+	if len(n.Headers) > maxTableCols {
+		return fmt.Errorf("render: too many table columns")
+	}
+	for i := range n.Headers {
+		n.Headers[i] = trimTextHead(n.Headers[i], 500)
+		*text += len(n.Headers[i])
+	}
+	if len(n.Rows) > maxTableRows {
+		return fmt.Errorf("render: too many table rows")
+	}
+	for i := range n.Rows {
+		row := n.Rows[i]
+		if len(row) > maxTableCols {
+			return fmt.Errorf("render: too many table cells")
+		}
+		for j := range row {
+			row[j] = trimTextHead(row[j], 4<<10)
+			*text += len(row[j])
+		}
+		n.Rows[i] = row
+	}
+	if n.Fraction < 0 {
+		n.Fraction = 0
+	}
+	if n.Fraction > 1 {
+		n.Fraction = 1
+	}
+	if *text > 4<<20 {
+		return fmt.Errorf("render: too much text")
 	}
 	if len(n.Items) > maxListItems {
 		return fmt.Errorf("render: too many list items")
@@ -192,6 +252,17 @@ func trimText(s string, max int) string {
 		cut++
 	}
 	return "…" + s[cut:]
+}
+
+func trimTextHead(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // errorNode is a panel's fallback when render() fails.

@@ -120,6 +120,7 @@ func TestPluginMarketplaceInstallUninstallFlow(t *testing.T) {
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	app.pluginRegistryLoading = true // no network in tests
 	app.openPluginMarket()
+	app.pluginMarketQuery = "Maven"
 	tt.Frame()
 	if err := tt.Click("安装"); err != nil {
 		t.Fatalf("install button should be clickable: %v", err)
@@ -146,6 +147,7 @@ func TestPluginMarketplaceInstallUninstallFlow(t *testing.T) {
 	}
 
 	app.openPluginMarket()
+	app.pluginMarketQuery = "Maven"
 	tt.Frame()
 	if err := tt.Click("卸载"); err != nil {
 		t.Fatalf("uninstall should be offered: %v", err)

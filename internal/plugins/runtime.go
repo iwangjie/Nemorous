@@ -2,9 +2,13 @@ package plugins
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,32 +199,43 @@ func (rt *Runtime) renderAll() {
 		return
 	}
 	for _, panel := range rt.plugin.Manifest.Contributes.Panels {
-		snap := &PanelSnapshot{
-			Ref:       panelRef(rt.plugin.Manifest.ID, panel.ID),
-			PluginID:  rt.plugin.Manifest.ID,
-			PanelID:   panel.ID,
-			Title:     panel.Title,
-			UpdatedAt: time.Now(),
-		}
-		value, err := renderFn(goja.Undefined(), rt.vm.ToValue(panel.ID))
-		if err != nil {
-			snap.Err = err.Error()
-			snap.Root = errorNode(err.Error())
-			rt.mgr.publish(snap)
-			continue
-		}
-		node, err := decodeNode(value.Export())
-		if err != nil {
-			snap.Err = err.Error()
-			snap.Root = errorNode(err.Error())
-			rt.mgr.publish(snap)
-			continue
-		}
-		rt.seq++
-		snap.Version = rt.seq
-		snap.Root = node
-		rt.mgr.publish(snap)
+		rt.renderContribution(renderFn, panel.ID, panel.Title)
 	}
+	for _, editor := range rt.plugin.Manifest.Contributes.Editors {
+		title := editor.Title
+		if title == "" {
+			title = rt.plugin.Manifest.Name
+		}
+		rt.renderContribution(renderFn, editor.ID, title)
+	}
+}
+
+func (rt *Runtime) renderContribution(renderFn goja.Callable, id, title string) {
+	snap := &PanelSnapshot{
+		Ref:       panelRef(rt.plugin.Manifest.ID, id),
+		PluginID:  rt.plugin.Manifest.ID,
+		PanelID:   id,
+		Title:     title,
+		UpdatedAt: time.Now(),
+	}
+	value, err := renderFn(goja.Undefined(), rt.vm.ToValue(id))
+	if err != nil {
+		snap.Err = err.Error()
+		snap.Root = errorNode(err.Error())
+		rt.mgr.publish(snap)
+		return
+	}
+	node, err := decodeNode(value.Export())
+	if err != nil {
+		snap.Err = err.Error()
+		snap.Root = errorNode(err.Error())
+		rt.mgr.publish(snap)
+		return
+	}
+	rt.seq++
+	snap.Version = rt.seq
+	snap.Root = node
+	rt.mgr.publish(snap)
 }
 
 // markDirty asks for a render and wakes the UI at most every 80 ms, so a
@@ -237,18 +252,28 @@ func (rt *Runtime) markDirty() {
 
 func (rt *Runtime) publishError(msg string) {
 	rt.evalErr = fmt.Errorf("%s", msg)
-	for _, panel := range rt.plugin.Manifest.Contributes.Panels {
+	publish := func(id, title string) {
 		rt.seq++
 		rt.mgr.publish(&PanelSnapshot{
-			Ref:       panelRef(rt.plugin.Manifest.ID, panel.ID),
+			Ref:       panelRef(rt.plugin.Manifest.ID, id),
 			PluginID:  rt.plugin.Manifest.ID,
-			PanelID:   panel.ID,
-			Title:     panel.Title,
+			PanelID:   id,
+			Title:     title,
 			Version:   rt.seq,
 			Err:       msg,
 			Root:      errorNode(msg),
 			UpdatedAt: time.Now(),
 		})
+	}
+	for _, panel := range rt.plugin.Manifest.Contributes.Panels {
+		publish(panel.ID, panel.Title)
+	}
+	for _, editor := range rt.plugin.Manifest.Contributes.Editors {
+		title := editor.Title
+		if title == "" {
+			title = rt.plugin.Manifest.Name
+		}
+		publish(editor.ID, title)
 	}
 }
 
@@ -300,6 +325,13 @@ func (rt *Runtime) installAPI(vm *goja.Runtime) error {
 	})
 	api.Set("workspace", func(goja.FunctionCall) goja.Value {
 		return vm.ToValue(rt.mgr.Workspace())
+	})
+	api.Set("home", func(goja.FunctionCall) goja.Value {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return goja.Null()
+		}
+		return vm.ToValue(home)
 	})
 	api.Set("log", func(call goja.FunctionCall) goja.Value {
 		msg := call.Argument(0).String()
@@ -404,6 +436,128 @@ func (rt *Runtime) installAPI(vm *goja.Runtime) error {
 		}
 		return goja.Undefined()
 	})
+	api.Set("openURL", func(call goja.FunctionCall) goja.Value {
+		if !rt.plugin.Manifest.HasPermission(PermissionUIOpen) {
+			panic(vm.NewGoError(fmt.Errorf("插件未声明 ui.open 权限")))
+		}
+		raw := strings.TrimSpace(call.Argument(0).String())
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			panic(vm.NewGoError(fmt.Errorf("openURL: only http and https URLs are allowed")))
+		}
+		if err := rt.mgr.OpenURL(raw); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return goja.Undefined()
+	})
+	editorAPI := vm.NewObject()
+	editorAPI.Set("activeFile", func(goja.FunctionCall) goja.Value {
+		if !rt.plugin.Manifest.HasPermission(PermissionEditorRead) {
+			panic(vm.NewGoError(fmt.Errorf("插件未声明 editor.read 权限")))
+		}
+		file := rt.mgr.ActiveFile()
+		if file == nil {
+			return goja.Null()
+		}
+		return vm.ToValue(file)
+	})
+	api.Set("editor", editorAPI)
+
+	fsAPI.Set("write", func(call goja.FunctionCall) goja.Value {
+		if !rt.plugin.Manifest.HasPermission(PermissionWorkspaceWrite) {
+			panic(vm.NewGoError(fmt.Errorf("插件未声明 workspace.write 权限")))
+		}
+		p := call.Argument(0).String()
+		content := call.Argument(1).String()
+		if err := rt.checkReadPath(p); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		if len(content) > maxFSFileSize {
+			panic(vm.NewGoError(fmt.Errorf("写入内容超过 4 MB")))
+		}
+		mode := os.FileMode(0o644)
+		if info, err := os.Stat(p); err == nil {
+			mode = info.Mode().Perm()
+		}
+		if err := os.WriteFile(p, []byte(content), mode); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		rt.mgr.FileWritten(p)
+		return goja.Undefined()
+	})
+
+	terminalAPI := vm.NewObject()
+	terminalAPI.Set("open", func(call goja.FunctionCall) goja.Value {
+		if !rt.plugin.Manifest.HasPermission(PermissionTerminalOpen) {
+			panic(vm.NewGoError(fmt.Errorf("插件未声明 terminal.open 权限")))
+		}
+		arg := call.Argument(0)
+		obj := arg.ToObject(rt.vm)
+		if obj == nil {
+			panic(vm.NewGoError(fmt.Errorf("terminal.open: options object required")))
+		}
+		var command []string
+		if v := obj.Get("command"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+			exported := v.Export()
+			switch list := exported.(type) {
+			case []any:
+				if len(list) == 0 || len(list) > 64 {
+					panic(vm.NewGoError(fmt.Errorf("terminal.open: invalid command")))
+				}
+				for _, item := range list {
+					part := fmt.Sprint(item)
+					if strings.TrimSpace(part) == "" || strings.ContainsRune(part, 0) || len(part) > 4096 {
+						panic(vm.NewGoError(fmt.Errorf("terminal.open: invalid command argument")))
+					}
+					command = append(command, part)
+				}
+			case []string:
+				command = append(command, list...)
+			default:
+				panic(vm.NewGoError(fmt.Errorf("terminal.open: command must be an array")))
+			}
+		}
+		if len(command) == 0 {
+			panic(vm.NewGoError(fmt.Errorf("terminal.open: command is required")))
+		}
+		dir := ""
+		if v := obj.Get("cwd"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+			dir = strings.TrimSpace(v.String())
+		}
+		if dir != "" && !rt.pathAllowed(dir) {
+			panic(vm.NewGoError(fmt.Errorf("terminal.open: cwd is outside the workspace")))
+		}
+		title := ""
+		if v := obj.Get("title"); v != nil && !goja.IsUndefined(v) && !goja.IsNull(v) {
+			title = trimText(v.String(), 120)
+		}
+		if err := rt.mgr.OpenTerminal(command, dir, title); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return goja.Undefined()
+	})
+	terminalAPI.Set("close", func(goja.FunctionCall) goja.Value {
+		if !rt.plugin.Manifest.HasPermission(PermissionTerminalOpen) {
+			panic(vm.NewGoError(fmt.Errorf("插件未声明 terminal.open 权限")))
+		}
+		if err := rt.mgr.CloseTerminal(); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return goja.Undefined()
+	})
+	api.Set("terminal", terminalAPI)
+
+	httpAPI := vm.NewObject()
+	httpAPI.Set("request", func(call goja.FunctionCall) goja.Value {
+		if !rt.plugin.Manifest.HasPermission(PermissionNetworkHTTP) {
+			panic(vm.NewGoError(fmt.Errorf("插件未声明 network.http 权限")))
+		}
+		if err := rt.startHTTP(call.Argument(0)); err != nil {
+			panic(vm.NewGoError(err))
+		}
+		return goja.Undefined()
+	})
+	api.Set("http", httpAPI)
 	return vm.Set("nemorous", api)
 }
 
@@ -517,6 +671,140 @@ func (rt *Runtime) startExec(arg goja.Value) (string, error) {
 	}
 	rt.dirty = true
 	return id, nil
+}
+
+// startHTTP runs one HTTP request off the VM loop and posts the result back
+// to the plugin callbacks. It is intentionally asynchronous: a slow private
+// GitLab server must not freeze the rest of the plugin UI.
+func (rt *Runtime) startHTTP(arg goja.Value) error {
+	obj := arg.ToObject(rt.vm)
+	if obj == nil {
+		return fmt.Errorf("http.request: options object required")
+	}
+	get := func(name string) goja.Value {
+		v := obj.Get(name)
+		if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+			return nil
+		}
+		return v
+	}
+	method := "GET"
+	if v := get("method"); v != nil {
+		method = strings.ToUpper(strings.TrimSpace(v.String()))
+	}
+	switch method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD":
+	default:
+		return fmt.Errorf("http.request: unsupported method %q", method)
+	}
+	rawURL := ""
+	if v := get("url"); v != nil {
+		rawURL = strings.TrimSpace(v.String())
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("http.request: only http and https URLs are allowed")
+	}
+	body := ""
+	if v := get("body"); v != nil {
+		body = v.String()
+		if len(body) > maxFSFileSize {
+			return fmt.Errorf("http.request: body is too large")
+		}
+	}
+	headers := make(map[string]string)
+	if v := get("headers"); v != nil {
+		if exported, ok := v.Export().(map[string]any); ok {
+			if len(exported) > 64 {
+				return fmt.Errorf("http.request: too many headers")
+			}
+			for key, value := range exported {
+				if len(key) > 256 || len(fmt.Sprint(value)) > 4096 {
+					return fmt.Errorf("http.request: header is too large")
+				}
+				headers[key] = fmt.Sprint(value)
+			}
+		}
+	}
+	timeout := 30 * time.Second
+	if v := get("timeoutMs"); v != nil {
+		ms := v.ToInteger()
+		if ms > 0 && ms <= 120000 {
+			timeout = time.Duration(ms) * time.Millisecond
+		}
+	}
+	insecure := false
+	if v := get("insecure"); v != nil {
+		insecure = v.ToBoolean()
+	}
+	var onResponse, onError goja.Value
+	if v := get("onResponse"); v != nil {
+		onResponse = v
+	}
+	if v := get("onError"); v != nil {
+		onError = v
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if insecure {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	client := &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("redirect to unsupported scheme")
+			}
+			return nil
+		},
+	}
+	go func() {
+		req, err := http.NewRequest(method, rawURL, strings.NewReader(body))
+		if err != nil {
+			rt.post(func() { rt.callJob(onError, err.Error()) })
+			return
+		}
+		for key, value := range headers {
+			req.Header.Set(key, value)
+		}
+		if body != "" && req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			rt.post(func() { rt.callJob(onError, err.Error()) })
+			return
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+		if err != nil {
+			rt.post(func() { rt.callJob(onError, err.Error()) })
+			return
+		}
+		if len(data) > 8<<20 {
+			rt.post(func() { rt.callJob(onError, "http.request: response is too large") })
+			return
+		}
+		headerMap := make(map[string]string, len(resp.Header))
+		for key, values := range resp.Header {
+			headerMap[key] = strings.Join(values, ", ")
+		}
+		payload := map[string]any{
+			"status":  resp.StatusCode,
+			"ok":      resp.StatusCode >= 200 && resp.StatusCode < 300,
+			"headers": headerMap,
+			"body":    string(data),
+			"url":     rawURL,
+		}
+		rt.post(func() {
+			rt.callJob(onResponse, payload)
+			rt.markDirty()
+		})
+	}()
+	return nil
 }
 
 func (rt *Runtime) callJob(fn goja.Value, args ...any) {
@@ -651,18 +939,12 @@ func (m *Manager) pathAllowed(p, pluginDir string) bool {
 	for _, repo := range workspace.Repos {
 		roots = append(roots, repo.Path)
 	}
-	realAbs := abs
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		realAbs = resolved
-	}
+	realAbs := resolveForContainment(abs)
 	for _, root := range roots {
 		if root == "" {
 			continue
 		}
-		realRoot := root
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
-			realRoot = resolved
-		}
+		realRoot := resolveForContainment(root)
 		for _, candidate := range []string{abs, realAbs} {
 			if within(realRoot, candidate) {
 				return true
@@ -670,6 +952,28 @@ func (m *Manager) pathAllowed(p, pluginDir string) bool {
 		}
 	}
 	return false
+}
+
+// resolveForContainment resolves symlinks on a path that may not exist yet
+// by resolving its nearest existing ancestor. This keeps a new file inside a
+// symlinked workspace root comparable with the workspace itself.
+func resolveForContainment(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	rest := ""
+	cur := p
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		rest = filepath.Join(filepath.Base(cur), rest)
+		cur = parent
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+	}
 }
 
 func within(root, p string) bool {

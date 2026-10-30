@@ -128,13 +128,19 @@
 ---
 
 ### 8. 插件引擎、插件市场与官方 Maven 工具窗口
-- **沙箱化插件引擎**：插件是带 `plugin.json` 清单的 JavaScript 包，运行在内置 goja VM 中。工具窗口与命令面板入口由声明式 UI 树驱动；读取工作区文件、启动进程必须显式声明 `workspace.read` / `process.exec` 权限。
+- **沙箱化插件引擎**：插件是带 `plugin.json` 清单的 JavaScript 包，运行在内置 goja VM 中。工具窗口与命令面板入口由声明式 UI 树驱动；文件、进程、HTTP、编辑器与终端能力必须显式声明权限。
 - **完整安装器与插件市场**：内置官方索引 + 远程市场，支持安装、更新、启用、禁用、卸载与本地 `.zip` 安装；远程包强制 SHA-256 校验，压缩包做体积与路径越界检查，内置插件离线可用。
 - **官方 Maven 插件（IDEA 风格）**：跨多仓工作区自动发现 `pom.xml`，提供模块树、`clean/compile/test/package/install` 生命周期目标、Profiles、跳过测试、自定义目标、实时构建输出、`dependency:tree` 依赖分析、Effective POM 与可配置的 `mvn` 路径。
+- **官方预览与远程插件**：Markdown/CSV 默认以主编辑器视图打开（Markdown 语法高亮、双栏/单栏/实时预览、本地图片与保存；CSV 表格与搜索）；公司 GitLab 私服 MR/流水线/Issue；代码行数统计与语言分布；SSH 主机保存并直接在底部终端连接。
 
 <picture>
   <img src="docs/screenshots/06_maven_plugin_light.png" width="49%" alt="官方 Maven 工具窗口">
   <img src="docs/screenshots/07_plugin_market_light.png" width="49%" alt="插件市场">
+</picture>
+
+<picture>
+  <img src="docs/screenshots/14_markdown_plugin_light.png" width="49%" alt="Markdown 双栏预览、表格与代码高亮">
+  <img src="docs/screenshots/15_gitlab_plugin_light.png" width="49%" alt="GitLab 私服 Merge Request、批准与评论">
 </picture>
 
 插件开发指南：[docs/plugins.md](docs/plugins.md)。

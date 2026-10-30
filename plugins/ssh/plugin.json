@@ -1,0 +1,20 @@
+{
+  "id": "ssh",
+  "name": "SSH",
+  "version": "1.0.0",
+  "description": "保存 SSH 主机并在内置终端中直接连接：端口、私钥、远程目录与常用身份。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.5.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": ["terminal.open"],
+  "contributes": {
+    "panels": [
+      { "id": "ssh", "title": "SSH", "icon": "ssh" }
+    ],
+    "commands": [
+      { "id": "ssh.connect", "title": "SSH: 打开主机列表", "action": "open" }
+    ]
+  }
+}

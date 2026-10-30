@@ -10,6 +10,8 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
+	"github.com/egoist/mygo/ui/markdown"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/mani"
 	"github.com/iwangjie/nemorous/internal/plugins"
@@ -21,8 +23,9 @@ import (
 func (a *App) initPluginManager() {
 	root := filepath.Join(filepath.Dir(config.ConfigPath()), "plugins")
 	mgr, err := plugins.NewManager(plugins.Options{
-		Root:       root,
-		AppVersion: updateVersion(),
+		Root:                root,
+		AppVersion:          updateVersion(),
+		AutoInstallDefaults: true,
 		Invalidate: func() {
 			a.runUI(func() {
 				if a.win != nil {
@@ -32,6 +35,33 @@ func (a *App) initPluginManager() {
 		},
 		Notify: func(kind, message string) {
 			a.runUI(func() { a.showToast(kind, message) })
+		},
+		ActiveFile: func() *plugins.ActiveFile {
+			return a.pluginActive.Load()
+		},
+		OpenURL: func(raw string) error {
+			if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
+				return fmt.Errorf("only http and https URLs are allowed")
+			}
+			return openPath(raw)
+		},
+		OpenTerminal: func(command []string, dir, title string) error {
+			a.runUI(func() { a.openPluginTerminal(command, dir, title) })
+			return nil
+		},
+		CloseTerminal: func() error {
+			a.runUI(func() { a.closePluginTerminal() })
+			return nil
+		},
+		FileWritten: func(path string) {
+			a.runUI(func() {
+				for _, tab := range a.codeTabs {
+					if tab.file.AbsPath == path {
+						a.reloadCodeTab(tab)
+					}
+				}
+				a.RefreshAsync()
+			})
 		},
 	})
 	if err != nil {
@@ -99,8 +129,14 @@ func (a *App) openPluginPanel(ref string) {
 	if _, ok := a.pluginMgr.Panel(ref); !ok {
 		return
 	}
+	info, _ := a.pluginMgr.Panel(ref)
+	if a.pluginPanelPct > 50 && (info.PluginID == "markdown" || info.PluginID == "csv" || info.PluginID == "gitlab") {
+		a.pluginPanelPct = 50
+	}
 	a.pluginPanel = ref
 	a.showManiPanel = false
+	a.pluginActiveKey = ""
+	a.updatePluginActiveFile()
 	a.pluginMgr.Dispatch(ref, "open", nil)
 }
 
@@ -125,6 +161,128 @@ func (a *App) runPluginCommand(cmd plugins.CommandInfo) {
 	}
 }
 
+// updatePluginActiveFile publishes a cheap snapshot of the file in the code
+// editor. It only rebuilds when the active file changes; Markdown preview
+// reads its own draft while the user types.
+func (a *App) updatePluginActiveFile() bool {
+	tab := a.activeCodeTab()
+	if tab == nil || tab.file.RelPath == "" {
+		if a.pluginActiveKey != "" {
+			a.pluginActive.Store(nil)
+			a.pluginActiveKey = ""
+			return true
+		}
+		return false
+	}
+	key := tab.file.RepoID + "\x00" + tab.file.RelPath
+	if key == a.pluginActiveKey {
+		return false
+	}
+	content := ""
+	if tab.state != nil && tab.state.Buffer != nil {
+		content = editorText(tab.state.Buffer)
+	}
+	if len(content) > 512<<10 {
+		content = content[:512<<10]
+	}
+	a.pluginActive.Store(&plugins.ActiveFile{
+		RepoID: tab.file.RepoID, RepoName: tab.file.RepoName,
+		Path: tab.file.AbsPath, RelPath: tab.file.RelPath,
+		Name: filepath.Base(tab.file.RelPath), Content: content,
+	})
+	a.pluginActiveKey = key
+	return true
+}
+
+// editorPluginForFile finds an installed editor contribution for a file.
+func (a *App) editorPluginForFile(path string) (plugins.EditorInfo, bool) {
+	if a.pluginMgr == nil {
+		return plugins.EditorInfo{}, false
+	}
+	return a.pluginMgr.EditorForFile(path)
+}
+
+func (a *App) pluginEditorTextKey(repoID, relPath string) string {
+	return repoID + "\x00" + relPath
+}
+
+func (a *App) pluginEditorInTextMode(repoID, relPath string) bool {
+	return a.pluginEditorText[a.pluginEditorTextKey(repoID, relPath)]
+}
+
+func (a *App) setPluginEditorTextMode(repoID, relPath string, text bool) {
+	if a.pluginEditorText == nil {
+		a.pluginEditorText = make(map[string]bool)
+	}
+	key := a.pluginEditorTextKey(repoID, relPath)
+	if text {
+		a.pluginEditorText[key] = true
+	} else {
+		delete(a.pluginEditorText, key)
+	}
+	a.pluginActiveKey = ""
+}
+
+// syncPluginEditor follows the active editor tab and asks the plugin to load
+// the new file before the next render.
+func (a *App) syncPluginEditor(info plugins.EditorInfo) {
+	if a.pluginMgr == nil {
+		return
+	}
+	if a.pluginEditorRef != info.Ref {
+		a.pluginEditorRef = info.Ref
+		a.pluginActiveKey = ""
+		a.updatePluginActiveFile()
+		a.pluginMgr.Dispatch(info.Ref, "open", nil)
+		return
+	}
+	if a.updatePluginActiveFile() {
+		a.pluginMgr.Dispatch(info.Ref, "activeFileChanged", nil)
+	}
+}
+
+// buildPluginEditorView draws the plugin-owned editor surface in the main
+// editor area, falling back to plain text on demand or on plugin failure.
+func (a *App) buildPluginEditorView(c *ui.Context, p Palette, ref string) {
+	snap := a.pluginMgr.Snapshot(ref)
+	if snap == nil || snap.Root == nil {
+		ui.Column(c).Grow(1).Center().Gap(6).Children(func() {
+			ui.Spinner(c).Size(16, 16).Label("正在启动编辑器插件").TextColor(p.TextMuted)
+		})
+		return
+	}
+	if snap.Err != "" {
+		if tab := a.activeCodeTab(); tab != nil {
+			tab := tab
+			ui.Column(c).Grow(1).Center().Gap(8).Padding(20).Children(func() {
+				drawIcon(c, icoAlert, 24, p.Amber)
+				ui.Text(c, "编辑器插件加载失败").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+				ui.Text(c, snap.Err).FontSize(10.5).TextColor(p.TextMuted).MaxLines(4)
+				pill(c, p, "以文本打开", false, func() {
+					a.setPluginEditorTextMode(tab.file.RepoID, tab.file.RelPath, true)
+					a.pluginEditorRef = ""
+				})
+			})
+		}
+		return
+	}
+	ui.Column(c).Grow(1).FillHeight().Children(func() {
+		a.renderPluginNode(c, p, ref, snap.Root, "editor")
+	})
+}
+
+// activePluginEditorRef is the editor plugin that should receive Save.
+func (a *App) activePluginEditorRef() string {
+	tab := a.activeCodeTab()
+	if tab == nil || a.pluginEditorInTextMode(tab.file.RepoID, tab.file.RelPath) {
+		return ""
+	}
+	if info, ok := a.editorPluginForFile(tab.file.AbsPath); ok {
+		return info.Ref
+	}
+	return ""
+}
+
 func (a *App) pluginIcon(panel plugins.PanelInfo) *ui.SVG {
 	if panel.Icon == "maven" {
 		return icoMaven
@@ -146,6 +304,9 @@ func (a *App) buildPluginPanel(c *ui.Context, p Palette) {
 	if a.pluginMgr == nil {
 		return
 	}
+	if a.updatePluginActiveFile() && a.pluginPanel != "" {
+		a.pluginMgr.Dispatch(a.pluginPanel, "activeFileChanged", nil)
+	}
 	ref := a.pluginPanel
 	info, ok := a.pluginMgr.Panel(ref)
 	if !ok {
@@ -163,22 +324,12 @@ func (a *App) buildPluginPanel(c *ui.Context, p Palette) {
 				version = "v" + info.Version
 			}
 			ui.Text(c, version).FontSize(10).TextColor(p.TextMuted).MaxLines(1).Grow(1)
-			refresh := ui.Box(c.Key("plugin-refresh-"+ref)).Size(20, 20).Radius(4).Center().Cursor(ui.CursorPointer).Tooltip("刷新插件")
-			if refresh.Hovered() {
-				refresh.Background(p.SurfaceHover)
-			}
-			if refresh.Clicked() {
+			toolButton(c, p, "plugin-refresh-"+ref, icoRefresh, "刷新插件", false, true, func() {
 				a.pluginMgr.Dispatch(ref, "refresh", nil)
-			}
-			refresh.Children(func() { drawIcon(c, icoRefresh, 11, p.TextMuted) })
-			xb := ui.Box(c.Key("plugin-close-"+ref)).Size(20, 20).Radius(4).Center().Cursor(ui.CursorPointer).Tooltip("关闭")
-			if xb.Hovered() {
-				xb.Background(p.SurfaceHover)
-			}
-			if xb.Clicked() {
+			})
+			toolButton(c, p, "plugin-close-"+ref, icoClose, "关闭", false, true, func() {
 				a.pluginPanel = ""
-			}
-			xb.Children(func() { drawIcon(c, icoClose, 10, p.TextMuted) })
+			})
 		})
 		if snap == nil || snap.Root == nil {
 			ui.Column(c).Grow(1).Center().Children(func() {
@@ -231,8 +382,14 @@ func applyPluginBox(e ui.Element, n *plugins.Node) {
 	if n.Width > 0 {
 		e.Width(float32(n.Width))
 	}
+	if n.WidthPercent > 0 {
+		e.WidthPercent(float32(n.WidthPercent))
+	}
 	if n.Height > 0 {
 		e.Height(float32(n.Height))
+	}
+	if n.HeightPercent > 0 {
+		e.HeightPercent(float32(n.HeightPercent))
 	}
 	if n.MaxHeight > 0 {
 		e.MaxHeight(float32(n.MaxHeight))
@@ -285,6 +442,36 @@ func (a *App) pluginButton(c *ui.Context, p Palette, ref string, n *plugins.Node
 	el.Children(func() {
 		ui.Text(c, n.Text).FontSize(size).FontWeight(weightMedium).TextColor(fg).SingleLine()
 	})
+}
+
+func (a *App) pluginMarkdownOptions(base string) *markdown.Options {
+	if base != "" && a.pluginMgr != nil && !a.pluginMgr.PathAllowed(base) {
+		base = ""
+	}
+	if base == "" {
+		return &a.mdOpts
+	}
+	if a.pluginMarkdown == nil {
+		a.pluginMarkdown = make(map[string]*markdown.Options)
+	}
+	if opts := a.pluginMarkdown[base]; opts != nil {
+		return opts
+	}
+	load := markdown.FileImages(base)
+	opts := &markdown.Options{}
+	opts.LoadImage = func(raw string) (ui.ImageSource, error) {
+		p := strings.TrimPrefix(raw, "file:")
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(base, filepath.FromSlash(p))
+		}
+		p = filepath.Clean(p)
+		if a.pluginMgr != nil && !a.pluginMgr.PathAllowed(p) {
+			return nil, fmt.Errorf("image is outside the workspace")
+		}
+		return load(raw)
+	}
+	a.pluginMarkdown[base] = opts
+	return opts
 }
 
 func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.Node, path string) {
@@ -356,6 +543,9 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 		}
 		ptr := a.pluginMgr.Input(ref, n.Key, n.Value)
 		el := ui.TextInput(c.Key(path), ptr).Placeholder(n.Placeholder)
+		if n.Password {
+			el.Password()
+		}
 		if n.Grow {
 			el.Grow(1)
 		}
@@ -460,12 +650,126 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 		scroll.Children(func() {
 			ui.Text(c, n.Text).Font("monospace").FontSize(10).TextColor(p.TextSecondary)
 		})
+	case "codeeditor":
+		if n.Key == "" {
+			return
+		}
+		ptr := a.pluginMgr.Input(ref, n.Key, n.Value)
+		if a.pluginCodeEditors == nil {
+			a.pluginCodeEditors = make(map[string]*pluginCodeEditor)
+		}
+		key := ref + "::" + path
+		rec := a.pluginCodeEditors[key]
+		if rec == nil {
+			buf := editor.NewBuffer(n.Value)
+			if lang := editor.LanguageNamed(n.Language); lang != nil {
+				buf.SetLanguage(lang)
+			} else if lang := editor.LanguageFor(n.Language); lang != nil {
+				buf.SetLanguage(lang)
+			}
+			rec = &pluginCodeEditor{
+				state: &editor.State{
+					Buffer:      buf,
+					ReadOnly:    n.Disabled,
+					Font:        ui.Font{Size: a.cfg.EditorFontSize},
+					SoftWrap:    n.SoftWrap,
+					Placeholder: n.Placeholder,
+					Label:       n.Text,
+				},
+				version: buf.Version(),
+			}
+			a.pluginCodeEditors[key] = rec
+		}
+		view := editor.View(c, rec.state)
+		applyPluginBox(view, n)
+		if rec.state.Buffer.Version() != rec.version {
+			rec.version = rec.state.Buffer.Version()
+			*ptr = editorText(rec.state.Buffer)
+			action := n.Action
+			if action == "" {
+				action = "input"
+			}
+			a.pluginMgr.Dispatch(ref, action, map[string]any{"key": n.Key, "value": *ptr})
+		}
+	case "textarea":
+		if n.Key == "" {
+			return
+		}
+		ptr := a.pluginMgr.Input(ref, n.Key, n.Value)
+		el := ui.TextArea(c.Key(path), ptr)
+		applyPluginBox(el, n)
+		if n.AutoFocus {
+			el.AutoFocus()
+		}
+		if el.Changed() {
+			action := n.Action
+			if action == "" {
+				action = "input"
+			}
+			a.pluginMgr.Dispatch(ref, action, map[string]any{"key": n.Key, "value": *ptr})
+		}
+	case "markdown":
+		scroll := ui.Scroll(c)
+		if n.MaxHeight > 0 {
+			scroll.MaxHeight(float32(n.MaxHeight))
+		} else {
+			scroll.Grow(1)
+		}
+		scroll.Padding(12)
+		applyPluginBox(scroll, n)
+		scroll.Children(func() {
+			markdown.View(c, n.Text, a.pluginMarkdownOptions(n.BasePath)).FillWidth()
+		})
+	case "table":
+		if a.pluginTables == nil {
+			a.pluginTables = make(map[string]*ui.ListState)
+		}
+		st := a.pluginTables[ref+"::"+path]
+		if st == nil {
+			st = &ui.ListState{}
+			a.pluginTables[ref+"::"+path] = st
+		}
+		cols := make([]ui.TableColumn, 0, len(n.Headers))
+		for i, header := range n.Headers {
+			align := ui.Start
+			if i > 0 {
+				align = ui.Start
+			}
+			cols = append(cols, ui.TableColumn{Title: header, Align: align})
+		}
+		if len(cols) == 0 {
+			return
+		}
+		rows := n.Rows
+		table := ui.Table(c, st, cols, len(rows), func(row, col int) {
+			if row < 0 || row >= len(rows) || col < 0 || col >= len(rows[row]) {
+				return
+			}
+			ui.Text(c, rows[row][col]).FontSize(10.5).SingleLine().Tooltip(rows[row][col])
+		})
+		applyPluginBox(table, n)
+	case "bar":
+		ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+			label := n.Text
+			if label == "" {
+				label = n.Detail
+			}
+			ui.Text(c, label).FontSize(10.5).TextColor(pluginToneColor(n.Tone, p)).Width(92).Shrink(0)
+			ui.Progress(c, n.Fraction).Grow(1).Height(6)
+			if n.Text != "" && n.Detail != "" {
+				ui.Text(c, n.Detail).FontSize(9.5).TextColor(p.TextMuted).Shrink(0)
+			}
+		})
 	case "badge":
 		fg := pluginToneColor(n.Tone, p)
 		bg := pluginToneBg(n.Tone, p)
 		badgeBox(c, n.Text, fg, bg, p.BorderSubtle, 9.5, true)
 	case "divider":
-		ui.Box(c).Height(1).FillWidth().Background(p.Border)
+		if n.Vertical {
+			ui.Box(c).Width(1).FillHeight().Background(p.Border)
+		} else {
+			ui.Box(c).Height(1).FillWidth().Background(p.Border)
+		}
 	case "spacer":
 		ui.Spacer(c)
 	case "spinner":

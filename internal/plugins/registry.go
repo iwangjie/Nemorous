@@ -29,6 +29,7 @@ type RegistryPlugin struct {
 	Tags        []string `json:"tags,omitempty"`
 	Official    bool     `json:"official,omitempty"`
 	Builtin     bool     `json:"builtin,omitempty"`
+	Default     bool     `json:"default,omitempty"`
 	DownloadURL string   `json:"downloadUrl,omitempty"`
 	SHA256      string   `json:"sha256,omitempty"`
 	Size        int64    `json:"size,omitempty"`

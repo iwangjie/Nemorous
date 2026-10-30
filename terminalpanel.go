@@ -27,6 +27,29 @@ func (a *App) toggleTerminalPanel() {
 	a.ensureTerminal()
 }
 
+// openPluginTerminal starts an embedded terminal for a plugin command, as
+// an SSH session. The terminal keeps its lifetime when the tool window is
+// hidden, like the normal shell.
+func (a *App) openPluginTerminal(command []string, dir, title string) {
+	if len(command) == 0 {
+		return
+	}
+	a.closeTerminal()
+	a.terminalCommand = append([]string(nil), command...)
+	a.terminalDirOverride = dir
+	a.terminalTitleOverride = title
+	a.showGitPanel = false
+	a.showLogPanel = false
+	a.showRunPanel = false
+	a.showTerminalPanel = true
+	a.ensureTerminal()
+}
+
+func (a *App) closePluginTerminal() {
+	a.showTerminalPanel = false
+	a.closeTerminal()
+}
+
 func (a *App) terminalDir() (string, error) {
 	if root := strings.TrimSpace(a.cfg.WorkspacePath); root != "" {
 		return root, nil
@@ -50,16 +73,20 @@ func (a *App) ensureTerminal() {
 		a.logRuntimeDetail("err", "终端启动失败", a.terminalErr)
 		return
 	}
+	if a.terminalDirOverride != "" {
+		root = a.terminalDirOverride
+	}
 	a.terminalGen++
 	gen := a.terminalGen
 	a.terminalErr = ""
 	a.terminalExited = false
 	a.terminalExitCode = 0
-	a.terminalTitle = ""
+	a.terminalTitle = a.terminalTitleOverride
 
 	term, err := terminal.New(terminal.Options{
-		Dir:  root,
-		Font: terminal.Font{Size: a.cfg.EditorFontSize},
+		Command: append([]string(nil), a.terminalCommand...),
+		Dir:     root,
+		Font:    terminal.Font{Size: a.cfg.EditorFontSize},
 		OnTitle: func(title string) {
 			a.runUI(func() {
 				if gen != a.terminalGen {
@@ -89,7 +116,13 @@ func (a *App) ensureTerminal() {
 }
 
 func (a *App) restartTerminal() {
+	command := append([]string(nil), a.terminalCommand...)
+	dir := a.terminalDirOverride
+	title := a.terminalTitleOverride
 	a.closeTerminal()
+	a.terminalCommand = command
+	a.terminalDirOverride = dir
+	a.terminalTitleOverride = title
 	a.ensureTerminal()
 }
 
@@ -102,6 +135,9 @@ func (a *App) closeTerminal() {
 	a.terminalExited = false
 	a.terminalExitCode = 0
 	a.terminalTitle = ""
+	a.terminalCommand = nil
+	a.terminalDirOverride = ""
+	a.terminalTitleOverride = ""
 }
 
 func (a *App) buildTerminalPanel(c *ui.Context, p Palette) {

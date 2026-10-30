@@ -1,0 +1,37 @@
+{
+  "id": "csv",
+  "name": "CSV Preview",
+  "version": "1.0.0",
+  "description": "轻量 CSV / TSV 表格预览：文件识别、列头、搜索过滤、自动分隔符和原生可调整表格。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.5.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": [
+    "workspace.read",
+    "editor.read"
+  ],
+  "contributes": {
+    "panels": [],
+    "commands": [
+      {
+        "id": "csv.open",
+        "title": "CSV: 打开当前文件预览",
+        "action": "openActive"
+      }
+    ],
+    "editors": [
+      {
+        "id": "preview",
+        "title": "CSV",
+        "patterns": [
+          "*.csv",
+          "*.tsv",
+          "*.tab"
+        ],
+        "priority": 10
+      }
+    ]
+  }
+}

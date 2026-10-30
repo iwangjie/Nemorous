@@ -21,13 +21,23 @@ import (
 
 // Permission names a host capability a plugin may use.
 const (
-	PermissionWorkspaceRead = "workspace.read"
-	PermissionProcessExec   = "process.exec"
+	PermissionWorkspaceRead  = "workspace.read"
+	PermissionWorkspaceWrite = "workspace.write"
+	PermissionProcessExec    = "process.exec"
+	PermissionNetworkHTTP    = "network.http"
+	PermissionEditorRead     = "editor.read"
+	PermissionTerminalOpen   = "terminal.open"
+	PermissionUIOpen         = "ui.open"
 )
 
 var allowedPermissions = map[string]bool{
-	PermissionWorkspaceRead: true,
-	PermissionProcessExec:   true,
+	PermissionWorkspaceRead:  true,
+	PermissionWorkspaceWrite: true,
+	PermissionProcessExec:    true,
+	PermissionNetworkHTTP:    true,
+	PermissionEditorRead:     true,
+	PermissionTerminalOpen:   true,
+	PermissionUIOpen:         true,
 }
 
 var (
@@ -54,7 +64,17 @@ type Manifest struct {
 // Contributions are the UI the plugin adds to the app.
 type Contributions struct {
 	Panels   []PanelContribution   `json:"panels,omitempty"`
+	Editors  []EditorContribution  `json:"editors,omitempty"`
 	Commands []CommandContribution `json:"commands,omitempty"`
+}
+
+// EditorContribution is an editor replacement for matching files, such as a
+// Markdown preview or a CSV table. Patterns are file-name globs ("*.md").
+type EditorContribution struct {
+	ID       string   `json:"id"`
+	Title    string   `json:"title,omitempty"`
+	Patterns []string `json:"patterns"`
+	Priority int      `json:"priority,omitempty"`
 }
 
 // PanelContribution is a tool-window panel the plugin draws.

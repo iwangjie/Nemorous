@@ -31,6 +31,16 @@ type Workspace struct {
 	Repos []Repo `json:"repos"`
 }
 
+// ActiveFile is the editor file a plugin may inspect with editor.read.
+type ActiveFile struct {
+	RepoID   string `json:"repoId"`
+	RepoName string `json:"repoName"`
+	Path     string `json:"path"`
+	RelPath  string `json:"relPath"`
+	Name     string `json:"name"`
+	Content  string `json:"content"`
+}
+
 // PanelInfo identifies one plugin tool window.
 type PanelInfo struct {
 	Ref        string
@@ -52,6 +62,17 @@ type CommandInfo struct {
 	Action     string
 }
 
+// EditorInfo identifies one plugin editor contribution.
+type EditorInfo struct {
+	Ref        string
+	PluginID   string
+	PluginName string
+	EditorID   string
+	Title      string
+	Patterns   []string
+	Priority   int
+}
+
 // PanelSnapshot is the latest render() of one panel. It is immutable
 // once published.
 type PanelSnapshot struct {
@@ -67,10 +88,16 @@ type PanelSnapshot struct {
 
 // Options configures a Manager.
 type Options struct {
-	Root       string
-	AppVersion string
-	Invalidate func()
-	Notify     func(kind, message string)
+	Root                string
+	AppVersion          string
+	Invalidate          func()
+	Notify              func(kind, message string)
+	AutoInstallDefaults bool
+	ActiveFile          func() *ActiveFile
+	OpenURL             func(url string) error
+	OpenTerminal        func(command []string, dir, title string) error
+	CloseTerminal       func() error
+	FileWritten         func(path string)
 }
 
 // Manager owns installed plugins, their runtimes and the marketplace.
@@ -91,12 +118,13 @@ type Manager struct {
 	regAt     time.Time
 	closed    bool
 
-	opMu        sync.Mutex
-	runtimeMu   sync.Mutex
-	refreshMu   sync.Mutex
-	builtinOnce sync.Once
-	builtinReg  *Registry
-	builtinErr  error
+	opMu           sync.Mutex
+	runtimeMu      sync.Mutex
+	refreshMu      sync.Mutex
+	builtinOnce    sync.Once
+	builtinReg     *Registry
+	builtinErr     error
+	defaultInstall bool
 }
 
 // NewManager opens the store under opts.Root.
@@ -124,6 +152,9 @@ func (m *Manager) Root() string { return m.store.Root() }
 
 // Load starts every enabled plugin that is not running yet.
 func (m *Manager) Load() {
+	if m.opts.AutoInstallDefaults {
+		m.installDefaults()
+	}
 	for _, p := range m.store.List() {
 		if !p.State.Enabled {
 			continue
@@ -134,6 +165,32 @@ func (m *Manager) Load() {
 		if !running {
 			m.startRuntime(p)
 		}
+	}
+}
+
+// installDefaults installs editor plugins that must feel native on first run.
+// A plugin the user explicitly uninstalled stays gone.
+func (m *Manager) installDefaults() {
+	reg := m.builtinRegistry()
+	if reg == nil {
+		return
+	}
+	for _, entry := range reg.Plugins {
+		if !entry.Default || !entry.Builtin {
+			continue
+		}
+		if _, installed := m.store.Get(entry.ID); installed || m.store.Dismissed(entry.ID) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		m.defaultInstall = true
+		_, err := m.InstallBuiltin(ctx, entry.ID)
+		m.defaultInstall = false
+		cancel()
+		if err != nil {
+			continue
+		}
+		_ = m.store.Undismiss(entry.ID)
 	}
 }
 
@@ -176,6 +233,51 @@ func (m *Manager) SetWorkspace(path string, repos []Repo) {
 	m.invalidate()
 }
 
+// ActiveFile returns the current editor file, if any.
+func (m *Manager) ActiveFile() *ActiveFile {
+	if m.opts.ActiveFile == nil {
+		return nil
+	}
+	return m.opts.ActiveFile()
+}
+
+// OpenURL opens an external URL after validating its scheme.
+func (m *Manager) OpenURL(url string) error {
+	if m.opts.OpenURL == nil {
+		return fmt.Errorf("openURL: host does not support opening URLs")
+	}
+	return m.opts.OpenURL(url)
+}
+
+// OpenTerminal asks the host to open the embedded terminal with a command.
+func (m *Manager) OpenTerminal(command []string, dir, title string) error {
+	if m.opts.OpenTerminal == nil {
+		return fmt.Errorf("terminal.open: host does not support terminals")
+	}
+	return m.opts.OpenTerminal(command, dir, title)
+}
+
+// CloseTerminal asks the host to close the embedded terminal.
+func (m *Manager) CloseTerminal() error {
+	if m.opts.CloseTerminal == nil {
+		return fmt.Errorf("terminal.close: host does not support terminals")
+	}
+	return m.opts.CloseTerminal()
+}
+
+// FileWritten tells the host that a plugin changed a file, so an open editor
+// can reload it instead of keeping a stale buffer.
+func (m *Manager) FileWritten(path string) {
+	if m.opts.FileWritten != nil {
+		m.opts.FileWritten(path)
+	}
+}
+
+// PathAllowed reports whether p stays inside the workspace or its repos.
+func (m *Manager) PathAllowed(p string) bool {
+	return m.pathAllowed(p, "")
+}
+
 // Workspace returns the current snapshot.
 func (m *Manager) Workspace() Workspace {
 	m.mu.RLock()
@@ -193,6 +295,53 @@ func sameRepos(a, b []Repo) bool {
 		}
 	}
 	return true
+}
+
+// EditorForFile returns the enabled editor contribution with the highest
+// priority whose pattern matches file.
+func (m *Manager) EditorForFile(file string) (EditorInfo, bool) {
+	base := filepath.Base(file)
+	slashed := filepath.ToSlash(file)
+	var best EditorInfo
+	found := false
+	for _, p := range m.store.List() {
+		if !p.State.Enabled {
+			continue
+		}
+		for _, e := range p.Manifest.Contributes.Editors {
+			matched := false
+			for _, pattern := range e.Patterns {
+				if ok, _ := filepath.Match(pattern, base); ok {
+					matched = true
+					break
+				}
+				if ok, _ := filepath.Match(pattern, slashed); ok {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+			if found && e.Priority <= best.Priority {
+				continue
+			}
+			best = EditorInfo{
+				Ref:        panelRef(p.Manifest.ID, e.ID),
+				PluginID:   p.Manifest.ID,
+				PluginName: p.Manifest.Name,
+				EditorID:   e.ID,
+				Title:      e.Title,
+				Patterns:   append([]string(nil), e.Patterns...),
+				Priority:   e.Priority,
+			}
+			if best.Title == "" {
+				best.Title = p.Manifest.Name
+			}
+			found = true
+		}
+	}
+	return best, found
 }
 
 // Panels lists the tool windows of enabled plugins.
@@ -619,7 +768,9 @@ func (m *Manager) install(fn func() (*Manifest, error)) (*Manifest, error) {
 	if p.State.Enabled {
 		m.startRuntime(p)
 	}
-	m.notify("ok", fmt.Sprintf("已安装插件 %s %s", manifest.Name, manifest.Version))
+	if !m.defaultInstall {
+		m.notify("ok", fmt.Sprintf("已安装插件 %s %s", manifest.Name, manifest.Version))
+	}
 	m.invalidate()
 	return manifest, nil
 }
@@ -632,9 +783,13 @@ func (m *Manager) Uninstall(id string) error {
 	if p, ok := m.store.Get(id); ok {
 		name = p.Manifest.Name
 	}
+	p, had := m.store.Get(id)
 	m.stopRuntime(id)
 	if err := m.store.Uninstall(id); err != nil {
 		return err
+	}
+	if had && p.State.Source == "builtin" {
+		_ = m.store.Dismiss(id)
 	}
 	m.notify("ok", "已卸载插件 "+name)
 	m.invalidate()

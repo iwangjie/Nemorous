@@ -1,0 +1,20 @@
+{
+  "id": "code-stats",
+  "name": "Code Stats",
+  "version": "1.0.0",
+  "description": "精致的代码行数统计：总行数、代码/注释/空行、语言分布与最大文件排行。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.5.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": ["workspace.read"],
+  "contributes": {
+    "panels": [
+      { "id": "code-stats", "title": "代码统计", "icon": "code-stats" }
+    ],
+    "commands": [
+      { "id": "code-stats.refresh", "title": "代码统计: 重新扫描工作区", "action": "refresh" }
+    ]
+  }
+}

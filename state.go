@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -422,6 +423,13 @@ type App struct {
 
 	// Plugin engine & marketplace
 	pluginMgr             *plugins.Manager
+	pluginActive          atomic.Pointer[plugins.ActiveFile]
+	pluginActiveKey       string
+	pluginTables          map[string]*ui.ListState
+	pluginMarkdown        map[string]*markdown.Options
+	pluginEditorRef       string
+	pluginEditorText      map[string]bool
+	pluginCodeEditors     map[string]*pluginCodeEditor
 	pluginPanel           string // active plugin panel ref, "maven:maven"
 	pluginPanelPct        float32
 	showPluginMarket      bool
@@ -454,43 +462,46 @@ type App struct {
 	updateDeferred      bool
 
 	// Modals & Overlays
-	showCmdPalette       bool
-	cmdPaletteQuery      string
-	showGlobalSearch     bool
-	globalSearchQuery    string
-	globalSearchHandle   ui.Handle
-	globalSearchCase     bool
-	globalSearchRegex    bool
-	globalSearchGroups   []globalSearchGroup
-	globalSearchTotal    int
-	globalSearchRunning  bool
-	globalSearchErr      string
-	globalSearchPartial  bool
-	globalSearchSeq      uint64
-	globalSearchCancel   context.CancelFunc
-	showSettings         bool
-	showBranchModal      bool
-	showBranchPicker     bool
-	branchPickerQuery    string
-	branchPickerRepoID   string
-	branchPickerHandle   ui.Handle
-	showOpLog            bool
-	showLogPanel         bool
-	logTab               string
-	showTerminalPanel    bool
-	terminalEditorPct    float32
-	terminalTitle        string
-	terminalErr          string
-	terminalExited       bool
-	terminalExitCode     int
-	terminalGen          uint64
-	terminal             *terminal.Terminal
-	pendingDiscard       *PendingDiscard
-	pendingCodeTabClose  *codeTab
-	pendingCodeTabsClose []*codeTab
-	pendingUndo          *PendingUndo
-	fileHistory          *FileHistoryState
-	notify               *AppNotification
+	showCmdPalette        bool
+	cmdPaletteQuery       string
+	showGlobalSearch      bool
+	globalSearchQuery     string
+	globalSearchHandle    ui.Handle
+	globalSearchCase      bool
+	globalSearchRegex     bool
+	globalSearchGroups    []globalSearchGroup
+	globalSearchTotal     int
+	globalSearchRunning   bool
+	globalSearchErr       string
+	globalSearchPartial   bool
+	globalSearchSeq       uint64
+	globalSearchCancel    context.CancelFunc
+	showSettings          bool
+	showBranchModal       bool
+	showBranchPicker      bool
+	branchPickerQuery     string
+	branchPickerRepoID    string
+	branchPickerHandle    ui.Handle
+	showOpLog             bool
+	showLogPanel          bool
+	logTab                string
+	showTerminalPanel     bool
+	terminalEditorPct     float32
+	terminalTitle         string
+	terminalErr           string
+	terminalExited        bool
+	terminalExitCode      int
+	terminalGen           uint64
+	terminal              *terminal.Terminal
+	terminalCommand       []string
+	terminalDirOverride   string
+	terminalTitleOverride string
+	pendingDiscard        *PendingDiscard
+	pendingCodeTabClose   *codeTab
+	pendingCodeTabsClose  []*codeTab
+	pendingUndo           *PendingUndo
+	fileHistory           *FileHistoryState
+	notify                *AppNotification
 
 	// Handles for focus & shortcuts
 	rootHandle        ui.Handle
@@ -2308,4 +2319,9 @@ func (a *App) ZoomOut() {
 // ZoomReset restores the UI scaling factor to 100%.
 func (a *App) ZoomReset() {
 	a.SetZoom(1.0)
+}
+
+type pluginCodeEditor struct {
+	state   *editor.State
+	version uint64
 }

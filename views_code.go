@@ -419,7 +419,15 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 
 		a.buildCodeTabBar(c, p)
 		wf := tab.file
-		isModified := tab.dirty()
+		editorPlugin, hasEditorPlugin := a.editorPluginForFile(wf.AbsPath)
+		textMode := a.pluginEditorInTextMode(wf.RepoID, wf.RelPath)
+		useEditorPlugin := hasEditorPlugin && !textMode
+		if useEditorPlugin {
+			a.syncPluginEditor(editorPlugin)
+		} else {
+			a.pluginEditorRef = ""
+		}
+		isModified := tab.dirty() && !useEditorPlugin
 
 		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
@@ -431,21 +439,36 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			})
 
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				if hasEditorPlugin {
+					icon := icoCode
+					label := "原文"
+					if textMode {
+						icon = icoColumns
+						label = "预览"
+					}
+					ghostBtn(c, p, icon, label, false, func() {
+						a.setPluginEditorTextMode(wf.RepoID, wf.RelPath, !textMode)
+					})
+				}
 				if isModified {
 					pill(c, p, "保存 (⌘S)", true, func() {
 						a.saveCodeMicroEdit()
 					})
 				}
-				miniBtn(c, p, "结构", func() { a.openStructure() })
+				if !useEditorPlugin {
+					miniBtn(c, p, "结构", func() { a.openStructure() })
+					miniBtn(c, p, "书签", func() { a.openBookmarks() })
+				}
 				miniBtn(c, p, "历史", func() { a.openLocalHistory(wf.RepoID, wf.RepoPath, wf.RelPath) })
-				miniBtn(c, p, "书签", func() { a.openBookmarks() })
-				ghostBtn(c, p, icoMore, "", a.showCodeOptions, func() {
-					a.showCodeOptions = !a.showCodeOptions
-				})
+				if !useEditorPlugin {
+					ghostBtn(c, p, icoMore, "", a.showCodeOptions, func() {
+						a.showCodeOptions = !a.showCodeOptions
+					})
+				}
 			})
 		})
 
-		if a.showCodeOptions {
+		if a.showCodeOptions && !useEditorPlugin {
 			ui.Row(c).Padding(6, 14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "显示选项：").FontSize(11.5).TextColor(p.TextMuted)
 				wrapLabel := "自动换行：关"
@@ -474,6 +497,10 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			})
 		}
 
+		if useEditorPlugin {
+			a.buildPluginEditorView(c, p, editorPlugin.Ref)
+			return
+		}
 		a.syncEditorAids(tab, p)
 		if tab.blameAll {
 			ui.Row(c).Grow(1).FillHeight().Children(func() {
