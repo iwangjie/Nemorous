@@ -395,6 +395,10 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 		}
 		item(TabChanges, icoCommit, "提交")
 		item(TabCode, icoFile, "文件")
+		// Push the bottom tool window and app utilities to the lower edge.
+		ui.Spacer(c)
+		ui.Box(c).Height(1).FillWidth().Background(p.Border)
+		// Git is a bottom tool window, grouped with the utility actions.
 		gitActive := a.showGitPanel
 		gitBg := ui.Transparent
 		gitFg := p.TextControl
@@ -427,9 +431,6 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 			}
 		})
 
-		// Utility icons live at the bottom of the rail, away from daily work.
-		ui.Spacer(c)
-		ui.Box(c).Height(1).FillWidth().Background(p.Border)
 		utility := func(key string, icon *ui.SVG, tooltip string, active bool, onClick func()) {
 			bg := ui.Transparent
 			fg := p.TextControl
