@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,9 @@ type App struct {
 	lastCheckedKey       string
 	collapsedChangeRepos map[string]bool
 	collapsedChangeDirs  map[string]bool // "repoID::dirRelPath" -> collapsed
+	collapsedStagedSection   bool
+	collapsedUnstagedSection bool
+	stagedSectionInit        bool
 
 	// Multi-Project Branch Switch & Presets State
 	branchInput         string
@@ -1804,6 +1808,7 @@ func (a *App) stageChangeFiles(files []gitops.ChangedFile, stage bool) {
 		}
 		a.runUI(func() {
 			if stage {
+				a.collapsedStagedSection = false
 				a.showToast("ok", fmt.Sprintf("已暂存 %d 个文件", len(seen)))
 			} else {
 				a.showToast("ok", fmt.Sprintf("已取消暂存 %d 个文件", len(seen)))
@@ -2032,4 +2037,37 @@ func displayPath(p string) string {
 		return "~" + p[len(home):]
 	}
 	return p
+}
+
+// SetZoom updates the UI scaling factor and persists it.
+func (a *App) SetZoom(z float32) {
+	if z < 0.7 {
+		z = 0.7
+	}
+	if z > 2.0 {
+		z = 2.0
+	}
+	// Round to nearest 5% to prevent float rounding errors
+	z = float32(math.Round(float64(z)*20)) / 20
+	if a.cfg.Zoom == z {
+		return
+	}
+	a.cfg.Zoom = z
+	_ = a.cfg.Save()
+	a.showToast("info", fmt.Sprintf("界面缩放：%.0f%%", z*100))
+}
+
+// ZoomIn increments the UI scaling factor by 10%.
+func (a *App) ZoomIn() {
+	a.SetZoom(a.cfg.Zoom + 0.1)
+}
+
+// ZoomOut decrements the UI scaling factor by 10%.
+func (a *App) ZoomOut() {
+	a.SetZoom(a.cfg.Zoom - 0.1)
+}
+
+// ZoomReset restores the UI scaling factor to 100%.
+func (a *App) ZoomReset() {
+	a.SetZoom(1.0)
 }

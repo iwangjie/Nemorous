@@ -159,20 +159,27 @@ tasks:
 	// 3. gateway: routes.yaml modified
 	_ = os.WriteFile(filepath.Join(ws, "gateway", "routes.yaml"), []byte("routes:\n  - path: /api/v2/assessment\n    target: http://cloud-caring:9090\n"), 0o644)
 
+	// Stage one file to demonstrate Staged vs Unstaged sections like IDEA!
+	_, _ = gitops.RunGit(ctx, filepath.Join(ws, "cloud-caring"), "add", "docker/k8s/overlays/alipay/values.prod.yaml")
+
 	t.Log("Workspace populated. Starting Nemorous App in LIGHT mode...")
 
-	saveScreen := func(img *ui.Tester, path string) {
+	saveScreen := func(img *ui.Tester, relPath string) {
 		rgba := img.Image()
-		_ = os.MkdirAll(filepath.Dir(path), 0o755)
-		f, err := os.Create(path)
-		if err != nil {
-			t.Fatalf("failed to create %s: %v", path, err)
+		for _, baseDir := range []string{"docs/screenshots", "assets/screenshots"} {
+			outPath := filepath.Join(baseDir, filepath.Base(relPath))
+			_ = os.MkdirAll(filepath.Dir(outPath), 0o755)
+			f, err := os.Create(outPath)
+			if err != nil {
+				t.Fatalf("failed to create %s: %v", outPath, err)
+			}
+			if err := png.Encode(f, rgba); err != nil {
+				_ = f.Close()
+				t.Fatalf("failed to encode %s: %v", outPath, err)
+			}
+			_ = f.Close()
 		}
-		defer f.Close()
-		if err := png.Encode(f, rgba); err != nil {
-			t.Fatalf("failed to encode %s: %v", path, err)
-		}
-		t.Logf("Captured: %s (%dx%d)", path, rgba.Bounds().Dx(), rgba.Bounds().Dy())
+		t.Logf("Captured: %s (%dx%d)", relPath, rgba.Bounds().Dx(), rgba.Bounds().Dy())
 	}
 
 	cfg := config.Default()
@@ -204,8 +211,15 @@ tasks:
 	tt.Frame()
 	saveScreen(tt, "docs/screenshots/01_changes_diff_light.png")
 
-	// Capture Screen 2: Code Explorer & Blame (⌘2)
+	// Capture Screen 2: Code Explorer (Welcome empty state)
 	app.activeTab = TabCode
+	app.codeTabs = nil
+	app.codeTabIdx = 0
+	tt.Frame()
+	tt.Frame()
+	saveScreen(tt, "docs/screenshots/02_code_welcome_light.png")
+
+	// Capture Screen 2b: Code Explorer & Blame (⌘2)
 	for _, wf := range app.workspaceFiles {
 		if wf.RepoName == "cloud-caring" && wf.RelPath == "internal/handler/assessment.go" {
 			app.selectCodeFile(wf)

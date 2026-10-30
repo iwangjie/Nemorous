@@ -36,6 +36,7 @@ type Config struct {
 	DiffInlineMode       string         `json:"diff_inline_mode"` // "word", "char", "none"
 	EditorFontSize       float32        `json:"editor_font_size"`
 	EditorSoftWrap       bool           `json:"editor_soft_wrap"`
+	Zoom                 float32        `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
 	NavShowLabels        bool           `json:"nav_show_labels"`
 	IncludeRootRepo      bool           `json:"include_root_repo"`
 	ManiEnabled          bool           `json:"mani_enabled"`
@@ -67,6 +68,7 @@ func Default() Config {
 		DiffInlineMode:      "word",
 		EditorFontSize:      14,
 		EditorSoftWrap:      true,
+		Zoom:                1.0,
 		IncludeRootRepo:     true,
 		ManiEnabled:         true,
 		AutoUpdate:          true,
@@ -130,6 +132,9 @@ func Load() Config {
 	}
 	if cfg.EditorFontSize < 10 || cfg.EditorFontSize > 28 {
 		cfg.EditorFontSize = 14
+	}
+	if cfg.Zoom < 0.5 || cfg.Zoom > 3.0 {
+		cfg.Zoom = 1.0
 	}
 	if cfg.Theme == "" {
 		cfg.Theme = "light"

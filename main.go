@@ -202,6 +202,9 @@ func (a *App) BuildUI(c *ui.Context) {
 	t.AccentText = p.AccentText
 	t.Danger = p.Danger
 	c.SetTheme(&t)
+	if a.cfg.Zoom >= 0.5 && a.cfg.Zoom <= 3.0 {
+		c.SetZoom(a.cfg.Zoom)
+	}
 	a.registerShortcuts(c)
 
 	ui.Column(c).Bind(&a.rootHandle).Fill().Background(p.AppBg).TextColor(p.TextPrimary).Children(func() {
@@ -294,6 +297,17 @@ func (a *App) BuildUI(c *ui.Context) {
 }
 
 func (a *App) registerShortcuts(c *ui.Context) {
+	// Global window zoom shortcuts (Cmd +, Cmd -, Cmd 0)
+	if c.Shortcut(ui.Cmd, ui.KeyEqual) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEqual) {
+		a.ZoomIn()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyMinus) {
+		a.ZoomOut()
+	}
+	if c.Shortcut(ui.Cmd, ui.Key0) {
+		a.ZoomReset()
+	}
+
 	// Dialogs own the keyboard: global actions must not fire behind them.
 	if a.overlayOpen() {
 		return

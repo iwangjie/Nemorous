@@ -731,4 +731,37 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if app.palette().IsDark {
 		t.Fatal("expected light palette after selecting light")
 	}
+
+	// 9. Window zoom testing (Cmd +, Cmd -, Cmd 0)
+	app.ZoomReset()
+	if app.cfg.Zoom != 1.0 {
+		t.Fatalf("expected initial zoom 1.0, got %f", app.cfg.Zoom)
+	}
+	app.ZoomIn()
+	if app.cfg.Zoom < 1.05 || app.cfg.Zoom > 1.15 {
+		t.Fatalf("expected zoom ~1.1 after ZoomIn, got %f", app.cfg.Zoom)
+	}
+	app.ZoomOut()
+	if app.cfg.Zoom < 0.95 || app.cfg.Zoom > 1.05 {
+		t.Fatalf("expected zoom ~1.0 after ZoomOut, got %f", app.cfg.Zoom)
+	}
+	app.SetZoom(0.2)
+	if app.cfg.Zoom != 0.7 {
+		t.Fatalf("expected zoom clamped to 0.7 min, got %f", app.cfg.Zoom)
+	}
+	app.SetZoom(4.0)
+	if app.cfg.Zoom != 2.0 {
+		t.Fatalf("expected zoom clamped to 2.0 max, got %f", app.cfg.Zoom)
+	}
+	app.ZoomReset()
+	if app.cfg.Zoom != 1.0 {
+		t.Fatalf("expected zoom reset to 1.0, got %f", app.cfg.Zoom)
+	}
+
+	// 10. Staged vs Unstaged sections in Changes view
+	app.activeTab = TabChanges
+	tt.Frame()
+	if !tt.HasText("已暂存") || !tt.HasText("未暂存") {
+		t.Fatal("expected separate '已暂存' and '未暂存' sections in changes view")
+	}
 }

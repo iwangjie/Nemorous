@@ -201,6 +201,7 @@ Automation and AI must never compromise code integrity. Nemorous enforces mathem
 | `⌘S` | **Save Micro-Edit** | Persist inline edits in diff or code viewer directly to disk |
 | `⌘R` | **Refresh** | Rescan and update status across all Git repositories |
 | `⌘,` | **Settings** | Configure workspace path, themes, AI Agent CLI, update check frequency |
+| `⌘+` / `⌘-` / `⌘0` | **Window Zoom Scaling** | Zoom UI in (+10%), zoom out (-10%), or reset to 100% |
 
 ---
 

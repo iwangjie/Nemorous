@@ -304,39 +304,35 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 }
 
 func (a *App) buildCodeWelcome(c *ui.Context, p Palette) {
-	ui.Column(c).Grow(1).FillWidth().Center().Gap(14).Background(p.AppBg).Padding(24).Children(func() {
-		ui.Column(c).Width(420).Padding(24).Gap(16).Radius(12).Background(p.Surface).Border(1, p.Border).Center().Children(func() {
-			ui.Box(c).Size(44, 44).Radius(10).Background(p.Surface2).Center().Children(func() {
-				drawIcon(c, icoCode, 24, p.Accent)
+	ui.Column(c).Grow(1).FillWidth().Center().Gap(10).Background(p.AppBg).Children(func() {
+		shortcutRow := func(key string, desc, keys string, action func()) {
+			kc := c.Key("welcome-" + key)
+			row := ui.Row(kc).Width(240).Padding(5, 8).Radius(6).Justify(ui.SpaceBetween).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+			if row.Hovered() {
+				row.Background(p.SurfaceHover)
+			}
+			if row.Clicked() && action != nil {
+				action()
+			}
+			row.Children(func() {
+				ui.Text(kc, desc).FontSize(12).TextColor(p.TextMuted)
+				badgeBox(kc, keys, p.TextControl, p.Surface2, ui.Color{}, 10.5, true)
 			})
-			ui.Column(c).Gap(4).Center().Children(func() {
-				ui.Text(c, "Nemorous 代码极速查阅").FontSize(16).FontWeight(weightBold).TextColor(p.TextPrimary)
-				ui.Text(c, "多仓如林 · 秒级毫秒查阅与语法高亮").FontSize(12).TextColor(p.TextMuted)
-			})
+		}
 
-			ui.Row(c).Gap(8).Center().Children(func() {
-				iconPill(c, p, icoSearch, "命令面板 (⌘K)", true, func() {
-					a.showCmdPalette = true
-					a.cmdInputHandle.Focus()
-				})
-				iconPill(c, p, icoSearch, "全局搜索 (⇧⌘F)", false, func() {
-					a.openGlobalSearch()
-				})
-			})
-
-			ui.Column(c).FillWidth().Padding(10, 14).Gap(6).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
-				shortcutRow := func(keys, desc string) {
-					ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, desc).FontSize(11.5).TextColor(p.TextSecondary)
-						badgeBox(c, keys, p.TextControl, p.Surface2, ui.Color{}, 10, true)
-					})
-				}
-				shortcutRow("⌘P / ⌘K", "搜索文件与命令")
-				shortcutRow("⇧⌘F", "跨仓库全文检索")
-				shortcutRow("⌘B", "多仓批量切分支")
-				shortcutRow("⌘1", "本地变更与提交")
-				shortcutRow("⌘3", "统一提交森林与合并")
-			})
+		shortcutRow("search", "搜索文件", "⌘P", func() {
+			a.showCmdPalette = true
+			a.cmdInputHandle.Focus()
+		})
+		shortcutRow("find", "全局查找", "⇧⌘F", func() {
+			a.openGlobalSearch()
+		})
+		shortcutRow("branch", "切换分支", "⌘B", func() {
+			a.openBranchSwitchModal()
+		})
+		shortcutRow("cmd", "命令面板", "⌘K", func() {
+			a.showCmdPalette = true
+			a.cmdInputHandle.Focus()
 		})
 	})
 }

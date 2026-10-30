@@ -318,6 +318,15 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			addEntry("act-theme", "操作", "外观主题", "明亮 / 暗色 / Darcula / 跟随系统", p.Amber, func() {
 				a.showSettings = true
 			})
+			addEntry("act-zoom-in", "视图", "放大界面 (Zoom In)", "⌘+ · 界面缩放 +10%", p.Accent, func() {
+				a.ZoomIn()
+			})
+			addEntry("act-zoom-out", "视图", "缩小界面 (Zoom Out)", "⌘- · 界面缩放 -10%", p.Accent, func() {
+				a.ZoomOut()
+			})
+			addEntry("act-zoom-reset", "视图", "重置界面缩放", "⌘0 · 恢复 100% 原始尺寸", p.Accent, func() {
+				a.ZoomReset()
+			})
 
 			for _, st := range a.statuses {
 				for _, cf := range st.Files {
@@ -660,6 +669,13 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 							}
 							_ = a.cfg.Save()
 						})
+						ui.Text(c, "界面缩放：").FontSize(12).TextColor(p.TextSecondary)
+						miniBtn(c, p, "−", func() { a.ZoomOut() })
+						ui.Text(c, fmt.Sprintf("%.0f%%", a.cfg.Zoom*100)).FontSize(12).TextColor(p.TextPrimary)
+						miniBtn(c, p, "+", func() { a.ZoomIn() })
+						if a.cfg.Zoom != 1.0 {
+							miniBtn(c, p, "重置", func() { a.ZoomReset() })
+						}
 					})
 				})
 
