@@ -357,7 +357,7 @@ func (a *App) buildUpdateSettings(c *ui.Context, p Palette) {
 				a.restartUpdateLoop()
 			}
 			ui.Text(c, "每").FontSize(11.5).TextColor(p.TextSecondary)
-			if ui.NumberInput(c.Key("update-interval"), &a.updateMinutesDraft, updateMinMinutes, updateMaxMinutes, 5).Width(72).Changed() {
+			if ui.NumberInput(c.Key("update-interval"), &a.updateMinutesDraft, updateMinMinutes, updateMaxMinutes, 5).Changed() {
 				minutes := int(a.updateMinutesDraft)
 				if minutes < updateMinMinutes {
 					minutes = updateMinMinutes
