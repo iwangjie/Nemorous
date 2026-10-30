@@ -21,3 +21,6 @@ mygo_windows_*.syso
 
 # 更新签名私钥（只放本机 / GitHub Actions Secret）
 mygo-update.key
+
+# 设计工具运行时与本地参考素材
+.impeccable/
