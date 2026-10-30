@@ -150,7 +150,7 @@ Plugin authoring guide: [docs/plugins.md](docs/plugins.md).
 
 <picture>
   <img src="docs/screenshots/09_git_ops_light.png" width="49%" alt="Git advanced operations">
-  <img src="docs/screenshots/11_conflict_resolver_light.png" width="49%" alt="Hunk-level conflict resolver">
+  <img src="docs/screenshots/11_conflict_resolver_light.png" width="49%" alt="IDEA-style Ours / Result / Theirs conflict workbench">
 </picture>
 
 ---

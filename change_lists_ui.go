@@ -55,23 +55,20 @@ func (a *App) createChangeList(assignChecked bool) {
 func (a *App) buildChangeListModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showChangeListModal, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(520).Height(460).Padding(16).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				drawIcon(c, icoFolder, 15, p.Accent)
-				ui.Text(c, "变更列表").FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-			})
-			miniBtn(c, p, "关闭", func() { a.showChangeListModal = false })
-		})
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("cl-name"), &a.changeListNameInput).Grow(1).Placeholder("新列表名称，如：登录需求")
-			pill(c, p, "创建", false, func() { a.createChangeList(false) })
-			pill(c, p, "创建并入勾选", true, func() { a.createChangeList(true) })
+		panel.Width(480).Height(360).Padding(14).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
+		modalHeader(c, p, icoList, "变更列表", "", nil, func() { a.showChangeListModal = false })
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("cl-name"), &a.changeListNameInput).Grow(1).Placeholder("新列表名称")
+			checked := len(a.checkedChangeKeys())
+			tip := "新建并加入勾选文件"
+			if checked == 0 {
+				tip = "新建变更列表"
+			}
+			iconAction(c, p, "cl-create", icoPlus, tip, true, func() { a.createChangeList(checked > 0) })
 		})
 		if a.changeListErr != "" {
-			ui.Text(c, a.changeListErr).FontSize(10.5).TextColor(p.Danger)
+			ui.Text(c, a.changeListErr).FontSize(10).TextColor(p.Danger)
 		}
-		ui.Text(c, "把未提交文件分组，便于按需求/任务分别审阅；未归组的文件属于默认列表。").FontSize(10.5).TextColor(p.TextMuted)
 		ui.Scroll(c).Grow(1).Children(func() {
 			var keys []string
 			for _, st := range a.statuses {
@@ -88,18 +85,20 @@ func (a *App) buildChangeListModal(c *ui.Context, p Palette) {
 				name := name
 				label := name
 				count := 0
+				icon := icoList
 				switch name {
 				case "__all__":
 					label = "全部变更"
 					count = len(keys)
 				case "__default__":
 					label = "默认列表"
+					icon = icoFolder
 					count = a.cfg.ChangeListCount("", all)
 				default:
 					count = a.cfg.ChangeListCount(name, all)
 				}
 				kc := c.Key("cl-" + name)
-				row := ui.Row(kc).FillWidth().Padding(6, 8).Gap(8).AlignItems(ui.Center).Radius(5).Cursor(ui.CursorPointer)
+				row := ui.Row(kc).FillWidth().Padding(6, 8).Gap(7).AlignItems(ui.Center).Radius(4).Cursor(ui.CursorPointer)
 				if a.changeListFilter == name {
 					row.Background(p.AccentSoft)
 				}
@@ -110,12 +109,13 @@ func (a *App) buildChangeListModal(c *ui.Context, p Palette) {
 					a.changeListFilter = name
 				}
 				row.Children(func() {
+					drawIcon(kc, icon, 12, p.TextMuted)
 					ui.Text(kc, label).FontSize(11.5).TextColor(p.TextPrimary).Grow(1)
-					ui.Text(kc, fmt.Sprintf("%d 个文件", count)).FontSize(10).TextColor(p.TextMuted)
+					ui.Text(kc, fmt.Sprint(count)).FontSize(10).TextColor(p.TextMuted)
 					if name != "__all__" && name != "__default__" {
 						if a.changeListRenameFrom == name {
-							ui.TextInput(kc, &a.changeListRenameInput).Width(180).Placeholder("新名称")
-							miniBtn(kc, p, "保存", func() {
+							ui.TextInput(kc, &a.changeListRenameInput).Width(160).Placeholder("新名称")
+							toolButton(kc, p, "cl-save-"+name, icoCheck, "保存名称", false, true, func() {
 								if a.cfg.RenameChangeList(name, a.changeListRenameInput) {
 									_ = a.cfg.Save()
 									if a.changeListFilter == name {
@@ -126,13 +126,13 @@ func (a *App) buildChangeListModal(c *ui.Context, p Palette) {
 									a.changeListErr = "名称无效或已存在"
 								}
 							})
-							miniBtn(kc, p, "取消", func() { a.changeListRenameFrom = "" })
+							toolButton(kc, p, "cl-cancel-"+name, icoClose, "取消", false, true, func() { a.changeListRenameFrom = "" })
 						} else {
-							miniBtn(kc, p, "重命名", func() {
+							toolButton(kc, p, "cl-rename-"+name, icoEdit, "重命名", false, true, func() {
 								a.changeListRenameFrom = name
 								a.changeListRenameInput = name
 							})
-							miniBtn(kc, p, "删除", func() {
+							toolButton(kc, p, "cl-delete-"+name, icoTrash, "删除", false, true, func() {
 								a.cfg.DeleteChangeList(name)
 								_ = a.cfg.Save()
 								if a.changeListFilter == name {

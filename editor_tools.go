@@ -104,24 +104,21 @@ func parseStructure(path, content string) []structureItem {
 func (a *App) buildStructureModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showStructure, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(520).Height(520).Padding(16).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			title := "文件结构"
-			if tab := a.activeCodeTab(); tab != nil {
-				title += " · " + tab.file.RelPath
-			}
-			ui.Text(c, title).FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
-			miniBtn(c, p, "关闭", func() { a.showStructure = false })
-		})
+		panel.Width(480).Height(440).Padding(14).Gap(6).Radius(12).Background(p.Surface).Border(1, p.Border)
+		context := ""
+		if tab := a.activeCodeTab(); tab != nil {
+			context = filepath.Base(tab.file.RelPath)
+		}
+		modalHeader(c, p, icoCode, "结构", context, nil, func() { a.showStructure = false })
 		if len(a.structureItems) == 0 {
-			ui.Text(c, "没有可识别的结构（当前支持 Go / JS / TS / Python / JVM / Rust）。").FontSize(11).TextColor(p.TextMuted)
+			emptyState(c, p, icoCode, "没有可识别的结构", "")
 			return
 		}
 		ui.Scroll(c).Grow(1).Children(func() {
 			for _, item := range a.structureItems {
 				item := item
 				kc := c.Key(fmt.Sprintf("struct-%d-%s", item.Line, item.Name))
-				row := ui.Row(kc).Padding(3, 6).Gap(6).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+				row := ui.Row(kc).Padding(3, 6).Gap(6).Radius(3).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 				if row.Hovered() {
 					row.Background(p.SurfaceHover)
 				}
@@ -140,7 +137,7 @@ func (a *App) buildStructureModal(c *ui.Context, p Palette) {
 					for i := 0; i < item.Depth && i < 8; i++ {
 						ui.Box(kc).Width(12).Shrink(0)
 					}
-					badgeBox(kc, item.Kind, p.AccentSoftText, p.AccentSoft, p.Border, 9, true)
+					ui.Text(kc, item.Kind).Font("monospace").FontSize(8.5).TextColor(p.TextMuted).Width(32)
 					ui.Text(kc, item.Name).Font("monospace").FontSize(11).TextColor(p.TextPrimary)
 					ui.Spacer(kc)
 					ui.Text(kc, fmt.Sprint(item.Line)).FontSize(9.5).TextColor(p.TextMuted)
@@ -212,29 +209,29 @@ func (a *App) openCodeAtLine(repoID, repoName, repoPath, relPath, absPath string
 func (a *App) buildTodosModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showTodos, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(760).Height(620).Padding(16).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "TODO / FIXME").FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-				ui.Text(c, fmt.Sprintf("%d 条", len(a.todos))).FontSize(10.5).TextColor(p.TextMuted)
-			})
-			miniBtn(c, p, "关闭", func() { a.showTodos = false })
-		})
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.TextInput(c.Key("todo-q"), &a.todoQuery).Grow(1).Placeholder("TODO|FIXME|HACK|XXX")
-			pill(c, p, "扫描", true, func() { a.refreshTodos() })
+		panel.Width(740).Height(600).Padding(14).Gap(6).Radius(12).Background(p.Surface).Border(1, p.Border)
+		modalHeader(c, p, icoSearch, "TODO", fmt.Sprint(len(a.todos)), func() {
 			if a.todosLoading {
-				ui.Text(c, "扫描中…").FontSize(10.5).TextColor(p.AccentSoftText)
+				ui.Spinner(c).Size(14, 14).Label("扫描中").TextColor(p.TextMuted)
+			} else {
+				toolButton(c, p, "todo-scan", icoRefresh, "重新扫描", false, true, func() { a.refreshTodos() })
 			}
+		}, func() { a.showTodos = false })
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			ui.TextInput(c.Key("todo-q"), &a.todoQuery).Grow(1).Placeholder("TODO|FIXME|HACK|XXX")
 		})
 		if a.todoErr != "" {
-			ui.Text(c, a.todoErr).FontSize(10.5).TextColor(p.Danger)
+			ui.Text(c, a.todoErr).FontSize(10).TextColor(p.Danger)
+		}
+		if len(a.todos) == 0 && !a.todosLoading {
+			emptyState(c, p, icoSearch, "没有匹配项", "")
+			return
 		}
 		ui.Scroll(c).Grow(1).Children(func() {
 			for i, todo := range a.todos {
 				todo := todo
 				kc := c.Key(fmt.Sprintf("todo-%d", i))
-				row := ui.Row(kc).Padding(5, 7).Gap(8).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+				row := ui.Row(kc).Padding(4, 6).Gap(7).Radius(3).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 				if row.Hovered() {
 					row.Background(p.SurfaceHover)
 				}
@@ -243,8 +240,8 @@ func (a *App) buildTodosModal(c *ui.Context, p Palette) {
 					a.openCodeAtLine(todo.RepoID, todo.RepoName, todo.RepoPath, todo.RelPath, todo.AbsPath, todo.Line)
 				}
 				row.Children(func() {
-					badgeBox(kc, todo.RepoName, p.TextMuted, p.Surface2, p.Border, 9, false)
-					ui.Text(kc, fmt.Sprintf("%s:%d", todo.RelPath, todo.Line)).Font("monospace").FontSize(10).TextColor(p.TextSecondary).Width(280).MaxLines(1)
+					ui.Text(kc, todo.RepoName).FontSize(9).TextColor(p.TextMuted).Width(80).MaxLines(1)
+					ui.Text(kc, fmt.Sprintf("%s:%d", todo.RelPath, todo.Line)).Font("monospace").FontSize(9.5).TextColor(p.TextSecondary).Width(250).MaxLines(1)
 					ui.Text(kc, todo.Text).FontSize(10.5).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
 				})
 			}
@@ -275,19 +272,10 @@ func (a *App) toggleBookmarkAtCursor() {
 func (a *App) buildBookmarksModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showBookmarks, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(700).Height(540).Padding(16).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, "书签").FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-				ui.Text(c, fmt.Sprintf("%d 个", len(a.cfg.Bookmarks))).FontSize(10.5).TextColor(p.TextMuted)
-			})
-			ui.Row(c).Gap(6).Children(func() {
-				pill(c, p, "记录当前行", true, func() {
-					a.toggleBookmarkAtCursor()
-				})
-				miniBtn(c, p, "关闭", func() { a.showBookmarks = false })
-			})
-		})
+		panel.Width(680).Height(460).Padding(14).Gap(6).Radius(12).Background(p.Surface).Border(1, p.Border)
+		modalHeader(c, p, icoBookmark, "书签", fmt.Sprint(len(a.cfg.Bookmarks)), func() {
+			iconAction(c, p, "bm-add", icoPlus, "记录当前行", true, func() { a.toggleBookmarkAtCursor() })
+		}, func() { a.showBookmarks = false })
 		ui.TextInput(c.Key("bm-q"), &a.bookmarkQuery).Placeholder("搜索路径…")
 		query := strings.ToLower(strings.TrimSpace(a.bookmarkQuery))
 		ui.Scroll(c).Grow(1).Children(func() {
@@ -300,7 +288,7 @@ func (a *App) buildBookmarksModal(c *ui.Context, p Palette) {
 				}
 				shown++
 				kc := c.Key(fmt.Sprintf("bm-%s-%s-%d", bm.RepoID, bm.RelPath, bm.Line))
-				row := ui.Row(kc).Padding(5, 7).Gap(8).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+				row := ui.Row(kc).Padding(4, 6).Gap(7).Radius(3).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 				if row.Hovered() {
 					row.Background(p.SurfaceHover)
 				}
@@ -311,17 +299,17 @@ func (a *App) buildBookmarksModal(c *ui.Context, p Palette) {
 					}
 				}
 				row.Children(func() {
-					drawIcon(kc, icoBookmark, 12, p.Accent)
-					ui.Text(kc, bm.RepoID+"/"+bm.RelPath).FontSize(11).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
-					ui.Text(kc, fmt.Sprintf(":%d", bm.Line)).FontSize(10).TextColor(p.TextMuted)
-					miniBtn(kc, p, "删除", func() {
+					drawIcon(kc, icoBookmark, 11, p.Accent)
+					ui.Text(kc, bm.RepoID+"/"+bm.RelPath).FontSize(10.5).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
+					ui.Text(kc, fmt.Sprintf(":%d", bm.Line)).FontSize(9.5).TextColor(p.TextMuted)
+					toolButton(kc, p, "bm-del-"+bm.RepoID+bm.RelPath+fmt.Sprint(bm.Line), icoTrash, "删除书签", false, true, func() {
 						a.cfg.ToggleBookmark(bm.RepoID, bm.RelPath, bm.Line)
 						_ = a.cfg.Save()
 					})
 				})
 			}
 			if shown == 0 {
-				ui.Text(c, "没有书签。在代码行号栏点击，或按 ⌘⇧B 记录当前行。").FontSize(11).TextColor(p.TextMuted)
+				emptyState(c, p, icoBookmark, "暂无书签", "⌘⇧B 记录当前行")
 			}
 		})
 	})

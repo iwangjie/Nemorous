@@ -379,6 +379,7 @@ type App struct {
 	runCfgEnvText    string
 	runCfgLaunchText string
 	runCfgIsNew      bool
+	runCfgAdvanced   bool
 	runCfgErr        string
 	debugClient      *dap.Client
 	debugThreadID    int

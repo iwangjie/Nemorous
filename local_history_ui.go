@@ -66,6 +66,7 @@ func (a *App) selectLocalHistoryEntry(id string) {
 	}
 	a.historySelected = id
 	a.historyErr = ""
+	a.historyRestoreConfirm = false
 	a.historyLoading = true
 	repoID, relPath := a.historyRepoID, a.historyRelPath
 	repoPath := a.historyRepoPath
@@ -134,49 +135,42 @@ func (a *App) restoreLocalHistoryEntry() {
 func (a *App) buildLocalHistoryModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showLocalHistory, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.40))
-		width, height := float32(980), float32(700)
+		width, height := float32(960), float32(640)
 		if a.win != nil {
 			if w, h := a.win.ContentSize(); w > 0 && h > 0 {
 				width = min(width, float32(w)-50)
 				height = min(height, float32(h)-50)
 			}
 		}
-		panel.Width(width).Height(height).Padding(16).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				drawIcon(c, icoClock, 16, p.Accent)
-				ui.Text(c, "本地历史").FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-				ui.Text(c, a.historyRepoID+"/"+a.historyRelPath).Font("monospace").FontSize(10.5).TextColor(p.TextMuted).MaxLines(1)
-			})
-			ui.Row(c).Gap(6).Children(func() {
-				if a.historySelected != "" {
-					if a.historyRestoreConfirm {
-						pill(c, p, "确认恢复（覆盖当前文件）", true, func() { a.restoreLocalHistoryEntry() })
-						miniBtn(c, p, "取消", func() { a.historyRestoreConfirm = false })
-					} else {
-						pill(c, p, "恢复此版本", false, func() { a.historyRestoreConfirm = true })
-					}
-					if a.historyDiffMode {
-						pill(c, p, "查看快照", false, func() { a.historyDiffMode = false })
-					} else {
-						pill(c, p, "对比当前", false, func() { a.historyDiffMode = true })
-					}
-				}
-				miniBtn(c, p, "关闭", func() { a.showLocalHistory = false })
-			})
-		})
+		panel.Width(width).Height(height).Padding(14).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
+		fullPath := a.historyRepoID + "/" + a.historyRelPath
+		modalHeader(c, p, icoClock, "本地历史", filepath.Base(a.historyRelPath), func() {
+			if a.historySelected == "" {
+				return
+			}
+			active := a.historyDiffMode
+			toolButton(c, p, "lh-diff", icoColumns, "对比当前", active, true, func() { a.historyDiffMode = !a.historyDiffMode })
+			toolButton(c, p, "lh-restore", icoRestore, "恢复此版本", false, true, func() { a.historyRestoreConfirm = !a.historyRestoreConfirm })
+		}, func() { a.showLocalHistory = false })
 		if a.historyErr != "" {
-			ui.Text(c, a.historyErr).FontSize(10.5).TextColor(p.Danger)
+			ui.Text(c, a.historyErr).FontSize(10).TextColor(p.Danger)
 		}
 		if a.historyNotice != "" {
-			ui.Text(c, a.historyNotice).FontSize(10.5).TextColor(p.Green)
+			ui.Text(c, a.historyNotice).FontSize(10).TextColor(p.Green)
 		}
-		ui.Row(c).Grow(1).FillWidth().Gap(10).Children(func() {
-			ui.Column(c).Width(250).FillHeight().Gap(4).Children(func() {
-				ui.Text(c, "快照").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+		if a.historyRestoreConfirm {
+			ui.Row(c).FillWidth().Padding(5, 8).Gap(7).AlignItems(ui.Center).Radius(4).Background(p.AmberSoft).Children(func() {
+				drawIcon(c, icoAlert, 12, p.Amber)
+				ui.Text(c, "覆盖当前文件？").FontSize(10).TextColor(p.Amber).Grow(1).Tooltip(fullPath)
+				toolButton(c, p, "lh-restore-yes", icoCheck, "确认恢复", false, true, func() { a.restoreLocalHistoryEntry() })
+				toolButton(c, p, "lh-restore-no", icoClose, "取消", false, true, func() { a.historyRestoreConfirm = false })
+			})
+		}
+		ui.Row(c).Grow(1).FillWidth().Gap(8).Children(func() {
+			ui.Column(c).Width(260).FillHeight().Gap(2).Children(func() {
 				ui.Scroll(c).Grow(1).Children(func() {
 					if len(a.historyEntries) == 0 {
-						ui.Text(c, "还没有快照。保存、提交或还原文件后会记录。").FontSize(10.5).TextColor(p.TextMuted)
+						emptyState(c, p, icoClock, "暂无快照", "")
 					}
 					for _, entry := range a.historyEntries {
 						entry := entry
@@ -185,24 +179,29 @@ func (a *App) buildLocalHistoryModal(c *ui.Context, p Palette) {
 						if a.historySelected == entry.ID {
 							row.Background(p.AccentSoft)
 						}
+						if row.Hovered() && a.historySelected != entry.ID {
+							row.Background(p.SurfaceHover)
+						}
 						if row.Clicked() {
 							a.selectLocalHistoryEntry(entry.ID)
 						}
 						row.Children(func() {
-							ui.Text(kc, entry.At.Local().Format("01-02 15:04:05")).FontSize(10).TextColor(p.TextSecondary).Width(105)
-							ui.Text(kc, entry.Reason).FontSize(10).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+							ui.Text(kc, entry.At.Local().Format("01-02 15:04")).FontSize(9.5).TextColor(p.TextMuted).Width(82)
+							ui.Text(kc, entry.Reason).FontSize(10.5).TextColor(p.TextSecondary).Grow(1).MaxLines(1)
 						})
 					}
 				})
 			})
-			ui.Box(c).Width(1).FillHeight().Background(p.Border)
+			ui.Box(c).Width(1).FillHeight().Background(p.BorderSubtle)
 			ui.Column(c).Grow(1).FillHeight().Children(func() {
 				if a.historyLoading && a.historyEditor == nil {
-					ui.Text(c, "读取快照…").FontSize(11).TextColor(p.TextMuted)
+					ui.Column(c).Grow(1).Center().Children(func() {
+						ui.Spinner(c).Size(16, 16).Label("读取快照").TextColor(p.TextMuted)
+					})
 					return
 				}
 				if a.historyEditor == nil {
-					ui.Text(c, "选择左侧快照查看内容。").FontSize(11).TextColor(p.TextMuted)
+					emptyState(c, p, icoClock, "选择快照查看内容", "")
 					return
 				}
 				if a.historyDiffMode && a.historyDiff != nil {

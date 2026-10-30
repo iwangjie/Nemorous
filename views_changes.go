@@ -196,7 +196,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 				}
 			})
 			if allTotal > 0 {
-				menuPill(c, p, "变更列表 ▾", false, func(m *ui.Menu) {
+				menuIconPill(c, p, "changes-list-menu", icoList, "变更列表", false, func(m *ui.Menu) {
 					if m.Item("全部变更").Radio(a.changeListFilter == "__all__").Chosen() {
 						a.changeListFilter = "__all__"
 					}
@@ -235,15 +235,15 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 						}
 					}
 				})
-				menuPill(c, p, "Stash ▾", false, func(m *ui.Menu) {
-					if m.Item("贮藏全部改动 (Stash)").Chosen() {
+				menuIconPill(c, p, "changes-stash-menu", icoArchive, "Stash", false, func(m *ui.Menu) {
+					if m.Item("贮藏全部改动").Chosen() {
 						a.TriggerStashAll()
 					}
-					if m.Item("恢复最近贮藏 (Stash Pop)").Chosen() {
+					if m.Item("恢复最近贮藏").Chosen() {
 						a.TriggerStashPopAll()
 					}
 					m.Separator()
-					if m.Item("Stash 管理…").Chosen() {
+					if m.Item("管理 Stash…").Chosen() {
 						a.openGitOps("stash")
 					}
 				})

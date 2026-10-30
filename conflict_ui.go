@@ -505,14 +505,6 @@ func (a *App) closeConflictModal() {
 	a.showConflict = false
 }
 
-func (a *App) conflictTotalHunks() int {
-	total := 0
-	for _, n := range a.conflictHunkCount {
-		total += n
-	}
-	return total
-}
-
 func (a *App) conflictBinaryApply(side conflict.Strategy) {
 	if a.conflictSelected == "" {
 		return
@@ -630,23 +622,18 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 				height = min(height, float32(h)-28)
 			}
 		}
-		panel.Width(width).Height(height).Padding(14).Gap(8).Radius(14).Background(p.AppBg).Border(1, p.Border)
+		panel.Width(width).Height(height).Padding(14).Gap(8).Radius(12).Background(p.AppBg).Border(1, p.Border)
 
-		// One header line: title, repository and the file selector.
-		ui.Row(c).Height(38).Padding(0, 2).Gap(10).AlignItems(ui.Center).Children(func() {
-			drawIcon(c, icoMerge, 17, p.Danger)
-			ui.Text(c, "冲突解决").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
-			ui.Text(c, a.conflictRepoName).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
+		modalHeader(c, p, icoMerge, "冲突解决", a.conflictRepoName, func() {
 			if a.conflictManual {
 				badgeBox(c, "手动合并", p.Amber, p.AmberSoft, p.Amber, 9, true)
 			}
-			ui.Spacer(c)
 			if len(a.conflictFiles) > 0 {
 				label := filepath.Base(a.conflictSelected)
 				if label == "" || label == "." {
 					label = "选择文件"
 				}
-				menuPill(c, p, label+" ▾", a.conflictSelected != "", func(m *ui.Menu) {
+				menuIconPill(c, p, "conflict-file", icoFile, label, a.conflictSelected != "", func(m *ui.Menu) {
 					for i, file := range a.conflictFiles {
 						file := file
 						text := fmt.Sprintf("%d. %s", i+1, filepath.ToSlash(file))
@@ -658,10 +645,9 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 						}
 					}
 				})
-				ui.Text(c, fmt.Sprintf("%d/%d 文件 · %d 冲突", a.currentConflictFileIndex()+1, len(a.conflictFiles), a.conflictTotalHunks())).FontSize(9.5).TextColor(p.TextMuted)
+				ui.Text(c, fmt.Sprintf("%d/%d", a.currentConflictFileIndex()+1, len(a.conflictFiles))).FontSize(9.5).TextColor(p.TextMuted)
 			}
-			miniBtn(c, p, "关闭", func() { a.closeConflictModal() })
-		})
+		}, func() { a.closeConflictModal() })
 
 		if a.conflictConfirmClose {
 			ui.Row(c).FillWidth().Padding(6, 9).Gap(8).AlignItems(ui.Center).Radius(6).Background(p.AmberSoft).Children(func() {
@@ -691,9 +677,9 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 		if a.conflictSelected == "" {
 			ui.Column(c).Grow(1).Center().Gap(10).Children(func() {
 				if len(a.conflictFiles) == 0 {
-					drawIcon(c, icoCheck, 40, p.Green)
-					ui.Text(c, "所有冲突已解决").FontSize(18).FontWeight(weightBold).TextColor(p.TextPrimary)
-					ui.Text(c, "文件已暂存，可以继续当前 Git 操作。").FontSize(11.5).TextColor(p.TextMuted)
+					drawIcon(c, icoResolve, 34, p.Green)
+					ui.Text(c, "所有冲突已解决").FontSize(16).FontWeight(weightBold).TextColor(p.TextPrimary)
+					ui.Text(c, "文件已暂存").FontSize(10.5).TextColor(p.TextMuted)
 					pill(c, p, a.conflictOperationLabel(), true, func() { a.continueAfterConflict() })
 				} else {
 					ui.Text(c, "选择要解决的冲突文件。").FontSize(11.5).TextColor(p.TextMuted)
@@ -707,7 +693,7 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 				drawIcon(c, icoAlert, 32, p.Amber)
 				ui.Text(c, "二进制文件冲突").FontSize(16).FontWeight(weightBold).TextColor(p.TextPrimary)
 				ui.Text(c, filepath.ToSlash(a.conflictSelected)).Font("monospace").FontSize(10.5).TextColor(p.TextMuted)
-				ui.Text(c, "文本编辑器无法安全合并二进制内容；请选择保留一侧或删除文件。").FontSize(11).TextColor(p.TextSecondary)
+				ui.Text(c, "选择保留的版本").FontSize(10.5).TextColor(p.TextMuted)
 				ui.Row(c).Gap(8).Children(func() {
 					pill(c, p, "保留 Ours", true, func() { a.conflictBinaryApply(conflict.Ours) })
 					pill(c, p, "采用 Theirs", false, func() { a.conflictBinaryApply(conflict.Theirs) })
@@ -717,25 +703,25 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 			return
 		}
 
-		// One compact action bar, IDEA-style left/result/right.
-		ui.Row(c).Height(34).Padding(0, 2).Gap(5).AlignItems(ui.Center).Children(func() {
+		// IDEA merge toolbar: navigate, accept from either side, then finish.
+		ui.Row(c).Height(32).Padding(0, 2).Gap(2).AlignItems(ui.Center).Children(func() {
 			if a.conflictDoc != nil && len(a.conflictDoc.Hunks) > 0 {
-				badgeBox(c, fmt.Sprintf("冲突 %d/%d", a.conflictHunkIdx+1, len(a.conflictDoc.Hunks)), p.Danger, p.DangerSoft, p.Danger, 9.5, true)
-				miniBtn(c, p, "‹", func() { a.conflictNav(-1) })
-				miniBtn(c, p, "›", func() { a.conflictNav(1) })
+				badgeBox(c, fmt.Sprintf("%d/%d", a.conflictHunkIdx+1, len(a.conflictDoc.Hunks)), p.Danger, p.DangerSoft, p.Danger, 9.5, true)
+				toolButton(c, p, "conflict-prev", icoChevronUp, "上一个冲突 (⌥←)", false, true, func() { a.conflictNav(-1) })
+				toolButton(c, p, "conflict-next", icoChevronDown, "下一个冲突 (⌥→)", false, true, func() { a.conflictNav(1) })
 				ui.Box(c).Width(1).Height(16).Background(p.BorderSubtle)
-				pill(c, p, "采用 Ours", true, func() { a.conflictApplyCurrent(conflict.Ours) })
-				pill(c, p, "采用 Theirs", false, func() { a.conflictApplyCurrent(conflict.Theirs) })
-				pill(c, p, "两者", false, func() { a.conflictApplyCurrent(conflict.Both) })
+				toolButtonTone(c, p, "conflict-ours", icoAcceptLeft, "采用 Ours (⌥1)", p.Accent, true, func() { a.conflictApplyCurrent(conflict.Ours) })
+				toolButtonTone(c, p, "conflict-theirs", icoAcceptRight, "采用 Theirs (⌥2)", p.Amber, true, func() { a.conflictApplyCurrent(conflict.Theirs) })
+				toolButtonTone(c, p, "conflict-both", icoBoth, "采用两者 (⌥3)", p.TextSecondary, true, func() { a.conflictApplyCurrent(conflict.Both) })
 			} else {
-				badgeBox(c, "无冲突块", p.Green, p.GreenSoft, p.Green, 9.5, true)
+				badgeBox(c, "已解决", p.Green, p.GreenSoft, p.Green, 9.5, true)
+			}
+			toolButton(c, p, "conflict-auto", icoSparkles, "自动合并不重叠修改", false, true, func() { a.conflictAutoResolve() })
+			if a.conflictBeforeAuto != "" {
+				toolButton(c, p, "conflict-undo", icoRestore, "撤销自动合并", false, true, func() { a.conflictUndoAuto() })
 			}
 			ui.Spacer(c)
-			pill(c, p, "自动合并", false, func() { a.conflictAutoResolve() })
-			if a.conflictBeforeAuto != "" {
-				miniBtn(c, p, "撤销自动合并", func() { a.conflictUndoAuto() })
-			}
-			menuPill(c, p, "更多…", false, func(m *ui.Menu) {
+			menuIconAction(c, p, "conflict-more", icoMore, "更多操作", false, func(m *ui.Menu) {
 				if m.Item("全部采用 Ours").Chosen() {
 					a.conflictApplyAll(conflict.Ours)
 				}
@@ -771,23 +757,19 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 					a.updateConflictPanes()
 				}
 			})
-			pill(c, p, "保存并标记解决", true, func() { a.saveConflictFile() })
+			if a.conflictEditor != nil && a.conflictEditor.Buffer != nil && a.conflictEditor.Buffer.Modified() {
+				ui.Box(c).Size(6, 6).Radius(3).Background(p.Amber).Tooltip("未保存").Label("未保存")
+			}
+			iconAction(c, p, "conflict-save", icoResolve, "保存并标记解决 (⌘S)", true, func() { a.saveConflictFile() })
 		})
 
 		ui.Row(c).Grow(1).FillWidth().Gap(6).Children(func() {
 			oursSub, theirsSub := a.conflictSideSubs()
 			a.conflictPaneSimple(c, p, "OURS", oursSub, a.conflictOursView, p.Accent)
-			a.conflictPaneSimple(c, p, "RESULT", "结果", a.conflictEditor, p.Green)
+			a.conflictPaneSimple(c, p, "RESULT", "", a.conflictEditor, p.Green)
 			a.conflictPaneSimple(c, p, "THEIRS", theirsSub, a.conflictTheirsView, p.Amber)
 		})
 
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "⌥←/→ 切换冲突 · ⌥1/2/3 采用 Ours/Theirs/Both · ⌘S 保存").FontSize(9).TextColor(p.TextMuted)
-			ui.Spacer(c)
-			if a.conflictEditor != nil && a.conflictEditor.Buffer != nil && a.conflictEditor.Buffer.Modified() {
-				ui.Text(c, "未保存").FontSize(9).TextColor(p.Amber)
-			}
-		})
 	})
 }
 

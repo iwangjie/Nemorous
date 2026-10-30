@@ -150,7 +150,7 @@
 
 <picture>
   <img src="docs/screenshots/09_git_ops_light.png" width="49%" alt="Git 高级操作">
-  <img src="docs/screenshots/11_conflict_resolver_light.png" width="49%" alt="逐块冲突解决">
+  <img src="docs/screenshots/11_conflict_resolver_light.png" width="49%" alt="IDEA 风格 Ours / Result / Theirs 冲突工作台">
 </picture>
 
 ---

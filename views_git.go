@@ -81,8 +81,8 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 			gitTab("history", "提交图", icoBranch)
 			gitTab("merge", "合并", icoMerge)
 			ui.Spacer(c)
-			pill(c, p, "Git 操作", false, func() { a.openGitOps("stash") })
-			miniBtn(c, p, "PR / CI", func() { a.openGitHub() })
+			ghostBtn(c, p, icoBranch, "Git", false, func() { a.openGitOps("stash") })
+			iconAction(c, p, "git-pr", icoPR, "GitHub PR / CI", false, func() { a.openGitHub() })
 			if a.gitSubTab == "history" {
 				ui.Text(c, fmt.Sprintf("已加载 %d 个提交 · %d 个仓库", a.gitLogTotal, len(a.gitLogTargets))).FontSize(10.5).TextColor(p.TextMuted)
 			}

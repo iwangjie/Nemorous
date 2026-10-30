@@ -41,9 +41,23 @@ func TestRunPanelRunsConfiguration(t *testing.T) {
 	}
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if !tt.HasText("运行 / 调试 / 测试") || !tt.HasText("成功") {
+	if !tt.HasText("GOROOT") || !tt.HasText("成功") {
 		t.Fatal("run panel did not render result")
 	}
+	app.openRunConfig("")
+	tt.Frame()
+	if err := tt.Click("调试"); err != nil {
+		t.Fatalf("debug kind: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("高级"); err != nil {
+		t.Fatalf("advanced section: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("适配器") || !tt.HasText("Launch JSON") {
+		t.Fatal("advanced debug fields did not render")
+	}
+	app.showRunConfig = false
 }
 
 func TestGitHubModalShowsPRChecksAndComments(t *testing.T) {
@@ -75,7 +89,7 @@ esac
 	waitApp(t, "github details", func() bool { return app.githubDetails != nil })
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if !tt.HasText("GitHub PR / CI") || !tt.HasText("Fix it") || !tt.HasText("build") || !tt.HasText("LGTM?") || !tt.HasText("inline note") {
+	if !tt.HasText("GitHub") || !tt.HasText("Fix it") || !tt.HasText("build") || !tt.HasText("LGTM?") || !tt.HasText("inline note") {
 		t.Fatal("GitHub modal did not render PR, checks and review comments")
 	}
 	app.githubComment = "hello"

@@ -324,7 +324,7 @@ func pill(c *ui.Context, p Palette, label string, primary bool, onClick func()) 
 func iconPill(c *ui.Context, p Palette, svg *ui.SVG, label string, primary bool, onClick func()) {
 	bg := p.Surface2
 	fg := p.TextPrimary
-	iconCol := p.TextControl
+	iconCol := p.TextSecondary
 	hover := p.SurfaceHover
 	if primary {
 		bg = p.Accent
@@ -350,10 +350,10 @@ func iconPill(c *ui.Context, p Palette, svg *ui.SVG, label string, primary bool,
 }
 
 // iconAction renders a square icon-only action with a tooltip in place of a
-// visible text label.
+// visible text label. Quiet by default, filled only for the primary action.
 func iconAction(c *ui.Context, p Palette, key string, svg *ui.SVG, tooltip string, primary bool, onClick func()) {
-	bg := p.Surface2
-	iconCol := p.TextControl
+	bg := ui.Transparent
+	iconCol := p.TextSecondary
 	hover := p.SurfaceHover
 	if primary {
 		bg = p.Accent
@@ -361,7 +361,7 @@ func iconAction(c *ui.Context, p Palette, key string, svg *ui.SVG, tooltip strin
 		hover = p.AccentHover
 	}
 	kc := c.Key(key)
-	el := ui.Row(kc).Size(28, 28).Radius(6).Background(bg).Cursor(ui.CursorPointer).
+	el := ui.Row(kc).Size(26, 26).Radius(4).Background(bg).Cursor(ui.CursorPointer).
 		AlignItems(ui.Center).Justify(ui.Center).Tooltip(tooltip).Label(tooltip)
 	if el.Hovered() {
 		el.Background(hover)
@@ -371,6 +371,147 @@ func iconAction(c *ui.Context, p Palette, key string, svg *ui.SVG, tooltip strin
 	}
 	el.Children(func() {
 		drawIcon(kc, svg, 14, iconCol)
+	})
+}
+
+// toolButton is the flat IDEA-style toolbar icon. Active commands get the
+// accent-soft background; disabled commands stay in place but do not react.
+func toolButton(c *ui.Context, p Palette, key string, svg *ui.SVG, tip string, active, enabled bool, onClick func()) {
+	kc := c.Key(key)
+	btn := ui.Box(kc).Size(26, 26).Radius(4).Center().Tooltip(tip).Label(tip)
+	fg := p.TextSecondary
+	if active {
+		btn.Background(p.AccentSoft)
+		fg = p.AccentSoftText
+	}
+	if !enabled {
+		fg = p.TextMuted
+	}
+	if enabled {
+		btn.Cursor(ui.CursorPointer)
+		if btn.Hovered() {
+			btn.Background(p.SurfaceHover)
+			if !active {
+				fg = p.TextPrimary
+			}
+		}
+		if btn.Clicked() && onClick != nil {
+			onClick()
+		}
+	}
+	btn.Children(func() {
+		drawIcon(kc, svg, 14, fg)
+	})
+}
+
+// toolButtonTone is toolButton with an explicit enabled icon color, used
+// for semantic toolbar commands such as accepting one merge side.
+func toolButtonTone(c *ui.Context, p Palette, key string, svg *ui.SVG, tip string, tone ui.Color, enabled bool, onClick func()) {
+	kc := c.Key(key)
+	btn := ui.Box(kc).Size(26, 26).Radius(4).Center().Tooltip(tip).Label(tip)
+	fg := tone
+	if !enabled {
+		fg = p.TextMuted
+	}
+	if enabled {
+		btn.Cursor(ui.CursorPointer)
+		if btn.Hovered() {
+			btn.Background(p.SurfaceHover)
+		}
+		if btn.Clicked() && onClick != nil {
+			onClick()
+		}
+	}
+	btn.Children(func() {
+		drawIcon(kc, svg, 14, fg)
+	})
+}
+
+// modalHeader is the shared dialog title row. Context is a quiet subtitle;
+// actions sit before the standard close control.
+func modalHeader(c *ui.Context, p Palette, svg *ui.SVG, title, context string, actions func(), onClose func()) {
+	ui.Row(c).Height(38).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		if svg != nil {
+			drawIcon(c, svg, 16, p.Accent)
+		}
+		ui.Text(c, title).FontSize(13.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+		if context != "" {
+			ui.Text(c, context).FontSize(10).TextColor(p.TextMuted).MaxLines(1)
+		}
+		ui.Spacer(c)
+		if actions != nil {
+			actions()
+		}
+		toolButton(c, p, title+"-close", icoClose, "关闭", false, true, onClose)
+	})
+}
+
+// menuIconAction is a flat toolbar icon that opens a menu.
+func menuIconAction(c *ui.Context, p Palette, key string, svg *ui.SVG, tip string, active bool, build func(m *ui.Menu)) {
+	kc := c.Key(key)
+	el := ui.Box(kc).Size(26, 26).Radius(4).Center().Tooltip(tip).Label(tip)
+	fg := p.TextSecondary
+	if active {
+		el.Background(p.AccentSoft)
+		fg = p.AccentSoftText
+	}
+	if el.Hovered() {
+		el.Background(p.SurfaceHover)
+		if !active {
+			fg = p.TextPrimary
+		}
+	}
+	el.PopoverMenuButton(build)
+	el.Children(func() {
+		drawIcon(kc, svg, 14, fg)
+	})
+}
+
+// menuIconPill is a flat icon plus short label that opens a menu.
+func menuIconPill(c *ui.Context, p Palette, key string, svg *ui.SVG, label string, active bool, build func(m *ui.Menu)) {
+	kc := c.Key(key)
+	el := ui.Row(kc).Padding(4, 8).Gap(5).Radius(4).AlignItems(ui.Center).Shrink(0)
+	fg := p.TextSecondary
+	if active {
+		el.Background(p.AccentSoft)
+		fg = p.AccentSoftText
+	}
+	if el.Hovered() {
+		el.Background(p.SurfaceHover)
+		if !active {
+			fg = p.TextPrimary
+		}
+	}
+	el.PopoverMenuButton(build)
+	el.Children(func() {
+		drawIcon(kc, svg, 13, fg)
+		if label != "" {
+			ui.Text(kc, label).FontSize(11.5).FontWeight(weightMedium).TextColor(fg).SingleLine()
+		}
+		drawIcon(kc, icoChevronDown, 10, p.TextMuted)
+	})
+}
+
+// formRow places a short field label in a fixed gutter, IDEA-style.
+func formRow(c *ui.Context, p Palette, label string, control func()) {
+	ui.Row(c).FillWidth().Gap(10).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, label).Width(84).Shrink(0).FontSize(10.5).TextColor(p.TextMuted)
+		ui.Column(c).Grow(1).Children(control)
+	})
+}
+
+// emptyState is the shared quiet placeholder for an empty panel.
+func emptyState(c *ui.Context, p Palette, svg *ui.SVG, title, detail string) {
+	ui.Column(c).Grow(1).FillWidth().Center().Gap(6).Children(func() {
+		if svg != nil {
+			drawIcon(c, svg, 24, p.TextMuted)
+		}
+		if title != "" {
+			ui.Text(c, title).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextSecondary)
+		}
+		if detail != "" {
+			ui.Text(c, detail).FontSize(10).TextColor(p.TextMuted)
+		}
 	})
 }
 
@@ -391,7 +532,7 @@ func miniBtn(c *ui.Context, p Palette, label string, onClick func()) {
 // ghostBtn renders a borderless subtle text/icon button that shows a pill background only on hover.
 func ghostBtn(c *ui.Context, p Palette, svg *ui.SVG, label string, active bool, onClick func()) {
 	bg := ui.Transparent
-	fg := p.TextControl
+	fg := p.TextSecondary
 	if active {
 		bg = p.Surface2
 		fg = p.TextPrimary
@@ -416,31 +557,7 @@ func ghostBtn(c *ui.Context, p Palette, svg *ui.SVG, label string, active bool, 
 
 // diffToolButton renders a flat diff toolbar icon, lit when its toggle is on.
 func diffToolButton(c *ui.Context, p Palette, key string, svg *ui.SVG, tip string, active, enabled bool, onClick func()) {
-	kc := c.Key(key)
-	btn := ui.Box(kc).Size(26, 26).Radius(4).Center().Tooltip(tip).Label(tip)
-	fg := p.TextControl
-	if active {
-		btn.Background(p.Surface2)
-		fg = p.TextPrimary
-	}
-	if !enabled {
-		fg = p.TextMuted
-	}
-	if enabled {
-		btn.Cursor(ui.CursorPointer)
-		if btn.Hovered() {
-			btn.Background(p.SurfaceHover)
-			if !active {
-				fg = p.TextPrimary
-			}
-		}
-		if btn.Clicked() && onClick != nil {
-			onClick()
-		}
-	}
-	btn.Children(func() {
-		drawIcon(kc, svg, 14, fg)
-	})
+	toolButton(c, p, key, svg, tip, active, enabled, onClick)
 }
 
 // badgeBox renders a subtle status pill without harsh borders.
@@ -459,7 +576,7 @@ func badgeBox(c *ui.Context, text string, fg, bg, border ui.Color, fontSize floa
 // menuPill renders a compact pill that opens a popover menu.
 func menuPill(c *ui.Context, p Palette, label string, active bool, build func(m *ui.Menu)) {
 	bg := p.Surface2
-	fg := p.TextControl
+	fg := p.TextSecondary
 	if active {
 		bg = p.AccentSoft
 		fg = p.AccentSoftText

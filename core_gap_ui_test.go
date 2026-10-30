@@ -96,14 +96,14 @@ func TestConflictResolverUIEndToEnd(t *testing.T) {
 	if !tt.HasText("变基目标（上游）") || !tt.HasText("你的提交") {
 		t.Fatal("rebase-specific ours/theirs labels are missing")
 	}
-	if err := tt.Click("采用 Ours"); err != nil {
+	if err := tt.Click("采用 Ours (⌥1)"); err != nil {
 		t.Fatalf("accept ours button: %v", err)
 	}
 	tt.Frame()
 	if app.conflictDoc != nil {
 		t.Fatal("markers remain after resolving all hunks")
 	}
-	if err := tt.Click("保存并标记解决"); err != nil {
+	if err := tt.Click("保存并标记解决 (⌘S)"); err != nil {
 		t.Fatalf("save resolved: %v", err)
 	}
 	waitApp(t, "conflict files cleared", func() bool {
@@ -138,7 +138,7 @@ func TestGitOpsStashTagsRemotesUI(t *testing.T) {
 	app.openGitOps("stash")
 	waitApp(t, "git ops loaded", func() bool { return !app.gitOpsLoading })
 	tt.Frame()
-	if !tt.HasText("Git 高级操作") || !tt.HasText("Stash 列表") {
+	if !tt.HasText("Git") || !tt.HasText("Stash") || !tt.HasText("ui stash") {
 		t.Fatal("stash tab did not render")
 	}
 	if err := tt.Click("标签"); err != nil {
@@ -148,11 +148,11 @@ func TestGitOpsStashTagsRemotesUI(t *testing.T) {
 	if !tt.HasText("标签名") && !tt.HasText("标签") {
 		t.Fatal("tags tab did not render")
 	}
-	if err := tt.Click("Remotes"); err != nil {
+	if err := tt.Click("远端"); err != nil {
 		t.Fatalf("remotes tab: %v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("Remotes") {
+	if !tt.HasText("远端") {
 		t.Fatal("remotes tab did not render")
 	}
 	if err := tt.Click("子模块"); err != nil {

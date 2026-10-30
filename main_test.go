@@ -505,7 +505,7 @@ func TestNemorousHeadlessUI(t *testing.T) {
 			t.Fatalf("%q should be removed from the commit box", gone)
 		}
 	}
-	if !tt.HasText("Stash ▾") {
+	if !tt.HasText("Stash") {
 		t.Fatal("Stash menu should remain in the changes header")
 	}
 	if err := tt.Click("选择全部改动"); err != nil {

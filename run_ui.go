@@ -56,6 +56,7 @@ func (a *App) toggleRunPanel() {
 func (a *App) openRunConfig(id string) {
 	a.showRunConfig = true
 	a.runCfgErr = ""
+	a.runCfgAdvanced = false
 	if id == "" {
 		a.runCfgIsNew = true
 		a.runCfgDraft = config.RunConfig{
@@ -593,96 +594,125 @@ func (a *App) runStatusColor(p Palette) ui.Color {
 	}
 }
 
+func runKindIcon(kind string) *ui.SVG {
+	switch kind {
+	case "debug":
+		return icoBug
+	case "test":
+		return icoCheck
+	default:
+		return icoPlay
+	}
+}
+
+func runStatusIcon(status string) *ui.SVG {
+	switch status {
+	case "成功", "调试中":
+		return icoCheck
+	case "已暂停":
+		return icoPause
+	case "失败", "调试启动失败", "调试初始化失败", "调试已停止", "调试连接已断开":
+		return icoAlert
+	case "运行中", "启动调试适配器…":
+		return icoPlay
+	default:
+		return icoStop
+	}
+}
+
 func (a *App) buildRunPanel(c *ui.Context, p Palette) {
 	cfg := a.selectedRunConfig()
+	kind := "run"
+	kindLabel := "运行"
+	if cfg != nil {
+		kind = cfg.Kind
+		switch kind {
+		case "debug":
+			kindLabel = "调试"
+		case "test":
+			kindLabel = "测试"
+		}
+	}
+	active := a.runRunning || a.debugClient != nil
 	ui.Column(c).Grow(1).FillHeight().Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
-		ui.Row(c).Height(36).Padding(0, 10).Gap(6).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
-			drawIcon(c, icoPlay, 13, p.Accent)
-			ui.Text(c, "运行 / 调试 / 测试").FontSize(12).FontWeight(weightBold).TextColor(p.TextPrimary)
-			ui.Spacer(c)
-			runLabel := "运行"
+		ui.Row(c).Height(34).Padding(0, 8).Gap(2).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
+			configLabel := "运行"
 			if cfg != nil {
-				switch cfg.Kind {
-				case "debug":
-					runLabel = "调试"
-				case "test":
-					runLabel = "测试"
-				}
+				configLabel = cfg.Name
 			}
-			pill(c, p, runLabel, true, func() { a.launchSelectedConfig() })
-			miniBtn(c, p, "停止", func() {
+			menuIconPill(c, p, "run-config-menu", runKindIcon(kind), configLabel, false, func(m *ui.Menu) {
+				for _, rc := range a.cfg.RunConfigs {
+					rc := rc
+					label := rc.Name
+					switch rc.Kind {
+					case "test":
+						label = "Test · " + label
+					case "debug":
+						label = "Debug · " + label
+					}
+					if m.Item(label).Radio(a.runConfigID == rc.ID).Chosen() {
+						a.runConfigID = rc.ID
+					}
+				}
+				if len(a.cfg.RunConfigs) > 0 {
+					m.Separator()
+				}
+				if m.Item("新建配置…").Chosen() {
+					a.openRunConfig("")
+				}
+			})
+			if a.runStatus != "" && a.debugClient == nil {
+				ui.Icon(c, runStatusIcon(a.runStatus)).Size(13, 13).TextColor(a.runStatusColor(p)).Tooltip(a.runStatus).Label(a.runStatus)
+			}
+			ui.Spacer(c)
+			iconAction(c, p, "run-launch", runKindIcon(kind), kindLabel, true, func() { a.launchSelectedConfig() })
+			toolButton(c, p, "run-stop", icoStop, "停止", false, active, func() {
 				a.stopRun()
 				a.stopDebug()
 			})
-			miniBtn(c, p, "配置", func() {
+			toolButton(c, p, "run-edit", icoSettings, "编辑配置", false, cfg != nil, func() {
 				if cfg != nil {
 					a.openRunConfig(cfg.ID)
 				} else {
 					a.openRunConfig("")
 				}
 			})
-			miniBtn(c, p, "新建", func() { a.openRunConfig("") })
-			miniBtn(c, p, "关闭", func() {
+			toolButton(c, p, "run-new", icoPlus, "新建配置", false, true, func() { a.openRunConfig("") })
+			toolButton(c, p, "run-close", icoClose, "关闭", false, true, func() {
 				a.stopRun()
 				a.stopDebug()
 				a.showRunPanel = false
 			})
 		})
-		ui.Row(c).Wrap().Gap(4).Padding(4, 8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
-			if len(a.cfg.RunConfigs) == 0 {
-				ui.Text(c, "还没有运行配置。点击“新建”添加 Run / Test / Debug。").FontSize(10.5).TextColor(p.TextMuted)
-			}
-			for _, rc := range a.cfg.RunConfigs {
-				rc := rc
-				label := rc.Name
-				if rc.Kind == "test" {
-					label = "测试 · " + label
-				} else if rc.Kind == "debug" {
-					label = "调试 · " + label
-				}
-				pill(c.Key("run-cfg-"+rc.ID), p, label, a.runConfigID == rc.ID, func() {
-					a.runConfigID = rc.ID
-				})
-			}
-		})
-		ui.Row(c).Gap(6).Padding(4, 8).AlignItems(ui.Center).Children(func() {
-			if a.runStatus != "" {
-				badgeBox(c, a.runStatus, a.runStatusColor(p), p.Surface2, p.Border, 9.5, true)
-			}
-			if cfg != nil {
-				kind := "运行"
-				if cfg.Kind == "test" {
-					kind = "测试"
-				} else if cfg.Kind == "debug" {
-					kind = "调试"
-				}
-				detail := cfg.Command + " " + cfg.Args
-				if cfg.Kind == "debug" {
-					detail = cfg.Adapter + " " + cfg.AdapterArgs
-				}
-				ui.Text(c, fmt.Sprintf("%s · %s", kind, strings.TrimSpace(detail))).Font("monospace").FontSize(9.5).TextColor(p.TextMuted).MaxLines(1).Grow(1)
-			}
-		})
 		if a.debugModeActive() && len(a.breakpoints) > 0 {
-			ui.Row(c).Wrap().Gap(4).Padding(3, 8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
-				ui.Text(c, "断点").FontSize(9.5).TextColor(p.TextMuted)
-				for key, lines := range a.breakpoints {
-					parts := strings.SplitN(key, "::", 2)
-					if len(parts) != 2 {
-						continue
-					}
-					for _, line := range lines {
-						key, parts, line := key, parts, line
-						chip := ui.Row(c.Key(fmt.Sprintf("bp-%s-%d", key, line))).Padding(2, 6).Gap(4).Radius(4).Background(p.DangerSoft).Children(func() {
-							ui.Text(c, fmt.Sprintf("%s:%d", shortenPath(parts[1]), line)).Font("monospace").FontSize(8.5).TextColor(p.Danger)
-						})
-						chip.Cursor(ui.CursorPointer)
-						if chip.Clicked() {
-							a.toggleBreakpointKey(key, "", parts[1], line)
-						}
-					}
+			ui.Row(c).FillWidth().Height(26).Padding(0, 8).Gap(4).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
+				drawIcon(c, icoAlert, 11, p.Danger)
+				count := 0
+				for _, lines := range a.breakpoints {
+					count += len(lines)
 				}
-				miniBtn(c, p, "清空", func() {
+				ui.Text(c, fmt.Sprint(count)).FontSize(9.5).TextColor(p.TextMuted)
+				ui.ScrollHorizontal(c).Grow(1).Children(func() {
+					ui.Row(c).Gap(4).Children(func() {
+						for key, lines := range a.breakpoints {
+							parts := strings.SplitN(key, "::", 2)
+							if len(parts) != 2 {
+								continue
+							}
+							for _, line := range lines {
+								key, parts, line := key, parts, line
+								chip := ui.Row(c.Key(fmt.Sprintf("bp-%s-%d", key, line))).Padding(1, 5).Radius(3).Background(p.DangerSoft).Children(func() {
+									ui.Text(c, fmt.Sprintf("%s:%d", shortenPath(parts[1]), line)).Font("monospace").FontSize(8.5).TextColor(p.Danger)
+								})
+								chip.Cursor(ui.CursorPointer)
+								if chip.Clicked() {
+									a.toggleBreakpointKey(key, "", parts[1], line)
+								}
+							}
+						}
+					})
+				})
+				toolButton(c, p, "bp-clear", icoTrash, "清空断点", false, true, func() {
 					a.breakpoints = make(map[string][]int)
 					a.cfg.Breakpoints = nil
 					_ = a.cfg.Save()
@@ -691,28 +721,31 @@ func (a *App) buildRunPanel(c *ui.Context, p Palette) {
 			})
 		}
 		if a.debugClient != nil {
-			ui.Row(c).Wrap().Gap(4).Padding(4, 8).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
-				for _, ctl := range []struct{ id, label string }{
-					{"continue", "继续"}, {"next", "单步跳过"}, {"stepIn", "单步进入"},
-					{"stepOut", "单步返回"}, {"pause", "暂停"},
+			ui.Row(c).FillWidth().Height(30).Padding(0, 8).Gap(2).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
+				for _, ctl := range []struct {
+					id, tip string
+					svg     *ui.SVG
+				}{
+					{"continue", "继续", icoPlay}, {"next", "单步跳过", icoStepOver}, {"stepIn", "单步进入", icoStepInto},
+					{"stepOut", "单步返回", icoStepOut}, {"pause", "暂停", icoPause},
 				} {
 					ctl := ctl
-					miniBtn(c.Key("dbg-"+ctl.id), p, ctl.label, func() { a.debugCommand(ctl.id) })
+					toolButton(c, p, "dbg-"+ctl.id, ctl.svg, ctl.tip, false, true, func() { a.debugCommand(ctl.id) })
 				}
 				ui.Spacer(c)
 				if a.debugMsg != "" {
-					ui.Text(c, a.debugMsg).FontSize(10).TextColor(p.TextMuted)
+					ui.Text(c, a.debugMsg).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
 				}
 			})
 			if len(a.debugFrames) > 0 {
 				ui.Row(c).Grow(1).Gap(10).Padding(6, 8).Children(func() {
-					ui.Column(c).Width(300).FillHeight().Gap(3).Children(func() {
-						ui.Text(c, "调用栈").FontSize(10.5).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+					ui.Column(c).Width(300).FillHeight().Gap(2).Children(func() {
+						ui.Text(c, "调用栈").FontSize(10).FontWeight(weightSemibold).TextColor(p.TextSecondary)
 						ui.Scroll(c).Grow(1).Children(func() {
 							for i, frame := range a.debugFrames {
 								frame := frame
 								kc := c.Key(fmt.Sprintf("dbg-frame-%d", i))
-								row := ui.Row(kc).Padding(3, 4).Gap(4).Radius(3).Cursor(ui.CursorPointer)
+								row := ui.Row(kc).Padding(2, 4).Gap(4).Radius(3).Cursor(ui.CursorPointer)
 								if row.Hovered() {
 									row.Background(p.SurfaceHover)
 								}
@@ -745,11 +778,11 @@ func (a *App) buildRunPanel(c *ui.Context, p Palette) {
 							}
 						})
 					})
-					ui.Column(c).Grow(1).FillHeight().Gap(3).Children(func() {
-						ui.Text(c, "变量").FontSize(10.5).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+					ui.Column(c).Grow(1).FillHeight().Gap(2).Children(func() {
+						ui.Text(c, "变量").FontSize(10).FontWeight(weightSemibold).TextColor(p.TextSecondary)
 						ui.Scroll(c).Grow(1).Children(func() {
 							for _, v := range a.debugVars {
-								ui.Row(c).Gap(6).Children(func() {
+								ui.Row(c).Gap(5).Children(func() {
 									ui.Text(c, v.Name).Font("monospace").FontSize(9.5).TextColor(p.AccentSoftText)
 									ui.Text(c, "=").FontSize(9).TextColor(p.TextMuted)
 									ui.Text(c, v.Value).Font("monospace").FontSize(9.5).TextColor(p.TextPrimary).MaxLines(1)
@@ -773,7 +806,7 @@ func (a *App) buildRunPanel(c *ui.Context, p Palette) {
 		}
 		outScroll.Children(func() {
 			if len(a.runOutput) == 0 {
-				ui.Text(c, "输出会显示在这里。").FontSize(10.5).TextColor(p.TextMuted)
+				emptyState(c, p, icoTerminal, "暂无输出", "")
 				return
 			}
 			ui.Text(c, strings.Join(a.runOutput, "\n")).Font("monospace").FontSize(10).TextColor(p.TextSecondary)
@@ -795,78 +828,125 @@ func shortenPath(p string) string {
 func (a *App) buildRunConfigModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showRunConfig, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.38))
-		panel.Width(640).Height(620).Padding(18).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "运行配置").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
-			miniBtn(c, p, "关闭", func() { a.showRunConfig = false })
-		})
+		panel.Width(620).Height(580).Padding(14).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
+		modalHeader(c, p, icoSettings, "运行配置", a.runCfgDraft.Name, nil, func() { a.showRunConfig = false })
 		ui.Scroll(c).Grow(1).Children(func() {
-			ui.Column(c).Gap(7).Children(func() {
-				ui.Text(c, "名称").FontSize(10.5).TextColor(p.TextMuted)
-				ui.TextInput(c.Key("rc-name"), &a.runCfgDraft.Name)
-				ui.Text(c, "类型").FontSize(10.5).TextColor(p.TextMuted)
-				ui.Row(c).Gap(4).Children(func() {
-					for _, kind := range []struct{ id, label string }{{"run", "运行"}, {"test", "测试"}, {"debug", "调试"}} {
-						kind := kind
-						pill(c.Key("rc-kind-"+kind.id), p, kind.label, a.runCfgDraft.Kind == kind.id, func() { a.runCfgDraft.Kind = kind.id })
-					}
+			ui.Column(c).FillWidth().Gap(6).Children(func() {
+				formRow(c, p, "名称", func() {
+					ui.TextInput(c.Key("rc-name"), &a.runCfgDraft.Name).FillWidth()
 				})
-				ui.Text(c, "命令").FontSize(10.5).TextColor(p.TextMuted)
-				ui.TextInput(c.Key("rc-command"), &a.runCfgDraft.Command).Placeholder("go / npm / mvn / dlv")
-				ui.Text(c, "参数（空格分隔，支持引号）").FontSize(10.5).TextColor(p.TextMuted)
-				ui.TextInput(c.Key("rc-args"), &a.runCfgDraft.Args).Placeholder("run . / test ./...")
-				ui.Text(c, "工作目录（相对工作区或绝对路径）").FontSize(10.5).TextColor(p.TextMuted)
-				ui.TextInput(c.Key("rc-cwd"), &a.runCfgDraft.Cwd).Placeholder(".")
-				ui.Text(c, "环境变量（每行 K=V）").FontSize(10.5).TextColor(p.TextMuted)
-				ui.TextArea(c.Key("rc-env"), &a.runCfgEnvText).Height(58).Placeholder("KEY=VALUE，每行一个")
+				formRow(c, p, "类型", func() {
+					ui.Row(c).Gap(2).Children(func() {
+						for _, kind := range []struct {
+							id, label string
+							svg       *ui.SVG
+						}{{"run", "运行", icoPlay}, {"test", "测试", icoCheck}, {"debug", "调试", icoBug}} {
+							kind := kind
+							active := a.runCfgDraft.Kind == kind.id
+							kc := c.Key("rc-kind-" + kind.id)
+							el := ui.Row(kc).Padding(3, 9).Gap(4).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+							fg := p.TextSecondary
+							if active {
+								el.Background(p.AccentSoft)
+								fg = p.AccentSoftText
+							}
+							if el.Hovered() && !active {
+								el.Background(p.SurfaceHover)
+								fg = p.TextPrimary
+							}
+							if el.Clicked() {
+								a.runCfgDraft.Kind = kind.id
+							}
+							el.Children(func() {
+								drawIcon(kc, kind.svg, 12, fg)
+								ui.Text(kc, kind.label).FontSize(10.5).FontWeight(weightMedium).TextColor(fg)
+							})
+						}
+					})
+				})
 				if a.runCfgDraft.Kind == "debug" {
-					ui.Row(c).Wrap().Gap(4).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "快速模板：").FontSize(10).TextColor(p.TextMuted)
-						miniBtn(c, p, "Go · dlv", func() {
-							a.runCfgDraft.Adapter = "dlv"
-							a.runCfgDraft.AdapterArgs = "dap --listen=127.0.0.1:38697"
-							a.runCfgDraft.Network = "tcp"
-							a.runCfgDraft.Address = "127.0.0.1:38697"
-							a.runCfgDraft.Launch = `{"mode":"debug"}`
+					formRow(c, p, "程序", func() {
+						ui.TextInput(c.Key("rc-program"), &a.runCfgDraft.Program).FillWidth().Placeholder("./cmd/app 或 main.py")
+					})
+					formRow(c, p, "程序参数", func() {
+						ui.TextInput(c.Key("rc-program-args"), &a.runCfgDraft.ProgramArgs).FillWidth().Placeholder("--flag value")
+					})
+				} else {
+					formRow(c, p, "命令", func() {
+						ui.TextInput(c.Key("rc-command"), &a.runCfgDraft.Command).FillWidth().Placeholder("go / npm / mvn")
+					})
+					formRow(c, p, "参数", func() {
+						ui.TextInput(c.Key("rc-args"), &a.runCfgDraft.Args).FillWidth().Placeholder("run . / test ./...")
+					})
+				}
+				formRow(c, p, "目录", func() {
+					ui.TextInput(c.Key("rc-cwd"), &a.runCfgDraft.Cwd).FillWidth().Placeholder(".")
+				})
+				formRow(c, p, "环境", func() {
+					ui.TextArea(c.Key("rc-env"), &a.runCfgEnvText).Height(56).FillWidth().Placeholder("KEY=VALUE，每行一个")
+				})
+				if a.runCfgDraft.Kind == "debug" {
+					ui.Box(c).Height(1).FillWidth().Background(p.BorderSubtle)
+					advRow := ui.Row(c).Height(26).Gap(4).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					if advRow.Clicked() {
+						a.runCfgAdvanced = !a.runCfgAdvanced
+					}
+					advRow.Children(func() {
+						chev := icoChevronRight
+						if a.runCfgAdvanced {
+							chev = icoChevronDown
+						}
+						drawIcon(c, chev, 12, p.TextMuted)
+						ui.Text(c, "高级").FontSize(10.5).TextColor(p.TextSecondary)
+						ui.Spacer(c)
+						menuIconPill(c, p, "rc-template", icoSparkles, "模板", false, func(m *ui.Menu) {
+							if m.Item("Go · dlv").Chosen() {
+								a.runCfgDraft.Adapter = "dlv"
+								a.runCfgDraft.AdapterArgs = "dap --listen=127.0.0.1:38697"
+								a.runCfgDraft.Network = "tcp"
+								a.runCfgDraft.Address = "127.0.0.1:38697"
+								a.runCfgDraft.Launch = `{"mode":"debug"}`
+								a.runCfgAdvanced = true
+							}
+							if m.Item("Python · debugpy").Chosen() {
+								a.runCfgDraft.Adapter = "python3"
+								a.runCfgDraft.AdapterArgs = "-m debugpy --listen 127.0.0.1:5678 --wait-for-client"
+								a.runCfgDraft.Network = "tcp"
+								a.runCfgDraft.Address = "127.0.0.1:5678"
+								a.runCfgDraft.Program = "main.py"
+								a.runCfgAdvanced = true
+							}
 						})
-						miniBtn(c, p, "Python · debugpy", func() {
-							a.runCfgDraft.Adapter = "python3"
-							a.runCfgDraft.AdapterArgs = "-m debugpy --listen 127.0.0.1:5678 --wait-for-client"
-							a.runCfgDraft.Network = "tcp"
-							a.runCfgDraft.Address = "127.0.0.1:5678"
-							a.runCfgDraft.Program = "main.py"
+					})
+					if a.runCfgAdvanced {
+						formRow(c, p, "适配器", func() {
+							ui.TextInput(c.Key("rc-adapter"), &a.runCfgDraft.Adapter).FillWidth().Placeholder("dlv / debugpy / node")
 						})
-					})
-					ui.Text(c, "调试适配器").FontSize(10.5).TextColor(p.TextMuted)
-					ui.TextInput(c.Key("rc-adapter"), &a.runCfgDraft.Adapter).Placeholder("dlv / debugpy / node")
-					ui.Text(c, "适配器参数").FontSize(10.5).TextColor(p.TextMuted)
-					ui.TextInput(c.Key("rc-adapter-args"), &a.runCfgDraft.AdapterArgs).Placeholder("dap --listen=127.0.0.1:0")
-					ui.Text(c, "网络（stdio / tcp）与地址").FontSize(10.5).TextColor(p.TextMuted)
-					ui.Row(c).Gap(6).Children(func() {
-						ui.TextInput(c.Key("rc-network"), &a.runCfgDraft.Network).Width(100).Placeholder("stdio")
-						ui.TextInput(c.Key("rc-address"), &a.runCfgDraft.Address).Grow(1).Placeholder("127.0.0.1:38697")
-					})
-					ui.Text(c, "被调试程序 / 程序参数").FontSize(10.5).TextColor(p.TextMuted)
-					ui.Row(c).Gap(6).Children(func() {
-						ui.TextInput(c.Key("rc-program"), &a.runCfgDraft.Program).Grow(1).Placeholder("./cmd/app 或 main.py")
-						ui.TextInput(c.Key("rc-program-args"), &a.runCfgDraft.ProgramArgs).Grow(1).Placeholder("--flag value")
-					})
-					ui.Text(c, "额外 Launch JSON（可选）").FontSize(10.5).TextColor(p.TextMuted)
-					ui.TextArea(c.Key("rc-launch"), &a.runCfgLaunchText).Height(52).Placeholder(`{"mode":"debug","stopOnEntry":true}`)
+						formRow(c, p, "适配器参数", func() {
+							ui.TextInput(c.Key("rc-adapter-args"), &a.runCfgDraft.AdapterArgs).FillWidth().Placeholder("dap --listen=127.0.0.1:0")
+						})
+						formRow(c, p, "网络", func() {
+							ui.Row(c).Gap(6).Children(func() {
+								ui.TextInput(c.Key("rc-network"), &a.runCfgDraft.Network).Width(96).Placeholder("stdio")
+								ui.TextInput(c.Key("rc-address"), &a.runCfgDraft.Address).Grow(1).Placeholder("127.0.0.1:38697")
+							})
+						})
+						formRow(c, p, "Launch JSON", func() {
+							ui.TextArea(c.Key("rc-launch"), &a.runCfgLaunchText).Height(52).FillWidth().Placeholder(`{"mode":"debug","stopOnEntry":true}`)
+						})
+					}
 				}
 				if a.runCfgErr != "" {
-					ui.Text(c, a.runCfgErr).FontSize(10.5).TextColor(p.Danger)
+					ui.Text(c, a.runCfgErr).FontSize(10).TextColor(p.Danger)
 				}
 			})
 		})
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			if !a.runCfgIsNew {
-				miniBtn(c, p, "删除", func() { a.deleteRunConfig() })
+				toolButton(c, p, "rc-delete", icoTrash, "删除配置", false, true, func() { a.deleteRunConfig() })
 			}
-			ui.Row(c).Gap(6).Children(func() {
-				miniBtn(c, p, "取消", func() { a.showRunConfig = false })
-				pill(c, p, "保存", true, func() { a.saveRunConfigDraft() })
-			})
+			ui.Spacer(c)
+			iconPill(c, p, icoCheck, "保存", true, func() { a.saveRunConfigDraft() })
 		})
 	})
 }
