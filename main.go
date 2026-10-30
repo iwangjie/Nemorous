@@ -479,7 +479,7 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 	domBranch, alignedCnt, totalChild := a.DominantBranch()
 	_, _, aheadRepos, _, _ := a.SummaryCounts()
 
-	ui.Row(c).Height(46).FillWidth().Padding(0, 14, 0, leftClearance).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).DragWindow().Children(func() {
+	ui.Row(c).Height(46).FillWidth().Padding(0, 14, 0, leftClearance).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).DragWindow().Children(func() {
 		// Left: workspace and branch context.
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			wsBtn := ui.Row(c).Padding(5, 10).Gap(6).Radius(6).Background(p.Surface2).Cursor(ui.CursorPointer).AlignItems(ui.Center)

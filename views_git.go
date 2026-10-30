@@ -51,7 +51,7 @@ func gitGraphLane(lane, limit int) int {
 // one click away, so the merge screen no longer has to be a separate world.
 func (a *App) buildGitView(c *ui.Context, p Palette) {
 	ui.Column(c).Fill().Children(func() {
-		ui.Row(c).Height(40).Padding(0, 12).Gap(4).AlignItems(ui.Center).Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
+		ui.Row(c).Height(40).Padding(0, 12).Gap(4).AlignItems(ui.Center).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
 			gitTab := func(id, label string, icon *ui.SVG) {
 				active := a.gitSubTab == id
 				bg := ui.Transparent
@@ -565,7 +565,7 @@ func (a *App) buildGitBranchRow(c *ui.Context, p Palette, st gitops.RepoStatus, 
 		drawIcon(kc, icoBranch, 10, p.TextMuted)
 		nameCol := p.TextSecondary
 		if selected {
-			nameCol = p.Accent
+			nameCol = p.TextPrimary
 		}
 		ui.Text(kc, biCopy.Name).FontSize(10.8).TextColor(nameCol).MaxLines(1).Grow(1)
 		if !biCopy.IsRemote && st.Branch == biCopy.Name {

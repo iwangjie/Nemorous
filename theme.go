@@ -116,48 +116,48 @@ func lightPalette() Palette {
 func darkPalette() Palette {
 	return Palette{
 		IsDark:       true,
-		AppBg:        ui.Hex("#1A1A1E"),
-		RailBg:       ui.Hex("#1F1F23"),
-		Surface:      ui.Hex("#232327"),
-		Surface2:     ui.Hex("#2D2D33"),
-		Surface3:     ui.Hex("#151518"),
-		SurfaceHover: ui.Hex("#36363D"),
-		ActiveRowBg:  ui.Hex("#33345A"),
+		AppBg:        ui.Hex("#2B2B2B"),
+		RailBg:       ui.Hex("#3D3F41"),
+		Surface:      ui.Hex("#2B2B2B"),
+		Surface2:     ui.Hex("#3D3F41"),
+		Surface3:     ui.Hex("#323232"),
+		SurfaceHover: ui.Hex("#4C5052"),
+		ActiveRowBg:  ui.Hex("#0D293E"),
 
-		TextPrimary:   ui.Hex("#EDEDF1"),
-		TextSecondary: ui.Hex("#B9B9C1"),
-		TextControl:   ui.Hex("#A1A1AA"),
-		TextMuted:     ui.Hex("#8B8B94"),
+		TextPrimary:   ui.Hex("#BCBEC4"),
+		TextSecondary: ui.Hex("#A9B7C6"),
+		TextControl:   ui.Hex("#9DA5AF"),
+		TextMuted:     ui.Hex("#737980"),
 
-		Border:       ui.Hex("#333339"),
-		BorderSubtle: ui.Hex("#2C2C32"),
-		BorderStrong: ui.Hex("#42424A"),
+		Border:       ui.Hex("#323232"),
+		BorderSubtle: ui.Hex("#2C2C2C"),
+		BorderStrong: ui.Hex("#4C5052"),
 
-		Accent:       ui.Hex("#6366F1"),
-		AccentHover:  ui.Hex("#818CF8"),
-		AccentSoft:   ui.Hex("#2B2C47"),
-		AccentBorder: ui.Hex("#4338CA"),
+		Accent:       ui.Hex("#4A88C7"),
+		AccentHover:  ui.Hex("#5C9BD9"),
+		AccentSoft:   ui.Hex("#1E3A5F"),
+		AccentBorder: ui.Hex("#2F5C86"),
 		AccentText:   ui.Hex("#FFFFFF"),
 
-		Green:       ui.Hex("#6FD99B"),
-		GreenSoft:   ui.Hex("#1E3A2B"),
-		GreenBorder: ui.Hex("#27533B"),
+		Green:       ui.Hex("#6AAB73"),
+		GreenSoft:   ui.Hex("#294436"),
+		GreenBorder: ui.Hex("#3B5F45"),
 
-		Amber:       ui.Hex("#F2B544"),
-		AmberSoft:   ui.Hex("#3F3220"),
-		AmberBorder: ui.Hex("#5C482B"),
+		Amber:       ui.Hex("#D6A45A"),
+		AmberSoft:   ui.Hex("#3A3024"),
+		AmberBorder: ui.Hex("#5A4A32"),
 
-		Danger:       ui.Hex("#F28B82"),
-		DangerSoft:   ui.Hex("#45272A"),
-		DangerBorder: ui.Hex("#63363A"),
+		Danger:       ui.Hex("#F07178"),
+		DangerSoft:   ui.Hex("#3A2428"),
+		DangerBorder: ui.Hex("#6A3A3D"),
 
-		Blue:       ui.Hex("#7DD3FC"),
-		BlueSoft:   ui.Hex("#1E2F3D"),
-		BlueBorder: ui.Hex("#2B485E"),
+		Blue:       ui.Hex("#4A88C7"),
+		BlueSoft:   ui.Hex("#1D2F42"),
+		BlueBorder: ui.Hex("#31516F"),
 
-		Purple:       ui.Hex("#C4B5FD"),
-		PurpleSoft:   ui.Hex("#2E2640"),
-		PurpleBorder: ui.Hex("#463963"),
+		Purple:       ui.Hex("#B3A0E8"),
+		PurpleSoft:   ui.Hex("#2E2A3D"),
+		PurpleBorder: ui.Hex("#4A4160"),
 	}
 }
 
@@ -165,13 +165,13 @@ func darkPalette() Palette {
 func repoBadgeColors(idx int, isDark bool) RepoBadgeStyle {
 	if isDark {
 		styles := []RepoBadgeStyle{
-			{Bg: ui.Hex("#2B2C47"), Text: ui.Hex("#A5B4FC")},
-			{Bg: ui.Hex("#1E2F3D"), Text: ui.Hex("#7DD3FC")},
-			{Bg: ui.Hex("#1E3A2B"), Text: ui.Hex("#6EE7B7")},
-			{Bg: ui.Hex("#3F3220"), Text: ui.Hex("#FCD34D")},
-			{Bg: ui.Hex("#3D2431"), Text: ui.Hex("#F9A8D4")},
-			{Bg: ui.Hex("#2E2640"), Text: ui.Hex("#C4B5FD")},
-			{Bg: ui.Hex("#272B33"), Text: ui.Hex("#94A3B8")},
+			{Bg: ui.Hex("#1E3A5F"), Text: ui.Hex("#7CB7E8")},
+			{Bg: ui.Hex("#183A3A"), Text: ui.Hex("#6FC7C0")},
+			{Bg: ui.Hex("#2A3D2F"), Text: ui.Hex("#8CCB8C")},
+			{Bg: ui.Hex("#3A3024"), Text: ui.Hex("#D6A45A")},
+			{Bg: ui.Hex("#3A2730"), Text: ui.Hex("#E8A2B8")},
+			{Bg: ui.Hex("#2E2A3D"), Text: ui.Hex("#B3A0E8")},
+			{Bg: ui.Hex("#32363A"), Text: ui.Hex("#A9B7C6")},
 		}
 		return styles[(idx%len(styles)+len(styles))%len(styles)]
 	}

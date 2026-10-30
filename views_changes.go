@@ -584,7 +584,11 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, cf gitops.ChangedFile
 			}
 		}
 		info.Children(func() {
-			nameText := ui.Text(fkc, baseName).FontSize(11.5).FontWeight(weightMedium).TextColor(kindColor).MaxLines(1)
+			nameColor := kindColor
+			if isSelected {
+				nameColor = p.TextPrimary
+			}
+			nameText := ui.Text(fkc, baseName).FontSize(11.5).FontWeight(weightMedium).TextColor(nameColor).MaxLines(1)
 			if cfCopy.Kind == "D" {
 				nameText.Strikethrough()
 			}
