@@ -20,10 +20,13 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Configure git identity for tests
+      - name: Configure git for tests
         run: |
           git config --global user.name "Nemorous CI"
           git config --global user.email "ci@nemorous.dev"
+          git config --global init.defaultBranch main
+          git config --global core.autocrlf false
+          git config --global core.eol lf
 
       - name: Run MyGo static lifetime vet
         run: go tool mygo vet .
