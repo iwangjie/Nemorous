@@ -353,7 +353,8 @@ func (a *App) buildMergeDetail(c *ui.Context, p Palette, target *aimerge.MergeTa
 						ui.Text(c, "手动合并工作区").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextSecondary)
 						ui.Text(c, manual.Path).FontSize(10.5).TextColor(p.TextMuted).MaxLines(2)
 						ui.Row(c).Wrap().Gap(6).Children(func() {
-							pill(c, p, "完成并推送", true, func() { a.finishManualMerge(targetCopy.Repo.ID, true) })
+							pill(c, p, "解决冲突", true, func() { a.openConflictResolver(targetCopy.Repo.ID) })
+							pill(c, p, "完成并推送", false, func() { a.finishManualMerge(targetCopy.Repo.ID, true) })
 							miniBtn(c, p, "完成（本地）", func() { a.finishManualMerge(targetCopy.Repo.ID, false) })
 							miniBtn(c, p, "放弃", func() { a.cleanupManualMerge(targetCopy.Repo.ID) })
 							miniBtn(c, p, "打开目录", func() { _ = revealPath(manual.Path) })

@@ -436,6 +436,9 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 						a.saveCodeMicroEdit()
 					})
 				}
+				miniBtn(c, p, "结构", func() { a.openStructure() })
+				miniBtn(c, p, "历史", func() { a.openLocalHistory(wf.RepoID, wf.RepoPath, wf.RelPath) })
+				miniBtn(c, p, "书签", func() { a.openBookmarks() })
 				ghostBtn(c, p, icoMore, "", a.showCodeOptions, func() {
 					a.showCodeOptions = !a.showCodeOptions
 				})
@@ -471,6 +474,7 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			})
 		}
 
+		a.syncEditorAids(tab, p)
 		if tab.blameAll {
 			ui.Row(c).Grow(1).FillHeight().Children(func() {
 				a.buildCodeBlameGutter(c, p, tab)

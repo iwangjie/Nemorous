@@ -18,6 +18,7 @@ func (a *App) toggleTerminalPanel() {
 	}
 	a.showGitPanel = false
 	a.showLogPanel = false
+	a.showRunPanel = false
 	a.showTerminalPanel = true
 	if a.terminal != nil && a.terminalExited {
 		a.restartTerminal()

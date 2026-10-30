@@ -17,7 +17,11 @@ import (
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/iwangjie/nemorous/internal/aimerge"
 	"github.com/iwangjie/nemorous/internal/config"
+	"github.com/iwangjie/nemorous/internal/conflict"
+	"github.com/iwangjie/nemorous/internal/dap"
+	"github.com/iwangjie/nemorous/internal/github"
 	"github.com/iwangjie/nemorous/internal/gitops"
+	"github.com/iwangjie/nemorous/internal/localhistory"
 	"github.com/iwangjie/nemorous/internal/mani"
 	"github.com/iwangjie/nemorous/internal/plugins"
 )
@@ -32,6 +36,7 @@ const (
 
 // PendingDiscard represents a file awaiting user confirmation before discard.
 type PendingDiscard struct {
+	RepoID    string
 	RepoPath  string
 	RepoName  string
 	RelPath   string
@@ -271,6 +276,149 @@ type App struct {
 	maniResultTitle       string
 	maniResultOutput      string
 
+	// Git advanced operations
+	showGitOps       bool
+	gitOpsTab        string
+	gitOpsRepo       string // repoID
+	gitOpsLoading    bool
+	gitOpsErr        string
+	gitOpsNotice     string
+	gitOpsConfirm    string
+	gitOpsStashes    []gitops.StashEntry
+	gitOpsTags       []gitops.TagInfo
+	gitOpsRemotes    []gitops.RemoteInfo
+	gitOpsSubmodules []gitops.SubmoduleInfo
+	gitOpsState      gitops.RepoOpState
+	stashMessage     string
+	stashUntracked   bool
+	stashPreview     string
+	stashPreviewRef  string
+	gitOpsBranch     string
+	gitOpsHash       string
+	gitOpsMainline   string
+	gitOpsTagName    string
+	gitOpsTagMessage string
+	gitOpsRemoteName string
+	gitOpsRemoteURL  string
+	gitOpsSubURL     string
+	gitOpsSubPath    string
+
+	// Conflict resolver
+	showConflict         bool
+	conflictRepoID       string
+	conflictRepoPath     string
+	conflictRepoName     string
+	conflictManual       bool
+	conflictFiles        []string
+	conflictSelected     string
+	conflictEditor       *editor.State
+	conflictBaseView     *editor.State
+	conflictOursView     *editor.State
+	conflictTheirsView   *editor.State
+	conflictHunkIdx      int
+	conflictDrafts       map[string]*editor.State
+	conflictHunkCount    map[string]int
+	conflictBeforeAuto   string
+	conflictOpLabel      string
+	conflictBinary       bool
+	conflictConfirmAbort bool
+	conflictConfirmClose bool
+	conflictDoc          *conflict.Document
+	conflictBase         string
+	conflictOurs         string
+	conflictTheirs       string
+	conflictErr          string
+	conflictNotice       string
+	conflictLoading      bool
+
+	// Local history
+	localHistoryStore     *localhistory.Store
+	showLocalHistory      bool
+	historyRepoID         string
+	historyRepoPath       string
+	historyRelPath        string
+	historyEntries        []localhistory.Entry
+	historySelected       string
+	historyContent        string
+	historyEditor         *editor.State
+	historyDiff           *editor.DiffState
+	historyDiffMode       bool
+	historyLoading        bool
+	historyErr            string
+	historyNotice         string
+	historyRestoreConfirm bool
+
+	// GitHub
+	showGitHub     bool
+	githubRepo     string
+	githubLoading  bool
+	githubErr      string
+	githubPRs      []github.PR
+	githubNumber   int
+	githubDetails  *github.Details
+	githubComment  string
+	githubState    string
+	githubTitle    string
+	githubBody     string
+	githubBase     string
+	githubDraft    bool
+	githubCreating bool
+
+	// Run / Debug / Test
+	showRunPanel     bool
+	runPanelPct      float32
+	runConfigID      string
+	runRunning       bool
+	runOutput        []string
+	runStatus        string
+	runExit          int
+	runCancel        context.CancelFunc
+	runStartedAt     time.Time
+	showRunConfig    bool
+	runCfgDraft      config.RunConfig
+	runCfgEnvText    string
+	runCfgLaunchText string
+	runCfgIsNew      bool
+	runCfgErr        string
+	debugClient      *dap.Client
+	debugThreadID    int
+	debugFrames      []dap.Frame
+	debugVars        []dap.Variable
+	debugScopes      []dap.Scope
+	debugFrameID     int
+	debugStopped     bool
+	debugMsg         string
+	breakpoints      map[string][]int // repoID::path -> lines
+	debugEvents      chan dap.Event
+	debugEventCancel context.CancelFunc
+	runScroll        *ui.ScrollState
+	runScrollLen     int
+
+	// Change lists
+	changeListFilter      string
+	showChangeListModal   bool
+	changeListNameInput   string
+	changeListRenameFrom  string
+	changeListRenameInput string
+	changeListErr         string
+
+	// Editor extras
+	showStructure  bool
+	structureItems []structureItem
+	showTodos      bool
+	todoQuery      string
+	todos          []todoItem
+	todosLoading   bool
+	todoErr        string
+	showBookmarks  bool
+	bookmarks      []config.Bookmark
+	bookmarkQuery  string
+
+	// Session restore
+	sessionRestored  bool
+	restoringSession bool
+	sessionTimer     *time.Timer
+
 	// Plugin engine & marketplace
 	pluginMgr             *plugins.Manager
 	pluginPanel           string // active plugin panel ref, "maven:maven"
@@ -393,6 +541,11 @@ func NewApp(cfg config.Config) *App {
 		changeTreeCache:        make(map[string]*changeTreeNode),
 		codeTreeCache:          make(map[string]*codeTreeDir),
 		pluginMarketBusy:       make(map[string]bool),
+		breakpoints:            make(map[string][]int),
+		conflictDrafts:         make(map[string]*editor.State),
+		conflictHunkCount:      make(map[string]int),
+		changeListFilter:       "__all__",
+		runPanelPct:            42,
 		pluginScroll:           make(map[string]*ui.ScrollState),
 		pluginScrollText:       make(map[string]string),
 		pluginIconCache:        make(map[string]*ui.SVG),
@@ -404,6 +557,11 @@ func NewApp(cfg config.Config) *App {
 		aiAgentName:            agentName,
 		aiAgentBin:             agentBin,
 		maniParamTarget:        cfg.DefaultTargetBranch,
+	}
+	if len(cfg.Breakpoints) > 0 {
+		for key, lines := range cfg.Breakpoints {
+			a.breakpoints[key] = append([]int(nil), lines...)
+		}
 	}
 	a.logRuntimeDetail("INFO", "应用启动", strings.TrimSpace(cfg.WorkspacePath))
 	a.diffState = &editor.DiffState{
@@ -559,7 +717,9 @@ func (a *App) setBatchResults(res []gitops.OpResult) {
 func (a *App) overlayOpen() bool {
 	return a.showCmdPalette || a.showGlobalSearch || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
 		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil ||
-		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket
+		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket ||
+		a.showGitOps || a.showConflict || a.showLocalHistory || a.showStructure || a.showTodos ||
+		a.showBookmarks || a.showChangeListModal || a.showGitHub || a.showRunConfig
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -871,6 +1031,8 @@ func (a *App) applyRepoUpdates(updates []gitops.RepoStatus, files map[string][]g
 	}
 	a.lastRefresh = time.Now()
 	a.rebuildBranchCaches()
+	a.syncWindowTitle()
+	a.maybeRestoreSession()
 }
 
 // LoadWorkspaceAsync discovers and inspects a workspace off the UI thread so the
@@ -1022,6 +1184,23 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 		}
 	}
 	a.statusByID = byID
+	validKeys := make(map[string]bool, len(allValidKeys))
+	for key := range allValidKeys {
+		validKeys[key] = true
+	}
+	if a.cfg.PruneChangeLists(validKeys) {
+		_ = a.cfg.Save()
+	}
+	bookmarkValid := make(map[string]bool, len(a.workspaceFiles))
+	for _, f := range a.workspaceFiles {
+		bookmarkValid[f.RepoID+"::"+f.RelPath] = true
+	}
+	for key := range allValidKeys {
+		bookmarkValid[key] = true
+	}
+	if a.cfg.PruneBookmarks(bookmarkValid) {
+		_ = a.cfg.Save()
+	}
 
 	// Keep selected changed file and its DiffView buffer live in real time!
 	if a.selectedChangeKey != "" {
@@ -1067,6 +1246,7 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 	}
 
 	a.rebuildBranchCaches()
+	a.maybeRestoreSession()
 }
 
 func (a *App) selectChangedFile(cf gitops.ChangedFile) {
@@ -1115,6 +1295,14 @@ func (a *App) saveDiffMicroEdit() {
 	}
 	a.diffState.New.MarkSaved()
 	a.diffModified = false
+	a.recordLocalHistoryContent(a.selectedChangeFile.RepoID, a.selectedChangeFile.RepoPath, a.selectedChangeFile.Path, newContent, "保存")
+	if a.cfg.FormatOnSave {
+		if changed, ferr := a.formatFile(a.selectedChangeFile.RepoPath, a.selectedChangeFile.Path); ferr != nil {
+			a.showToast("warn", "格式化失败: "+ferr.Error())
+		} else if changed {
+			a.selectChangedFile(*a.selectedChangeFile)
+		}
+	}
 	a.showToast("ok", fmt.Sprintf("已保存 %s/%s", a.selectedChangeFile.RepoName, a.selectedChangeFile.Path))
 	a.RefreshAsync()
 }
@@ -1221,9 +1409,11 @@ func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
 		},
 	}
 	a.wireCodeBlame(tab)
+	a.recordLocalHistory(wf.RepoID, wf.RepoPath, wf.RelPath, "打开")
 	a.codeTabs = append(a.codeTabs, tab)
 	a.codeTabIdx = len(a.codeTabs) - 1
 	a.revealCodeFile(wf)
+	a.scheduleSessionSave()
 }
 
 // activateCodeTab switches the editor to tab i.
@@ -1335,11 +1525,21 @@ func (a *App) saveCodeTab(tab *codeTab) bool {
 	if tab == nil || tab.state == nil || tab.state.Buffer == nil {
 		return false
 	}
-	if err := gitops.SaveMicroEdit(tab.file.RepoPath, tab.file.RelPath, tab.state.Buffer.String()); err != nil {
+	content := tab.state.Buffer.String()
+	if err := gitops.SaveMicroEdit(tab.file.RepoPath, tab.file.RelPath, content); err != nil {
 		a.showToast("err", "保存失败: "+err.Error())
 		return false
 	}
+	a.recordLocalHistoryContent(tab.file.RepoID, tab.file.RepoPath, tab.file.RelPath, content, "保存")
 	tab.state.Buffer.MarkSaved()
+	if a.cfg.FormatOnSave {
+		if changed, ferr := a.formatFile(tab.file.RepoPath, tab.file.RelPath); ferr != nil {
+			a.showToast("warn", "格式化失败: "+ferr.Error())
+		} else if changed {
+			a.reloadCodeTab(tab)
+			a.recordLocalHistory(tab.file.RepoID, tab.file.RepoPath, tab.file.RelPath, "格式化")
+		}
+	}
 	a.showToast("ok", fmt.Sprintf("已保存 %s/%s", tab.file.RepoName, tab.file.RelPath))
 	a.RefreshAsync()
 	return true
@@ -1773,7 +1973,7 @@ func (a *App) commitFiles() []gitops.ChangedFile {
 	var files []gitops.ChangedFile
 	for _, st := range a.statuses {
 		for _, f := range st.Files {
-			if a.checkedChanges[f.Key()] {
+			if a.fileInActiveChangeList(f) && a.checkedChanges[f.Key()] {
 				files = append(files, f)
 			}
 		}
@@ -1862,9 +2062,17 @@ func (a *App) TriggerCommit(pushAfter bool) {
 	}
 
 	conc := a.cfg.Concurrency
+	history := a.historyStore()
 	ctx, cmdID := a.startCommand(fmt.Sprintf("正在提交 %d 个仓库...", len(targets)))
 	go func() {
 		res := gitops.BatchCommit(ctx, targets, msg, pushAfter, conc)
+		if history != nil {
+			for _, target := range targets {
+				for _, file := range target.Files {
+					_ = history.RecordFile(target.Repo.ID, target.Repo.AbsPath, file, "提交")
+				}
+			}
+		}
 		okCnt, _, failCnt := countOpResults(res)
 		a.runUI(func() {
 			if !a.finishCommand(cmdID) {

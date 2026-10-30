@@ -26,28 +26,38 @@ type MergePreset struct {
 
 // Config holds persistent application configuration for Nemorous.
 type Config struct {
-	WorkspacePath        string         `json:"workspace_path"`
-	RecentWorkspaces     []string       `json:"recent_workspaces"`
-	Theme                string         `json:"theme"`                 // "light", "dark", "darcula", "system"
-	DefaultTargetBranch  string         `json:"default_target_branch"` // e.g. "test", "main"
-	AIAgent              string         `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
-	Concurrency          int            `json:"concurrency"`           // parallel git workers (default 8)
-	DiffSideBySide       bool           `json:"diff_side_by_side"`
-	DiffInlineMode       string         `json:"diff_inline_mode"` // "word", "char", "none"
-	EditorFontSize       float32        `json:"editor_font_size"`
-	EditorSoftWrap       bool           `json:"editor_soft_wrap"`
-	Zoom                 float32        `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
-	NavShowLabels        bool           `json:"nav_show_labels"`
-	IncludeRootRepo      bool           `json:"include_root_repo"`
-	ManiEnabled          bool           `json:"mani_enabled"`
-	AutoUpdate           bool           `json:"auto_update"`          // check GitHub Releases for signed updates
-	AutoUpdateIdle       bool           `json:"auto_update_idle"`     // install while the app is in the background
-	UpdateCheckMinutes   int            `json:"update_check_minutes"` // foreground check interval
-	UpdateMirror         string         `json:"update_mirror"`        // GitHub proxy prefix for faster downloads
-	SkippedUpdateVersion string         `json:"skipped_update_version,omitempty"`
-	ProtectedBranches    []string       `json:"protected_branches"`
-	BranchPresets        []BranchPreset `json:"branch_presets,omitempty"`
-	MergePresets         []MergePreset  `json:"merge_presets,omitempty"`
+	WorkspacePath        string           `json:"workspace_path"`
+	RecentWorkspaces     []string         `json:"recent_workspaces"`
+	Theme                string           `json:"theme"`                 // "light", "dark", "darcula", "system"
+	DefaultTargetBranch  string           `json:"default_target_branch"` // e.g. "test", "main"
+	AIAgent              string           `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
+	Concurrency          int              `json:"concurrency"`           // parallel git workers (default 8)
+	DiffSideBySide       bool             `json:"diff_side_by_side"`
+	DiffInlineMode       string           `json:"diff_inline_mode"` // "word", "char", "none"
+	EditorFontSize       float32          `json:"editor_font_size"`
+	EditorSoftWrap       bool             `json:"editor_soft_wrap"`
+	Zoom                 float32          `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
+	NavShowLabels        bool             `json:"nav_show_labels"`
+	IncludeRootRepo      bool             `json:"include_root_repo"`
+	ManiEnabled          bool             `json:"mani_enabled"`
+	AutoUpdate           bool             `json:"auto_update"`          // check GitHub Releases for signed updates
+	AutoUpdateIdle       bool             `json:"auto_update_idle"`     // install while the app is in the background
+	UpdateCheckMinutes   int              `json:"update_check_minutes"` // foreground check interval
+	UpdateMirror         string           `json:"update_mirror"`        // GitHub proxy prefix for faster downloads
+	SkippedUpdateVersion string           `json:"skipped_update_version,omitempty"`
+	ProtectedBranches    []string         `json:"protected_branches"`
+	BranchPresets        []BranchPreset   `json:"branch_presets,omitempty"`
+	MergePresets         []MergePreset    `json:"merge_presets,omitempty"`
+	ChangeLists          []ChangeList     `json:"change_lists,omitempty"`
+	ActiveChangeList     string           `json:"active_change_list,omitempty"`
+	FormatOnSave         bool             `json:"format_on_save"`
+	FormatCommand        string           `json:"format_command,omitempty"`
+	RunConfigs           []RunConfig      `json:"run_configs,omitempty"`
+	RunPanelHeight       float32          `json:"run_panel_height,omitempty"`
+	DebugAdapter         string           `json:"debug_adapter,omitempty"`
+	DebugAdapterArgs     string           `json:"debug_adapter_args,omitempty"`
+	Bookmarks            []Bookmark       `json:"bookmarks,omitempty"`
+	Breakpoints          map[string][]int `json:"breakpoints,omitempty"`
 }
 
 // Default returns a sensible default configuration.

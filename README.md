@@ -141,6 +141,44 @@ Plugin authoring guide: [docs/plugins.md](docs/plugins.md).
 
 ---
 
+### 9. Complete Git Workflow: Stash, Rebase, Conflicts, Change Lists & Local History
+- **Stash Manager**: create stashes (including untracked files), apply, pop, drop, and inspect messages/dates per repository.
+- **Advanced Git**: rebase, cherry-pick and revert with continue/abort after conflicts; tags with push; remotes (add/edit/remove URL); submodules (status, update, sync, add, remove).
+- **Three-Way Conflict Workbench**: Ours / Result / Theirs panes, operation-aware labels, hunk navigation, per-hunk Ours/Theirs/Both/Base, whole-file versions, delete/modify and binary conflicts, CRLF preservation, per-file drafts, close guard, and auto-loading of the next conflict. **Auto-merge** combines disjoint line changes safely, leaves overlaps conflicted, and can be undone. See [docs/conflict-resolution.md](docs/conflict-resolution.md).
+- **Change Lists**: group uncommitted files by task, move checked files, filter the Changes tree, and see list badges on files.
+- **Local History**: automatic snapshots on open/save/format/commit/discard, with browse and one-click restore (30 revisions per file).
+
+<picture>
+  <img src="docs/screenshots/09_git_ops_light.png" width="49%" alt="Git advanced operations">
+  <img src="docs/screenshots/11_conflict_resolver_light.png" width="49%" alt="Hunk-level conflict resolver">
+</picture>
+
+---
+
+### 10. GitHub PR / CI / Review Comments
+- **Pull Requests**: list open/closed PRs per repository, switch repositories, read body and review decisions.
+- **CI Checks**: success/failure/pending badges with links to the check details.
+- **Comments**: PR comments and inline review comments, add a comment, open the PR in the browser, or create a new PR for the current branch. Uses the local `gh` CLI, so no token is stored by Nemorous.
+
+<picture>
+  <img src="docs/screenshots/12_github_pr_light.png" width="100%" alt="GitHub PR, checks and review comments">
+</picture>
+
+---
+
+### 11. Run / Test / Debug, Editor Aids & Multi-Window
+- **Run Configurations**: saved Run/Test/Debug commands with cwd, args and env; streamed output, exit codes, stop.
+- **DAP Debugger**: stdio/TCP debug adapters, persistent breakpoints in the editor gutter, call stack, variables, continue/step/pause; see [docs/run-debug.md](docs/run-debug.md).
+- **Editor Aids**: file structure outline, cross-repo TODO/FIXME scan, bookmarks with gutter marks, format-on-save (gofmt / prettier / ruff / rustfmt / custom command); multi-cursor, column selection and folding come from the native editor.
+- **Session & Windows**: restore open files, cursor lines, active view and split sizes on launch; open additional independent windows, optionally on another workspace.
+
+<picture>
+  <img src="docs/screenshots/08_run_panel_light.png" width="49%" alt="Run and debug panel">
+  <img src="docs/screenshots/13_debug_panel_light.png" width="49%" alt="Debug stack and variables">
+</picture>
+
+---
+
 ## Safety Invariants
 
 Automation and AI must never compromise code integrity. Nemorous enforces mathematically rigorous safety invariants:
@@ -216,6 +254,11 @@ Automation and AI must never compromise code integrity. Nemorous enforces mathem
 | `⌘R` | **Refresh** | Rescan and update status across all Git repositories |
 | `⌘,` | **Settings** | Configure workspace path, themes, AI Agent CLI, update check frequency |
 | `⌘+` / `⌘-` / `⌘0` | **Window Zoom Scaling** | Zoom UI in (+10%), zoom out (-10%), or reset to 100% |
+| `⌥←` / `⌥→` | **Conflict Navigation** | Previous / next conflict hunk in the merge workbench |
+| `⌥1` / `⌥2` / `⌥3` | **Take Conflict Side** | Accept Ours / Theirs / Both for the current hunk |
+| `⌘⇧B` | **Bookmark Line** | Toggle a bookmark at the current editor line |
+| `⌘⇧O` | **File Structure** | Outline symbols of the active file |
+| `⌘⇧T` | **TODO / FIXME** | Scan the workspace for TODO markers |
 
 ---
 

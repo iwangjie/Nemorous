@@ -143,6 +143,9 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 		allTotal += len(st.Files)
 		repoHasChecked := false
 		for _, f := range st.Files {
+			if !a.fileInActiveChangeList(f) {
+				continue
+			}
 			if a.checkedChanges[f.Key()] {
 				checkedFiles++
 				repoHasChecked = true
@@ -193,12 +196,55 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 				}
 			})
 			if allTotal > 0 {
+				menuPill(c, p, "变更列表 ▾", false, func(m *ui.Menu) {
+					if m.Item("全部变更").Radio(a.changeListFilter == "__all__").Chosen() {
+						a.changeListFilter = "__all__"
+					}
+					valid := make(map[string]bool)
+					for _, st := range a.statuses {
+						for _, f := range st.Files {
+							valid[f.Key()] = true
+						}
+					}
+					if m.Item(fmt.Sprintf("默认列表 (%d)", a.cfg.ChangeListCount("", valid))).Radio(a.changeListFilter == "__default__").Chosen() {
+						a.changeListFilter = "__default__"
+					}
+					for _, name := range a.cfg.ChangeListNames() {
+						name := name
+						if m.Item(fmt.Sprintf("%s (%d)", name, a.cfg.ChangeListCount(name, valid))).Radio(a.changeListFilter == name).Chosen() {
+							a.changeListFilter = name
+						}
+					}
+					m.Separator()
+					if m.Item("新建变更列表…").Chosen() {
+						a.openChangeListModal()
+					}
+					checked := a.checkedChangeKeys()
+					if len(checked) > 0 {
+						m.Separator()
+						if m.Item("将勾选文件移入默认列表").Chosen() {
+							a.cfg.AssignToChangeList("", checked)
+							_ = a.cfg.Save()
+						}
+						for _, name := range a.cfg.ChangeListNames() {
+							name := name
+							if m.Item("移入 " + name).Chosen() {
+								a.cfg.AssignToChangeList(name, checked)
+								_ = a.cfg.Save()
+							}
+						}
+					}
+				})
 				menuPill(c, p, "Stash ▾", false, func(m *ui.Menu) {
 					if m.Item("贮藏全部改动 (Stash)").Chosen() {
 						a.TriggerStashAll()
 					}
 					if m.Item("恢复最近贮藏 (Stash Pop)").Chosen() {
 						a.TriggerStashPopAll()
+					}
+					m.Separator()
+					if m.Item("Stash 管理…").Chosen() {
+						a.openGitOps("stash")
 					}
 				})
 			}
@@ -351,7 +397,22 @@ func (a *App) resizeCommitBox(delta float32) {
 	a.changesCommitH = min(max(base+delta, 160), 420)
 }
 
+func (a *App) fileInActiveChangeList(f gitops.ChangedFile) bool {
+	list := a.changeListFilter
+	if list == "" || list == "__all__" {
+		return true
+	}
+	assigned := a.cfg.ChangeListFor(f.Key())
+	if list == "__default__" {
+		return assigned == ""
+	}
+	return assigned == list
+}
+
 func (a *App) changeFileMatchesQuery(repoName string, f gitops.ChangedFile) bool {
+	if !a.fileInActiveChangeList(f) {
+		return false
+	}
 	query := strings.ToLower(strings.TrimSpace(a.changesFilterQuery))
 	if query == "" {
 		return true
@@ -723,6 +784,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 		m.Separator()
 		if m.Item("还原更改").Chosen() {
 			a.pendingDiscard = &PendingDiscard{
+				RepoID:    cfCopy.RepoID,
 				RepoPath:  cfCopy.RepoPath,
 				RepoName:  cfCopy.RepoName,
 				RelPath:   cfCopy.Path,

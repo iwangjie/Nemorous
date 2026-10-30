@@ -343,6 +343,57 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			addEntry("plugin-market", "操作", "插件市场", "安装、更新、禁用或卸载插件", p.Purple, func() {
 				a.openPluginMarket()
 			})
+			addEntry("window-new", "窗口", "新建窗口", "打开另一个独立 Nemorous 窗口", p.Accent, func() {
+				a.newWindow(a.cfg.WorkspacePath)
+			})
+			addEntry("window-workspace", "窗口", "在新窗口打开工作区…", "选择目录并用新窗口打开", p.Accent, func() {
+				a.newWindowForWorkspace()
+			})
+			addEntry("run-panel", "运行", "运行 / 调试 / 测试", "运行配置、输出、DAP 调试与断点", p.Green, func() {
+				a.showRunPanel = true
+				a.showGitPanel = false
+				a.showLogPanel = false
+				a.showTerminalPanel = false
+			})
+			addEntry("run-config", "运行", "新建运行配置", "Run / Test / Debug 配置", p.Green, func() {
+				a.openRunConfig("")
+			})
+			addEntry("github", "Git", "GitHub PR / CI", "查看 PR、检查结果、评论并新建 PR", p.Purple, func() {
+				a.openGitHub()
+			})
+			addEntry("change-lists", "视图", "变更列表", "按需求分组未提交文件", p.Accent, func() {
+				a.openChangeListModal()
+			})
+			addEntry("git-stash", "Git", "Stash 管理", "创建、应用、弹出、删除贮藏", p.Accent, func() {
+				a.openGitOps("stash")
+			})
+			addEntry("git-advanced", "Git", "Git 高级操作", "变基、Cherry-pick、Revert、标签、Remotes、子模块", p.Accent, func() {
+				a.openGitOps("rebase")
+			})
+			addEntry("git-conflicts", "Git", "解决冲突", "逐文件/逐块采用 Ours、Theirs 或 Both", p.Danger, func() {
+				if st := a.ensureGitOpsRepo(); st != nil {
+					a.openConflictResolver(st.Repo.ID)
+				}
+			})
+			addEntry("editor-structure", "视图", "文件结构", "当前代码文件的符号大纲", p.Accent, func() {
+				a.openStructure()
+			})
+			addEntry("editor-todos", "视图", "TODO / FIXME", "跨仓库扫描待办标记", p.Amber, func() {
+				a.openTodos()
+			})
+			addEntry("editor-bookmarks", "视图", "书签", "查看与跳转代码书签", p.Accent, func() {
+				a.openBookmarks()
+			})
+			addEntry("editor-history", "视图", "本地历史", "查看并恢复未提交文件的快照", p.Accent, func() {
+				if tab := a.activeCodeTab(); tab != nil {
+					a.openLocalHistory(tab.file.RepoID, tab.file.RepoPath, tab.file.RelPath)
+				} else {
+					a.showToast("warn", "先打开一个代码文件")
+				}
+			})
+			addEntry("editor-format", "视图", "格式化当前文件", "按语言调用 gofmt / prettier / ruff 等", p.Accent, func() {
+				a.formatActiveFile()
+			})
 
 			for _, st := range a.statuses {
 				for _, cf := range st.Files {
@@ -693,6 +744,14 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 							miniBtn(c, p, "重置", func() { a.ZoomReset() })
 						}
 					})
+					ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
+						if ui.Checkbox(c, &a.cfg.FormatOnSave, "保存时自动格式化").Changed() {
+							_ = a.cfg.Save()
+						}
+						ui.Text(c, "格式化命令：").FontSize(12).TextColor(p.TextSecondary)
+						ui.TextInput(c.Key("fmt-cmd"), &a.cfg.FormatCommand).Grow(1).Placeholder("留空按语言选择 gofmt / prettier / ruff；可用 {} 表示文件路径")
+					})
+					ui.Text(c, "编辑器已内置多光标、列选择（Alt+拖动）、代码折叠、查找替换与缩进辅助。").FontSize(10.5).TextColor(p.TextMuted)
 				})
 
 				// Section 3: Merge & AI Assistant (supports omp, pi, claude, codex)
@@ -767,6 +826,7 @@ func (a *App) buildDiscardConfirmModal(c *ui.Context, p Palette) {
 				a.pendingDiscard = nil
 			})
 			pill(c, p, "确认还原", true, func() {
+				a.recordLocalHistory(pd.RepoID, pd.RepoPath, pd.RelPath, "还原前")
 				err := gitops.DiscardFile(context.Background(), pd.RepoPath, pd.RelPath, pd.Untracked)
 				a.pendingDiscard = nil
 				if err != nil {

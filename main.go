@@ -13,6 +13,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/iwangjie/nemorous/internal/config"
+	"github.com/iwangjie/nemorous/internal/conflict"
 )
 
 func main() {
@@ -44,6 +45,7 @@ func main() {
 			Content:       ui.View(app.BuildUI),
 		})
 		app.win.OnClosed(func() {
+			app.saveSession()
 			app.closeTerminal()
 			app.shutdownUpdates()
 			app.closePluginManager()
@@ -259,7 +261,12 @@ func (a *App) BuildUI(c *ui.Context) {
 						ui.Column(c).FillHeight().Children(editorArea)
 					}
 				}
-				if a.showTerminalPanel {
+				if a.showRunPanel {
+					ui.SplitVerticalPercent(c, &a.runPanelPct,
+						func() { ui.Column(c).FillHeight().Children(workArea) },
+						func() { a.buildRunPanel(c, p) },
+					).Fill()
+				} else if a.showTerminalPanel {
 					ui.SplitVerticalPercent(c, &a.terminalEditorPct,
 						func() { ui.Column(c).FillHeight().Children(workArea) },
 						func() { a.buildTerminalPanel(c, p) },
@@ -301,10 +308,45 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildOpLogModal(c, p)
 		a.buildManiResultModal(c, p)
 		a.buildPluginMarketModal(c, p)
+		a.buildGitOpsModal(c, p)
+		a.buildConflictModal(c, p)
+		a.buildLocalHistoryModal(c, p)
+		a.buildStructureModal(c, p)
+		a.buildTodosModal(c, p)
+		a.buildBookmarksModal(c, p)
+		a.buildChangeListModal(c, p)
+		a.buildGitHubModal(c, p)
+		a.buildRunConfigModal(c, p)
 	})
 }
 
 func (a *App) registerShortcuts(c *ui.Context) {
+	if a.showConflict {
+		if c.Shortcut(ui.Alt, ui.KeyLeft) {
+			a.conflictNav(-1)
+		}
+		if c.Shortcut(ui.Alt, ui.KeyRight) {
+			a.conflictNav(1)
+		}
+		if c.Shortcut(ui.Alt, ui.Key1) {
+			a.conflictApplyCurrent(conflict.Ours)
+		}
+		if c.Shortcut(ui.Alt, ui.Key2) {
+			a.conflictApplyCurrent(conflict.Theirs)
+		}
+		if c.Shortcut(ui.Alt, ui.Key3) {
+			a.conflictApplyCurrent(conflict.Both)
+		}
+		if c.Shortcut(ui.Cmd, ui.KeyS) {
+			a.saveConflictFile()
+		}
+		if c.Shortcut(ui.Cmd, ui.KeyEnter) && len(a.conflictFiles) == 0 {
+			a.continueAfterConflict()
+		}
+		if c.Shortcut(0, ui.KeyEscape) {
+			a.closeConflictModal()
+		}
+	}
 	// Global window zoom shortcuts (Cmd +, Cmd -, Cmd 0)
 	if c.Shortcut(ui.Cmd, ui.KeyEqual) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEqual) {
 		a.ZoomIn()
@@ -319,6 +361,15 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	// Dialogs own the keyboard: global actions must not fire behind them.
 	if a.overlayOpen() {
 		return
+	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyB) {
+		a.toggleBookmarkAtCursor()
+	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyO) {
+		a.openStructure()
+	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyT) {
+		a.openTodos()
 	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
 		a.openGlobalSearch()
@@ -481,6 +532,7 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 			} else {
 				a.showLogPanel = false
 				a.showTerminalPanel = false
+				a.showRunPanel = false
 				a.showGitPanel = true
 				a.expandGitForMerge()
 			}
@@ -526,11 +578,18 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 			} else {
 				a.showGitPanel = false
 				a.showTerminalPanel = false
+				a.showRunPanel = false
 				a.showLogPanel = true
 			}
 		})
 		toolRow("nav-terminal", icoTerminal, "终端", a.showTerminalPanel, func() {
 			a.toggleTerminalPanel()
+		})
+		toolRow("nav-run", icoPlay, "运行", a.showRunPanel, func() {
+			a.showGitPanel = false
+			a.showLogPanel = false
+			a.showTerminalPanel = false
+			a.toggleRunPanel()
 		})
 
 		utility := func(key string, icon *ui.SVG, tooltip string, active bool, onClick func()) {

@@ -141,6 +141,44 @@
 
 ---
 
+### 9. Git 工作流闭环：Stash、Rebase、冲突、变更列表与本地历史
+- **Stash 管理**：创建（可含未跟踪文件）、应用、弹出、删除，并查看说明与时间。
+- **高级 Git**：Rebase / Cherry-pick / Revert，冲突后可继续或中止；标签创建/删除/推送；Remote 添加/改地址/删除；子模块查看、初始化更新、同步、添加与移除。
+- **三栏冲突解决工作台**：Ours / Result / Theirs 左中右三栏，按 Git 操作显示正确语义，逐块 Ours/Theirs/Both/Base、整文件版本、删除/修改与二进制冲突、CRLF 保留、按文件草稿、关闭确认、自动载入下一个文件。**自动合并**安全合并不重叠行修改、保留真实冲突并可撤销，详见 [docs/conflict-resolution.md](docs/conflict-resolution.md)。
+- **变更列表**：按需求分组未提交文件，移动勾选文件、过滤变更树、文件行展示列表徽章。
+- **本地历史**：打开、保存、格式化、提交、还原前自动快照；浏览并一键恢复，每文件保留 30 份。
+
+<picture>
+  <img src="docs/screenshots/09_git_ops_light.png" width="49%" alt="Git 高级操作">
+  <img src="docs/screenshots/11_conflict_resolver_light.png" width="49%" alt="逐块冲突解决">
+</picture>
+
+---
+
+### 10. GitHub PR / CI / 代码审查评论
+- **Pull Requests**：按仓库查看 Open/Closed PR、标题、分支与审查结论。
+- **CI Checks**：成功/失败/等待徽章，点击跳转检查详情。
+- **评论**：PR 评论与行内 review comments、添加评论、浏览器打开、为当前分支新建 PR。通过本机 `gh` CLI，应用不保存 token。
+
+<picture>
+  <img src="docs/screenshots/12_github_pr_light.png" width="100%" alt="GitHub PR、CI 与审查评论">
+</picture>
+
+---
+
+### 11. 运行 / 测试 / 调试、编辑器增强与多窗口
+- **运行配置**：保存 Run/Test/Debug 命令、工作目录、参数与环境变量；流式输出、退出码与停止。
+- **DAP 调试器**：支持 stdio/TCP 调试适配器、行号栏持久断点、调用栈、变量与继续/单步/暂停，详见 [docs/run-debug.md](docs/run-debug.md)。
+- **编辑器增强**：文件结构大纲、跨仓 TODO/FIXME、书签与行号标记、按语言格式化与保存时格式化；多光标、列选择与代码折叠沿用原生编辑器。
+- **会话与多窗口**：启动恢复打开文件、光标、激活视图与分栏；可新建独立窗口并在另一工作区打开。
+
+<picture>
+  <img src="docs/screenshots/08_run_panel_light.png" width="49%" alt="运行与调试面板">
+  <img src="docs/screenshots/13_debug_panel_light.png" width="49%" alt="调试调用栈与变量">
+</picture>
+
+---
+
 ## 安全不变量 (Safety Invariants)
 
 在工程实践中，自动化工具与 AI 最致命的问题是“毁坏代码”或“误推历史”。Nemorous 在底层架构上确立了严密的数学级安全不变量：
@@ -215,6 +253,11 @@
 | `⌘R` | **全局刷新** | 重新扫描并原子更新所有关联 Git 仓库状态 |
 | `⌘,` | **全局偏好设置** | 配置工作区路径、外观主题、AI Agent CLI、检查更新间隔 |
 | `⌘+` / `⌘-` / `⌘0` | **全局窗口缩放** | 界面等比例放大 (+10%)、缩小 (-10%) 或重置原始比例 (100%) |
+| `⌥←` / `⌥→` | **冲突导航** | 合并工作台中上一个/下一个冲突块 |
+| `⌥1` / `⌥2` / `⌥3` | **采用冲突侧** | 当前冲突块采用 Ours / Theirs / 两者 |
+| `⌘⇧B` | **行书签** | 切换当前编辑器行的书签 |
+| `⌘⇧O` | **文件结构** | 当前文件的符号大纲 |
+| `⌘⇧T` | **TODO / FIXME** | 跨工作区扫描待办标记 |
 
 ---
 
