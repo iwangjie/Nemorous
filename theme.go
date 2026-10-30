@@ -232,7 +232,7 @@ func darculaPalette() Palette {
 
 		Border:       ui.Hex("#323232"),
 		BorderSubtle: ui.Hex("#2C2C2C"),
-		BorderStrong: ui.Hex("#4C5052"),
+		BorderStrong: ui.Hex("#5D6060"),
 
 		Accent:         ui.Hex("#3574C8"),
 		AccentHover:    ui.Hex("#2F6DB5"),
@@ -289,6 +289,15 @@ func repoBadgeColors(idx int, isDark bool) RepoBadgeStyle {
 	return styles[(idx%len(styles)+len(styles))%len(styles)]
 }
 
+// controlBorder is IDEA's 1px control outline: a light grey on secondary
+// controls and the accent border on primary actions.
+func controlBorder(p Palette, primary bool) ui.Color {
+	if primary {
+		return p.AccentBorder
+	}
+	return p.BorderStrong
+}
+
 // pill renders a Magpie-style pop-up control button.
 func pill(c *ui.Context, p Palette, label string, primary bool, onClick func()) {
 	bg := p.Surface2
@@ -299,7 +308,7 @@ func pill(c *ui.Context, p Palette, label string, primary bool, onClick func()) 
 		fg = p.AccentText
 		hover = p.AccentHover
 	}
-	el := ui.Row(c).Padding(5, 11).Radius(6).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
+	el := ui.Row(c).Padding(5, 11).Radius(4).Background(bg).Border(1, controlBorder(p, primary)).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
 	if el.Hovered() {
 		el.Background(hover)
 	}
@@ -323,7 +332,7 @@ func iconPill(c *ui.Context, p Palette, svg *ui.SVG, label string, primary bool,
 		iconCol = p.AccentText
 		hover = p.AccentHover
 	}
-	el := ui.Row(c).Padding(5, 10).Gap(5).Radius(6).Background(bg).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
+	el := ui.Row(c).Padding(5, 10).Gap(5).Radius(4).Background(bg).Border(1, controlBorder(p, primary)).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
 	if el.Hovered() {
 		el.Background(hover)
 	}
@@ -405,6 +414,35 @@ func ghostBtn(c *ui.Context, p Palette, svg *ui.SVG, label string, active bool, 
 	})
 }
 
+// diffToolButton renders a flat diff toolbar icon, lit when its toggle is on.
+func diffToolButton(c *ui.Context, p Palette, key string, svg *ui.SVG, tip string, active, enabled bool, onClick func()) {
+	kc := c.Key(key)
+	btn := ui.Box(kc).Size(26, 26).Radius(4).Center().Tooltip(tip).Label(tip)
+	fg := p.TextControl
+	if active {
+		btn.Background(p.Surface2)
+		fg = p.TextPrimary
+	}
+	if !enabled {
+		fg = p.TextMuted
+	}
+	if enabled {
+		btn.Cursor(ui.CursorPointer)
+		if btn.Hovered() {
+			btn.Background(p.SurfaceHover)
+			if !active {
+				fg = p.TextPrimary
+			}
+		}
+		if btn.Clicked() && onClick != nil {
+			onClick()
+		}
+	}
+	btn.Children(func() {
+		drawIcon(kc, svg, 14, fg)
+	})
+}
+
 // badgeBox renders a subtle status pill without harsh borders.
 func badgeBox(c *ui.Context, text string, fg, bg, border ui.Color, fontSize float32, bold bool) {
 	el := ui.Row(c).Padding(2, 7).Radius(5).Background(bg).AlignItems(ui.Center).Shrink(0)
@@ -438,7 +476,7 @@ func menuPill(c *ui.Context, p Palette, label string, active bool, build func(m 
 
 // pillDisabled renders a control that is visibly unavailable.
 func pillDisabled(c *ui.Context, p Palette, label string) {
-	el := ui.Row(c).Padding(5, 11).Radius(6).Background(p.Surface2).AlignItems(ui.Center).Shrink(0)
+	el := ui.Row(c).Padding(5, 11).Radius(4).Background(p.Surface2).Border(1, p.Border).AlignItems(ui.Center).Shrink(0)
 	el.Children(func() {
 		ui.Text(c, label).FontSize(12).FontWeight(weightMedium).TextColor(p.TextMuted).SingleLine()
 	})

@@ -300,8 +300,55 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 			}
 		})
 
-		a.buildCommitBox(c, p, checkedRepos, checkedFiles)
+		a.buildCommitResizer(c, p)
+		box := a.buildCommitBox(c, p, checkedRepos, checkedFiles, a.changesCommitH)
+		if a.changesCommitH == 0 {
+			if h := box.Bounds().H; h > 0 {
+				a.changesCommitAutoH = h
+			}
+		}
 	})
+}
+
+// buildCommitResizer draws the divider above the commit box: drag it, or focus
+// it and use Up/Down, to grow or shrink the commit box like the editor splits.
+func (a *App) buildCommitResizer(c *ui.Context, p Palette) {
+	kc := c.Key("changes-commit-resizer")
+	grip := ui.Row(kc).Height(6).FillWidth().Cursor(ui.CursorResizeNS).Focusable().
+		AlignItems(ui.Center).Tooltip("拖动调整提交框高度").Label("调整提交框高度")
+	_, dy, held := grip.Dragged()
+	if held && dy != 0 {
+		a.resizeCommitBox(-dy)
+	}
+	if grip.DoubleClicked() {
+		a.changesCommitH = 0
+	}
+	if grip.Shortcut(0, ui.KeyUp) {
+		a.resizeCommitBox(20)
+	}
+	if grip.Shortcut(0, ui.KeyDown) {
+		a.resizeCommitBox(-20)
+	}
+	grip.Children(func() {
+		line := p.BorderSubtle
+		if grip.Hovered() || held || grip.FocusVisible() {
+			line = p.Accent
+		}
+		ui.Box(c).Height(1).FillWidth().Background(line)
+	})
+}
+
+// resizeCommitBox keeps the commit box between the action row's height and a
+// size that still leaves room for the changes list.
+func (a *App) resizeCommitBox(delta float32) {
+	base := a.changesCommitH
+	if base <= 0 {
+		base = a.changesCommitAutoH
+	}
+	if base <= 0 {
+		base = 160
+	}
+	a.changesCommitH = min(max(base+delta, 160), 420)
 }
 
 func (a *App) changeFileMatchesQuery(repoName string, f gitops.ChangedFile) bool {
@@ -739,7 +786,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 	})
 }
 
-func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFiles int) {
+func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFiles int, height float32) ui.Element {
 	commitBtnLabel := "提交"
 	if checkedFiles > 0 {
 		if checkedRepos > 1 {
@@ -751,27 +798,47 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 
 	canCommit, commitHint := a.commitAvailability(checkedFiles)
 
-	ui.Column(c).Padding(8).Gap(6).Radius(8).Background(p.Surface).Border(1, p.Border).Children(func() {
-		ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").Lines(2, 6).FillWidth()
-
-		ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
-			if canCommit {
-				pill(c, p, commitBtnLabel, true, func() {
-					a.TriggerCommit(false)
-				})
-				pill(c, p, "提交并推送", false, func() {
-					a.TriggerCommit(true)
-				})
-			} else {
-				pillDisabled(c, p, commitBtnLabel)
-				pillDisabled(c, p, "提交并推送")
-			}
+	box := ui.Column(c).Gap(4)
+	if height > 0 {
+		box = box.Height(height)
+	}
+	box.Children(func() {
+		ui.Row(c).Padding(2, 4).AlignItems(ui.Center).Children(func() {
 			ui.Checkbox(c, &a.commitAmend, "修正")
 		})
-		if !canCommit && commitHint != "" {
-			ui.Text(c, commitHint).FontSize(10.5).TextColor(p.TextMuted)
+
+		card := ui.Column(c).Padding(8).Gap(6).Radius(4).Background(p.AppBg).Border(1, p.Border)
+		if height > 0 {
+			card = card.Grow(1)
 		}
+		card.Children(func() {
+			ta := ui.TextArea(c.Key("commit-msg"), &a.commitMessage).Bind(&a.commitInputHandle).Placeholder("输入提交说明...").FillWidth()
+			if height > 0 {
+				ta = ta.Grow(1).MinHeight(40)
+			} else {
+				ta = ta.Lines(2, 6)
+			}
+			ta.Background(p.AppBg).Border(0, p.Border).Radius(3).Padding(4, 6)
+
+			ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
+				if canCommit {
+					pill(c, p, commitBtnLabel, true, func() {
+						a.TriggerCommit(false)
+					})
+					pill(c, p, "提交并推送", false, func() {
+						a.TriggerCommit(true)
+					})
+				} else {
+					pillDisabled(c, p, commitBtnLabel)
+					pillDisabled(c, p, "提交并推送")
+				}
+			})
+			if !canCommit && commitHint != "" {
+				ui.Text(c, commitHint).FontSize(10.5).TextColor(p.TextMuted)
+			}
+		})
 	})
+	return box
 }
 
 func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
@@ -866,17 +933,6 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					splitBtn(false, "单栏")
 				})
 
-				editLabel := "编辑"
-				if a.diffEditable {
-					editLabel = "退出编辑"
-				}
-				iconPill(c, p, icoEdit, editLabel, a.diffEditable, func() {
-					a.diffEditable = !a.diffEditable
-					if a.diffState != nil {
-						a.diffState.Editable = a.diffEditable
-					}
-				})
-
 				if a.diffEditable || isDirty {
 					pill(c, p, "保存 (⌘S)", true, func() {
 						a.saveDiffMicroEdit()
@@ -893,12 +949,13 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					a.activeTab = TabCode
 				})
 
-				// Collapsible Display Options
 				ghostBtn(c, p, icoMore, "", a.showDiffOptions, func() {
 					a.showDiffOptions = !a.showDiffOptions
 				})
 			})
 		})
+
+		a.buildDiffToolbar(c, p, a.diffState)
 
 		// Collapsible Diff Display Options Bar ("不常用操作折叠起来，必要时候也能用")
 		if a.showDiffOptions {
@@ -949,6 +1006,59 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 
 		// DiffView
 		editor.DiffView(c, a.diffState).Grow(1).FillWidth()
+	})
+}
+
+// buildDiffToolbar draws IDEA's file-diff actions: previous/next change,
+// edit, and previous/next file.
+func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState) {
+	if state == nil {
+		return
+	}
+	hunks := state.Hunks()
+	total := len(hunks)
+	cur, _ := state.CurrentHunk()
+	pos := cur + 1
+	if pos < 0 {
+		pos = 0
+	}
+	prevHunk := func() {
+		if total == 0 {
+			return
+		}
+		i := cur - 1
+		if i < 0 {
+			i = total - 1
+		}
+		state.GoToHunk(i)
+	}
+	nextHunk := func() {
+		if total == 0 {
+			return
+		}
+		i := cur + 1
+		if i >= total {
+			i = 0
+		}
+		state.GoToHunk(i)
+	}
+	fileCount := len(a.visibleChangeFileList())
+	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
+		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
+		diffToolButton(c, p, "diff-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
+		diffToolButton(c, p, "diff-next", icoPull, "下一个差异", false, total > 0, nextHunk)
+		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
+		diffToolButton(c, p, "diff-edit", icoEdit, "编辑差异", a.diffEditable, true, func() {
+			a.diffEditable = !a.diffEditable
+			state.Editable = a.diffEditable
+		})
+		diffToolButton(c, p, "diff-prev-file", icoArrowLeft, "上一个文件", false, fileCount > 1, func() {
+			a.moveChangeSelection(-1)
+		})
+		diffToolButton(c, p, "diff-next-file", icoArrowRight, "下一个文件", false, fileCount > 1, func() {
+			a.moveChangeSelection(1)
+		})
 	})
 }
 
