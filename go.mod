@@ -6,7 +6,7 @@ require (
 	github.com/dop251/goja v0.0.0-20261029153331-f81816846776
 	github.com/egoist/mygo v0.7.3
 	github.com/go-sql-driver/mysql v1.9.3
-	github.com/lib/pq v1.10.9
+	github.com/lib/pq v1.12.3
 	github.com/sijms/go-ora/v2 v2.9.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.39.1
