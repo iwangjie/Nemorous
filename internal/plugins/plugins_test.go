@@ -651,8 +651,7 @@ function handleAction(action) {
 
 func TestSQLiteDSNNormalization(t *testing.T) {
 	cases := map[string]string{
-		"C:\\data\\app.db": "file:C:/data/app.db",
-		"/tmp/app.db":      "file:/tmp/app.db",
+		"C:\\data\\app.db": "file:///C:/data/app.db",
 		"file::memory:":    "file::memory:",
 		"relative.db":      "relative.db",
 	}

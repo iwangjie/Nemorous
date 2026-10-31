@@ -223,12 +223,12 @@ func sqliteDSN(dsn string) string {
 	// SQLite interprets a bare Windows drive as a URI scheme; use its file:
 	// form so `C:\data\app.db` opens instead of failing with SQLITE_CANTOPEN.
 	if len(dsn) >= 2 && dsn[1] == ':' {
-		return "file:" + strings.ReplaceAll(filepath.ToSlash(dsn), "\\", "/")
+		return "file:///" + strings.ReplaceAll(filepath.ToSlash(dsn), "\\", "/")
 	}
 	if !filepath.IsAbs(dsn) {
 		return dsn
 	}
-	return "file:" + filepath.ToSlash(dsn)
+	return "file://" + filepath.ToSlash(dsn)
 }
 
 func normalizeDBValue(v any) any {
