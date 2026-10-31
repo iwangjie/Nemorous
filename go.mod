@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/dop251/goja v0.0.0-20261029153331-f81816846776
 	github.com/egoist/mygo v0.7.3
-	github.com/go-sql-driver/mysql v1.9.3
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/lib/pq v1.10.9
 	github.com/sijms/go-ora/v2 v2.9.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -13,7 +13,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.11.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/ebitengine/purego v0.11.1 // indirect
