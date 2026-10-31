@@ -620,7 +620,6 @@ func SplitCommand(s string) []string {
 	var out []string
 	var cur strings.Builder
 	quote := rune(0)
-	escaped := false
 	flush := func() {
 		if cur.Len() > 0 {
 			out = append(out, cur.String())
@@ -628,15 +627,6 @@ func SplitCommand(s string) []string {
 		}
 	}
 	for _, r := range s {
-		if escaped {
-			cur.WriteRune(r)
-			escaped = false
-			continue
-		}
-		if r == '\\' && quote != '\'' {
-			escaped = true
-			continue
-		}
 		if quote != 0 {
 			if r == quote {
 				quote = 0

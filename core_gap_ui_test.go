@@ -197,6 +197,12 @@ func TestLocalHistoryUIAndRestore(t *testing.T) {
 		t.Fatalf("history entries = %+v err=%v", entries, err)
 	}
 	base := entries[len(entries)-1]
+	for _, candidate := range entries {
+		if entry, readErr := app.historyStore().Read("cloud-caring", "main.go", candidate.ID); readErr == nil && !strings.Contains(entry.Content, "v2") {
+			base = candidate
+			break
+		}
+	}
 	app.openLocalHistory("cloud-caring", wf.RepoPath, "main.go")
 	waitApp(t, "history list", func() bool { return len(app.historyEntries) > 0 })
 	waitApp(t, "history content", func() bool { return app.historyEditor != nil })
@@ -210,10 +216,16 @@ func TestLocalHistoryUIAndRestore(t *testing.T) {
 		return app.historyEditor != nil && strings.Contains(app.historyEditor.Buffer.String(), "中文模块") || strings.Contains(app.historyEditor.Buffer.String(), "package main")
 	})
 	app.restoreLocalHistoryEntry()
-	waitApp(t, "restored file", func() bool {
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
 		data, _ := os.ReadFile(filepath.Join(wf.RepoPath, wf.RelPath))
-		return len(data) > 0 && !strings.Contains(string(data), "v2")
-	})
+		if len(data) > 0 && !strings.Contains(string(data), "v2") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(filepath.Join(wf.RepoPath, wf.RelPath))
+	t.Fatalf("timed out waiting for restored file: selected=%q loading=%v err=%q notice=%q entries=%d data=%q", app.historySelected, app.historyLoading, app.historyErr, app.historyNotice, len(app.historyEntries), data)
 }
 
 func TestChangeListFilterAndModal(t *testing.T) {

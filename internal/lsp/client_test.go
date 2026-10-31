@@ -20,6 +20,10 @@ func TestSplitCommand(t *testing.T) {
 	if len(got) != 2 || got[0] != "/Applications/My Server/bin/gopls" || got[1] != "-remote=auto" {
 		t.Fatalf("splitCommand=%q", got)
 	}
+	windows := lsp.SplitCommand(`C:\Users\runneradmin\AppData\Local\Temp\lsp.test.exe -test.run=TestFakeLSPServer`)
+	if len(windows) != 2 || windows[0] != `C:\Users\runneradmin\AppData\Local\Temp\lsp.test.exe` {
+		t.Fatalf("windows splitCommand=%q", windows)
+	}
 }
 
 func TestUTF16Conversions(t *testing.T) {
