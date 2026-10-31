@@ -131,3 +131,92 @@ func (a *App) buildCommitResetModal(c *ui.Context, p Palette) {
 		})
 	})
 }
+
+func (a *App) commitUndoRepo() *gitops.RepoStatus {
+	if targets := a.commitTargets(); len(targets) > 0 {
+		return a.gitStatusByID(targets[0].Repo.ID)
+	}
+	if len(a.statuses) > 0 {
+		return &a.statuses[0]
+	}
+	return nil
+}
+
+// openCommitMsgHistory loads recent subjects from the selected repositories.
+func (a *App) openCommitMsgHistory() {
+	a.showCommitMsgHistory = true
+	a.commitMsgHistoryLoading = true
+	a.commitMsgHistoryErr = ""
+	a.commitMsgHistory = nil
+	var repos []mani.DiscoveredRepo
+	for _, t := range a.commitTargets() {
+		repos = append(repos, t.Repo)
+	}
+	if len(repos) == 0 {
+		for _, st := range a.statuses {
+			repos = append(repos, st.Repo)
+		}
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		seen := make(map[string]bool)
+		var out []string
+		for _, repo := range repos {
+			log, err := gitops.RunGit(ctx, repo.AbsPath, "log", "-20", "--format=%s")
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(log, "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !seen[line] {
+					seen[line] = true
+					out = append(out, line)
+				}
+			}
+		}
+		a.runUI(func() {
+			a.commitMsgHistoryLoading = false
+			if len(out) == 0 {
+				a.commitMsgHistoryErr = "所选仓库没有提交记录"
+				return
+			}
+			if len(out) > 100 {
+				out = out[:100]
+			}
+			a.commitMsgHistory = out
+		})
+	}()
+}
+
+func (a *App) buildCommitMsgHistoryModal(c *ui.Context, p Palette) {
+	ui.DialogBase(c, &a.showCommitMsgHistory, func(backdrop, panel ui.Element) {
+		backdrop.Background(ui.RGBA(20, 22, 30, 0.40))
+		panel.Width(640).Height(520).Padding(14).Gap(8).Radius(12).Background(p.Surface).Border(1, p.Border)
+		modalHeader(c, p, icoCommit, "提交信息历史", "所选仓库的最近提交", nil, func() { a.showCommitMsgHistory = false })
+		if a.commitMsgHistoryLoading {
+			ui.Spinner(c).Size(13, 13).Label("加载中").TextColor(p.TextMuted)
+		}
+		if a.commitMsgHistoryErr != "" {
+			ui.Text(c, a.commitMsgHistoryErr).FontSize(10).TextColor(p.TextMuted)
+		}
+		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
+			ui.Column(c).FillWidth().Gap(1).Children(func() {
+				for i, msg := range a.commitMsgHistory {
+					msg := msg
+					kc := c.Key(fmt.Sprintf("commit-history-%d", i))
+					row := ui.Row(kc).FillWidth().Padding(6, 4).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+					if row.Hovered() {
+						row.Background(p.SurfaceHover)
+					}
+					if row.Clicked() {
+						a.commitMessage = msg
+						a.showCommitMsgHistory = false
+						a.commitInputHandle.Focus()
+					}
+					row.Children(func() { ui.Text(kc, msg).FontSize(11).TextColor(p.TextPrimary).MaxLines(2) })
+				}
+			})
+		})
+	})
+}

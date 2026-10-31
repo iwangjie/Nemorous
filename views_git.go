@@ -81,7 +81,7 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 			gitTab("history", "提交图", icoBranch)
 			gitTab("merge", "合并", icoMerge)
 			ui.Spacer(c)
-			ghostBtn(c, p, icoBranch, "Git", false, func() { a.openGitOps("") })
+			iconPill(c, p, icoBranch, "Git 操作", false, func() { a.openGitOps("") })
 			iconAction(c, p, "git-pr", icoPR, "GitHub PR / CI", false, func() { a.openGitHub() })
 			if a.gitSubTab == "history" {
 				ui.Text(c, fmt.Sprintf("已加载 %d 个提交 · %d 个仓库", a.gitLogTotal, len(a.gitLogTargets))).FontSize(10.5).TextColor(p.TextMuted)
@@ -875,6 +875,37 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 						}
 					})
 				}
+				entry := d.CommitEntry
+				ui.Row(c).Gap(4).Wrap().AlignItems(ui.Center).Children(func() {
+					miniBtn(c, p, "与当前比较", func() { a.compareWithCurrent(entry) })
+					miniBtn(c, p, "Cherry-pick", func() {
+						hash := entry.Hash
+						a.runCommitRepoAction(entry, "Cherry-pick", func(ctx context.Context, repoPath string) (string, error) {
+							return gitops.CherryPick(ctx, repoPath, hash)
+						})
+					})
+					miniBtn(c, p, "Revert", func() {
+						hash := entry.Hash
+						a.runCommitRepoAction(entry, "Revert", func(ctx context.Context, repoPath string) (string, error) {
+							return gitops.Revert(ctx, repoPath, hash, 0)
+						})
+					})
+					miniBtn(c, p, "检出…", func() {
+						a.pendingCommitReset = &CommitReset{RepoPath: entry.RepoPath, RepoName: entry.RepoName, Hash: entry.Hash, Mode: "checkout"}
+						a.showCommitReset = true
+					})
+					menuIconAction(c, p, "git-detail-more", icoMore, "重置与其他操作", false, func(m *ui.Menu) {
+						m.Submenu("重置当前分支到此提交…", func(sm *ui.Menu) {
+							for _, mode := range []string{"soft", "mixed", "hard", "keep"} {
+								mode := mode
+								if sm.Item(mode).Chosen() {
+									a.pendingCommitReset = &CommitReset{RepoPath: entry.RepoPath, RepoName: entry.RepoName, Hash: entry.Hash, Mode: mode}
+									a.showCommitReset = true
+								}
+							}
+						})
+					})
+				})
 				ui.Text(c, fmt.Sprintf("变更文件 (%d)", len(d.Files))).FontSize(11).FontWeight(weightSemibold).TextColor(p.TextMuted)
 				if len(d.Files) > 0 {
 					a.renderGitCommitTree(c, p, *d, buildGitCommitTree(d.Files), 0)

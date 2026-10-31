@@ -474,6 +474,23 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 							a.lspRenameOpen = true
 							a.lspRenameErr = ""
 						})
+						menuIconPill(c, p, "lsp-actions", icoSparkles, "LSP", false, func(m *ui.Menu) {
+							if m.Item("查找引用 (⌥F7)").Chosen() {
+								a.openLSPReferences()
+							}
+							if m.Item("快速修复 (⌥↩)").Chosen() {
+								a.openLSPCodeActions()
+							}
+							if m.Item("LSP 格式化 (⌘⌥L)").Chosen() {
+								a.triggerLSPFormat()
+							}
+							if m.Item(fmt.Sprintf("Problems (%d)", tab.lspDiagErrors+tab.lspDiagWarns)).Chosen() {
+								a.openLSPProblems()
+							}
+							if m.Item("刷新 Inlay Hints").Chosen() {
+								a.refreshInlayHints(tab)
+							}
+						})
 					}
 				}
 				miniBtn(c, p, "历史", func() { a.openLocalHistory(wf.RepoID, wf.RepoPath, wf.RelPath) })
@@ -514,13 +531,6 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 						}
 					}
 				})
-				if a.canUseLSP(tab) {
-					ui.Box(c).Width(1).Height(14).Background(p.Border).MarginX(4)
-					miniBtn(c, p, "引用", func() { a.openLSPReferences() })
-					miniBtn(c, p, "修复", func() { a.openLSPCodeActions() })
-					miniBtn(c, p, "LSP 格式化", func() { a.triggerLSPFormat() })
-					miniBtn(c, p, fmt.Sprintf("Problems (%d)", tab.lspDiagErrors+tab.lspDiagWarns), func() { a.openLSPProblems() })
-				}
 			})
 		}
 

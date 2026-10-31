@@ -43,6 +43,24 @@ func (a *App) installLSPHooks(tab *codeTab) {
 	st.OnDefinition = func(offset int) {
 		a.lspDefinition(tab, offset)
 	}
+	st.ContextMenu = func(m *ui.Menu) {
+		if !a.canUseLSP(tab) {
+			return
+		}
+		m.Separator()
+		if m.Item("查找引用 (⌥F7)").Chosen() {
+			a.openLSPReferences()
+		}
+		if m.Item("快速修复 (⌥↩)").Chosen() {
+			a.openLSPCodeActions()
+		}
+		if m.Item("格式化 (⌘⌥L)").Chosen() {
+			a.triggerLSPFormat()
+		}
+		if m.Item("Problems").Chosen() {
+			a.openLSPProblems()
+		}
+	}
 }
 
 // prepareLSP starts a server for the tab's language when enabled and a server

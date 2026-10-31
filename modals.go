@@ -455,6 +455,12 @@ func (a *App) buildBranchSwitchModal(c *ui.Context, p Palette) {
 		})
 
 		// 1. Saved Branch Combinations (e.g. "AAA 需求")
+		if len(a.cfg.BranchPresets) == 0 {
+			ui.Row(c).Padding(8, 10).Gap(6).Radius(6).Background(p.RailBg).AlignItems(ui.Center).Children(func() {
+				drawIcon(c, icoBranch, 12, p.TextMuted)
+				ui.Text(c, "还没有分支组合。勾选仓库后，在底部命名并保存，之后可一键恢复整套分支。").FontSize(10.5).TextColor(p.TextMuted).Grow(1)
+			})
+		}
 		if len(a.cfg.BranchPresets) > 0 {
 			ui.Column(c).Padding(10, 12).Gap(6).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
 				ui.Text(c, "已保存的分支组合").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextSecondary)

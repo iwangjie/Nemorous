@@ -650,6 +650,29 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, section string, st 
 			ui.Spacer(gkc.Key("spc"))
 			ui.Text(gkc.Key("rcnt"), fmt.Sprintf("%d", len(visible))).FontSize(10).TextColor(p.TextMuted)
 			if hdr.Hovered() {
+				toolButton(gkc, p, "repo-fetch-"+stCopy.Repo.ID, icoFetch, "Fetch 本仓", false, true, func() {
+					a.runRepoSyncAction(stCopy.Repo, "Fetch", func(ctx context.Context) (string, error) {
+						res := gitops.FetchAll(ctx, []mani.DiscoveredRepo{stCopy.Repo}, 1)
+						if len(res) > 0 && res[0].Err != nil {
+							return res[0].Message, res[0].Err
+						}
+						return "已 fetch", nil
+					})
+				})
+				toolButton(gkc, p, "repo-pull-"+stCopy.Repo.ID, icoPull, "Pull 本仓", false, true, func() {
+					a.runRepoSyncAction(stCopy.Repo, "Pull", func(ctx context.Context) (string, error) {
+						res := gitops.PullAll(ctx, []mani.DiscoveredRepo{stCopy.Repo}, 1)
+						if len(res) > 0 && res[0].Err != nil {
+							return res[0].Message, res[0].Err
+						}
+						return "已 pull", nil
+					})
+				})
+				toolButton(gkc, p, "repo-push-"+stCopy.Repo.ID, icoPush, "Push 本仓", false, true, func() {
+					a.runRepoSyncAction(stCopy.Repo, "Push", func(ctx context.Context) (string, error) {
+						return gitops.PushRepo(ctx, stCopy.Repo.AbsPath)
+					})
+				})
 				more := ui.Row(gkc.Key("more")).Size(16, 16).Radius(3).Center().Cursor(ui.CursorPointer).Shrink(0)
 				more.PopoverMenu(repoMenu)
 				more.Children(func() {
@@ -902,8 +925,14 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 		box = box.Height(height)
 	}
 	box.Children(func() {
-		ui.Row(c).Padding(2, 4).AlignItems(ui.Center).Children(func() {
-			ui.Checkbox(c, &a.commitAmend, "修正")
+		ui.Row(c).Padding(2, 4).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Checkbox(c, &a.commitAmend, "修正上次提交")
+			ui.Spacer(c)
+			if repo := a.commitUndoRepo(); repo != nil {
+				miniBtn(c, p, "撤销上次提交…", func() {
+					a.pendingUndo = &PendingUndo{RepoPath: repo.Repo.AbsPath, RepoName: repo.Repo.Name}
+				})
+			}
 		})
 
 		card := ui.Column(c).Padding(8).Gap(6).Radius(4).Background(p.AppBg).Border(1, p.Border)
@@ -926,9 +955,12 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 				}
 				if a.commitMsgGenerating {
 					ui.Spinner(c).Size(12, 12).Label("生成中").TextColor(p.TextMuted)
+				} else if strings.TrimSpace(a.aiAgentBin) == "" {
+					miniBtn(c, p, "配置 AI 提交说明…", func() { a.showSettings = true })
 				} else {
 					iconPill(c, p, icoSparkles, label, false, func() { a.TriggerGenerateCommitMessage() })
 				}
+				miniBtn(c, p, "提交信息历史…", func() { a.openCommitMsgHistory() })
 				if a.commitMsgErr != "" {
 					ui.Text(c, a.commitMsgErr).FontSize(9.5).TextColor(p.Danger).MaxLines(2).Grow(1)
 				}
@@ -1378,6 +1410,17 @@ func (a *App) stageCurrentDiffHunk(unstage bool) {
 	if idx < 0 || idx >= len(hunks) {
 		idx = 0
 	}
+	a.stageDiffHunkAt(idx, unstage)
+}
+
+func (a *App) stageDiffHunkAt(idx int, unstage bool) {
+	if a.diffStageBusy || a.selectedChangeFile == nil || a.diffState == nil {
+		return
+	}
+	hunks := a.diffState.Hunks()
+	if idx < 0 || idx >= len(hunks) {
+		return
+	}
 	cf := *a.selectedChangeFile
 	a.diffStageBusy = true
 	go func() {
@@ -1411,6 +1454,10 @@ func (a *App) stageCurrentDiffHunk(unstage bool) {
 // actionable message by the git layer.
 func (a *App) stageSelectedDiffLines(sel editor.DiffLineRange) {
 	if a.diffStageBusy || a.selectedChangeFile == nil {
+		return
+	}
+	if !a.diffLineInHunk(sel) {
+		a.showToast("info", "该行没有可暂存的改动")
 		return
 	}
 	cf := *a.selectedChangeFile
@@ -1448,4 +1495,67 @@ func (a *App) rollbackSelectedChange() {
 		RelPath:   cf.Path,
 		Untracked: cf.Untracked,
 	}
+}
+
+// buildDiffHunkActions renders IDEA-style actions on a change: stage or
+// unstage the hunk, stage the selected lines, and the local diff edit actions.
+func (a *App) buildDiffHunkActions(c *ui.Context, bar ui.Element, acts *editor.DiffHunkActions) {
+	if acts == nil {
+		return
+	}
+	p := a.palette()
+	bar.Row().Gap(3).AlignItems(ui.Center).Children(func() {
+		label := "暂存"
+		if a.diffStagedOnly {
+			label = "取消暂存"
+		}
+		action := func() { a.stageDiffHunkAt(acts.Index, a.diffStagedOnly) }
+		btn := ui.ButtonBase(c).Padding(0, 7).Height(20).Radius(4).Background(p.Accent).Label(label)
+		btn.Children(func() { ui.Text(c, label).FontSize(10).FontWeight(weightMedium).TextColor(p.AccentText) })
+		if btn.Clicked() {
+			action()
+		}
+		if !a.diffStagedOnly {
+			if sel, ok := a.diffState.SelectedLines(); ok && diffSelectionInHunk(sel, acts.Hunk) {
+				lineLabel := fmt.Sprintf("暂存选中行 (%d)", sel.End-sel.Start+1)
+				lineBtn := ui.ButtonBase(c).Key("stage-lines").Padding(0, 6).Height(20).Radius(4).Background(p.Surface).Border(1, p.Border).Label(lineLabel)
+				lineBtn.Children(func() { ui.Text(c, lineLabel).FontSize(10).TextColor(p.TextControl) })
+				if lineBtn.Clicked() {
+					a.stageSelectedDiffLines(sel)
+				}
+			}
+		}
+		if a.diffEditable {
+			for _, item := range []struct {
+				label string
+				fn    func()
+			}{{"还原", acts.Revert}, {"保留", acts.Keep}} {
+				item := item
+				b := ui.ButtonBase(c).Key("hunk-"+item.label).Padding(0, 6).Height(20).Radius(4).Background(p.Surface).Border(1, p.Border).Label(item.label)
+				b.Children(func() { ui.Text(c, item.label).FontSize(10).TextColor(p.TextMuted) })
+				if b.Clicked() {
+					item.fn()
+				}
+			}
+		}
+	})
+}
+
+func (a *App) diffLineInHunk(sel editor.DiffLineRange) bool {
+	if a.diffState == nil {
+		return false
+	}
+	for _, h := range a.diffState.Hunks() {
+		if diffSelectionInHunk(sel, h) {
+			return true
+		}
+	}
+	return false
+}
+
+func diffSelectionInHunk(sel editor.DiffLineRange, h editor.DiffHunk) bool {
+	if sel.Side == editor.DiffOld {
+		return sel.Start < h.OldEnd && sel.End >= h.OldStart
+	}
+	return sel.Start < h.NewEnd && sel.End >= h.NewStart
 }

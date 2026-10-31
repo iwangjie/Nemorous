@@ -432,6 +432,14 @@ func (a *App) buildWorkspaceAddForm(c *ui.Context, p Palette) {
 					}, true)
 				})
 			})
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "私有仓库需要 HTTPS Token 或 SSH Key。").FontSize(9).TextColor(p.TextMuted).Grow(1)
+				miniBtn(c, p, "配置凭据…", func() {
+					a.wsAddMode = ""
+					a.workspaceTab = "credentials"
+					a.loadWorkspaceTab()
+				})
+			})
 		}
 	})
 }

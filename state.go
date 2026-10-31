@@ -204,6 +204,10 @@ type App struct {
 	commitAmend              bool
 	commitMsgGenerating      bool
 	commitMsgErr             string
+	showCommitMsgHistory     bool
+	commitMsgHistory         []string
+	commitMsgHistoryLoading  bool
+	commitMsgHistoryErr      string
 	lastBatchResults         []gitops.OpResult
 	pendingClipboard         string
 	changesFilterQuery       string
@@ -865,7 +869,7 @@ func (a *App) overlayOpen() bool {
 		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket ||
 		a.showGitOps || a.showConflict || a.showLocalHistory || a.showStructure || a.showTodos ||
 		a.showBookmarks || a.showChangeListModal || a.showGitHub || a.showRunConfig || a.showWorkspaceManager ||
-		a.showLSPReferences || a.showLSPCodeActions || a.showLSPProblems || a.showCommitReset
+		a.showLSPReferences || a.showLSPCodeActions || a.showLSPProblems || a.showCommitReset || a.showCommitMsgHistory
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -1421,8 +1425,18 @@ func (a *App) selectChangedFile(cf gitops.ChangedFile) {
 	oldBuf.SetLanguage(lang)
 	newBuf.SetLanguage(lang)
 	a.diffState = &editor.DiffState{
-		Old:           oldBuf,
-		New:           newBuf,
+		Old: oldBuf,
+		New: newBuf,
+		RenderHunkActions: func(ctx *ui.Context, bar ui.Element, acts *editor.DiffHunkActions) {
+			a.buildDiffHunkActions(ctx, bar, acts)
+		},
+		OnGutterButton: func(r editor.DiffLineRange) { a.stageSelectedDiffLines(r) },
+		RenderGutterButton: func(ctx *ui.Context, btn ui.Element, r editor.DiffLineRange) {
+			if a.diffState == nil || !a.diffLineInHunk(r) {
+				return
+			}
+			editor.DefaultGutterButton(ctx, btn, r)
+		},
 		Layout:        diffLayout(a.cfg.DiffSideBySide),
 		Inline:        parseInlineMode(a.cfg.DiffInlineMode),
 		Wrap:          a.cfg.EditorSoftWrap,

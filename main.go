@@ -323,6 +323,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildLSPCodeActionsModal(c, p)
 		a.buildLSPProblemsModal(c, p)
 		a.buildCommitResetModal(c, p)
+		a.buildCommitMsgHistoryModal(c, p)
 	})
 }
 
@@ -694,7 +695,7 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 	ui.Row(c).Height(46).FillWidth().Padding(0, 14, 0, leftClearance).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).DragWindow().Children(func() {
 		// Left: workspace and branch context.
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			wsBtn := ui.Row(c).Padding(5, 10).Gap(6).Radius(6).Background(p.Surface2).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+			wsBtn := ui.Row(c).Padding(5, 10).Gap(6).Radius(6).Background(p.Surface2).Cursor(ui.CursorPointer).AlignItems(ui.Center).Tooltip("工作区管理：仓库、凭据、LFS、Worktree、提交签名")
 			if wsBtn.Hovered() {
 				wsBtn.Background(p.SurfaceHover)
 			}
