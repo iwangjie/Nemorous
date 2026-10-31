@@ -451,9 +451,24 @@ func TestBinaryConflictResolution(t *testing.T) {
 		t.Fatal("binary conflict UI did not render")
 	}
 	app.runUI(func() { app.conflictBinaryApply(conflict.Theirs) })
-	waitApp(t, "binary resolved", func() bool {
+	deadline := time.Now().Add(20 * time.Second)
+	resolved := false
+	for time.Now().Before(deadline) {
 		data, _ := os.ReadFile(path)
-		return len(data) == 3 && data[1] == 0x0c && data[2] == 0x0d
+		// During rebase, "theirs" is the commit being replayed. The worktree
+		// starts at the upstream side, so a successful choice must change it.
+		if len(data) == 3 && data[1] == 0x0a && data[2] == 0x0b {
+			resolved = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !resolved {
+		data, _ := os.ReadFile(path)
+		t.Fatalf("binary resolution timeout: data=%v err=%q notice=%q ours=%d theirs=%d selected=%q", data, app.conflictErr, app.conflictNotice, len(app.conflictOurs), len(app.conflictTheirs), app.conflictSelected)
+	}
+	waitApp(t, "binary staged", func() bool {
+		return app.conflictNotice != "" && !app.conflictLoading && len(app.conflictFiles) == 0
 	})
 }
 

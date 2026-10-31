@@ -281,6 +281,10 @@ type App struct {
 	wsErr                string
 	wsNotice             string
 	wsConfirm            string
+	wsAddMode            string // "", "clone", "init", "import"
+	wsShowHidden         bool
+	wsAddCred            bool
+	wsGenKey             bool
 	wsCloneURL           string
 	wsCloneName          string
 	wsInitName           string
@@ -307,6 +311,7 @@ type App struct {
 	wsSigningEnabled     bool
 	wsSigningFormat      string
 	wsSigningKey         string
+	lspShowServers       bool
 
 	// Optional LSP state
 	lspClients    map[string]*lsp.Client

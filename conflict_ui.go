@@ -521,10 +521,34 @@ func (a *App) conflictBinaryApply(side conflict.Strategy) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		var err error
-		if content == "" {
-			err = conflict.RemoveAndStage(ctx, path, rel)
-		} else {
+		stage := 2
+		if side == conflict.Theirs {
+			stage = 3
+		} else if side == conflict.Base {
+			stage = 1
+		}
+		if content != "" {
 			err = conflict.WriteAndStage(ctx, path, rel, content)
+		} else if size, sizeErr := conflict.StageSize(ctx, path, rel, stage); sizeErr != nil {
+			// The selected side is absent, i.e. a delete/modify conflict.
+			err = conflict.RemoveAndStage(ctx, path, rel)
+		} else if size == 0 {
+			// The side exists but is an empty file; keep it empty.
+			err = conflict.WriteAndStage(ctx, path, rel, "")
+		} else {
+			// The index still has bytes: retry the read rather than deleting.
+			base, ours, theirs := conflict.Versions(ctx, path, rel)
+			retried := theirs
+			if stage == 1 {
+				retried = base
+			} else if stage == 2 {
+				retried = ours
+			}
+			if retried == "" {
+				err = fmt.Errorf("无法读取索引阶段 %d，请重试", stage)
+			} else {
+				err = conflict.WriteAndStage(ctx, path, rel, retried)
+			}
 		}
 		a.runUI(func() {
 			if err != nil {

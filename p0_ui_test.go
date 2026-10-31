@@ -41,15 +41,19 @@ func TestWorkspaceManagerUIAndClone(t *testing.T) {
 	app.openWorkspaceManager()
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if !tt.HasText("工作区") || !tt.HasText("仓库") || !tt.HasText("克隆 / 初始化") || !tt.HasText("凭据") || !tt.HasText("LFS / Sparse") || !tt.HasText("Worktree") || !tt.HasText("签名") {
-		t.Fatal("workspace manager tabs missing")
+	if !tt.HasText("工作区") || !tt.HasText("仓库") || !tt.HasText("凭据") || !tt.HasText("LFS / Sparse") || !tt.HasText("Worktree") || !tt.HasText("提交签名") {
+		t.Fatal("workspace manager sections missing")
 	}
-	if err := tt.Click("克隆 / 初始化"); err != nil {
+	if err := tt.Click("添加仓库"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Frame()
-	if !tt.HasText("克隆仓库") || !tt.HasText("初始化仓库") {
-		t.Fatal("clone/init forms missing")
+	if err := tt.Click("克隆仓库…"); err != nil {
+		t.Fatalf("clone menu item: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("克隆仓库") {
+		t.Fatal("clone form missing")
 	}
 	app.wsCloneURL = bare
 	app.wsCloneName = "cloned"
@@ -98,7 +102,7 @@ func TestGitAdvancedP0Tabs(t *testing.T) {
 	if !tt.HasText("安全强制推送") {
 		t.Fatal("merge tab did not render")
 	}
-	if err := tt.Click("对比"); err != nil {
+	if err := tt.Click("Ref 对比"); err != nil {
 		t.Fatalf("compare tab: %v", err)
 	}
 	tt.Frame()
@@ -227,14 +231,22 @@ func TestWorkspaceHideAndRestoreUI(t *testing.T) {
 	app.openWorkspaceManager()
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
+	if err := tt.Click("更多"); err != nil {
+		t.Fatalf("more menu: %v", err)
+	}
+	tt.Frame()
 	if err := tt.Click("从视图隐藏"); err != nil {
-		t.Fatalf("hide button: %v", err)
+		t.Fatalf("hide menu item: %v", err)
 	}
 	tt.Frame()
 	if err := tt.Click("确认隐藏"); err != nil {
 		t.Fatalf("confirm hide: %v", err)
 	}
 	waitApp(t, "repo hidden", func() bool { return len(app.repos) == 0 && app.cfg.IsRepoHidden("demo") })
+	tt.Frame()
+	if err := tt.Click("已隐藏 1 个仓库"); err != nil {
+		t.Fatalf("hidden toggle: %v", err)
+	}
 	tt.Frame()
 	if err := tt.Click("恢复显示"); err != nil {
 		t.Fatalf("restore button: %v", err)

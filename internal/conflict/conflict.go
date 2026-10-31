@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/iwangjie/nemorous/internal/gitops"
@@ -446,4 +447,21 @@ func EnrichWithDiff3(doc, diff3 *Document) bool {
 		changed = true
 	}
 	return changed
+}
+
+// StageSize returns the byte size of an index stage (:1:, :2:, :3:) for a
+// conflicted path. It distinguishes a deleted side from an empty file.
+func StageSize(ctx context.Context, repoPath, relPath string, stage int) (int64, error) {
+	if stage < 1 || stage > 3 {
+		return 0, fmt.Errorf("无效的索引阶段 %d", stage)
+	}
+	out, err := gitops.RunGit(ctx, repoPath, "cat-file", "-s", fmt.Sprintf(":%d:%s", stage, relPath))
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }

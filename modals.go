@@ -778,21 +778,44 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 						}
 						ui.Text(c, "仅在打开文件时启动对应语言服务；关闭可立即释放内存与 CPU。").FontSize(10).TextColor(p.TextMuted).Grow(1)
 					})
-					for _, spec := range lsp.Available() {
-						installed := lsp.ServerInstalled(spec)
-						kc := c.Key("lsp-srv-" + spec.LanguageID)
-						ui.Row(kc).Gap(6).AlignItems(ui.Center).Children(func() {
-							drawIcon(kc, icoCode, 11, p.TextMuted)
-							ui.Text(kc, spec.LanguageID).FontSize(10.5).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(90)
-							ui.Text(kc, spec.Command).Font("monospace").FontSize(9).TextColor(p.TextMuted).Grow(1).MaxLines(1)
-							if installed {
-								badgeBox(kc, "已安装", p.Green, p.GreenSoft, ui.Color{}, 9, false)
-							} else {
-								badgeBox(kc, "未安装", p.TextMuted, p.Surface2, p.Border, 9, false)
-							}
-						})
+					servers := lsp.Available()
+					installed := 0
+					for _, spec := range servers {
+						if lsp.ServerInstalled(spec) {
+							installed++
+						}
 					}
-					ui.Text(c, "支持覆盖命令：在配置 JSON 的 lsp_servers 中按语言 ID 设置，例如 {\"go\": \"/opt/homebrew/bin/gopls\"}。").FontSize(9.5).TextColor(p.TextMuted)
+					ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, fmt.Sprintf("检测到 %d / %d 个语言服务", installed, len(servers))).FontSize(10).TextColor(p.TextMuted)
+						for _, spec := range servers {
+							if lsp.ServerInstalled(spec) {
+								badgeBox(c.Key("lsp-inst-"+spec.LanguageID), spec.LanguageID, p.Green, p.GreenSoft, ui.Color{}, 9, false)
+							}
+						}
+						ui.Spacer(c)
+						label := "查看检测详情"
+						if a.lspShowServers {
+							label = "收起检测详情"
+						}
+						miniBtn(c, p, label, func() { a.lspShowServers = !a.lspShowServers })
+					})
+					if a.lspShowServers {
+						for _, spec := range servers {
+							ok := lsp.ServerInstalled(spec)
+							kc := c.Key("lsp-srv-" + spec.LanguageID)
+							ui.Row(kc).Gap(6).AlignItems(ui.Center).Children(func() {
+								drawIcon(kc, icoCode, 11, p.TextMuted)
+								ui.Text(kc, spec.LanguageID).FontSize(10.5).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(90)
+								ui.Text(kc, spec.Command).Font("monospace").FontSize(9).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+								if ok {
+									badgeBox(kc, "已安装", p.Green, p.GreenSoft, ui.Color{}, 9, false)
+								} else {
+									badgeBox(kc, "未安装", p.TextMuted, p.Surface2, p.Border, 9, false)
+								}
+							})
+						}
+						ui.Text(c, "覆盖命令：在配置 JSON 的 lsp_servers 中按语言 ID 设置，例如 {\"go\": \"/opt/homebrew/bin/gopls\"}。").FontSize(9.5).TextColor(p.TextMuted)
+					}
 				})
 
 				// Section 3: Merge & AI Assistant (supports omp, pi, claude, codex)

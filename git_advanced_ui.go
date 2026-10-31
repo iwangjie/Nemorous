@@ -37,7 +37,11 @@ func (a *App) openGitOps(tab string) {
 		return
 	}
 	if tab == "" {
-		tab = "stash"
+		if a.gitOpsTab == "" {
+			tab = "stash"
+		} else {
+			tab = a.gitOpsTab
+		}
 	}
 	a.gitOpsTab = tab
 	a.showGitOps = true
@@ -130,8 +134,8 @@ func (a *App) runGitOpsAction(fn func(ctx context.Context, repoPath string) (str
 func (a *App) buildGitOpsModal(c *ui.Context, p Palette) {
 	ui.DialogBase(c, &a.showGitOps, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.40))
-		panelWidth := float32(880)
-		panelHeight := float32(620)
+		panelWidth := float32(980)
+		panelHeight := float32(680)
 		if a.win != nil {
 			if w, h := a.win.ContentSize(); w > 0 && h > 0 {
 				panelWidth = min(panelWidth, float32(w)-60)
@@ -168,112 +172,91 @@ func (a *App) buildGitOpsModal(c *ui.Context, p Palette) {
 			}
 		}, func() { a.showGitOps = false })
 
-		ui.Row(c).Height(28).FillWidth().Gap(2).AlignItems(ui.Center).Children(func() {
-			for _, tab := range []struct {
-				id, label string
-				svg       *ui.SVG
-			}{
-				{"stash", "Stash", icoArchive},
-				{"rebase", "Rebase", icoBranch},
-				{"commit", "提交", icoCommit},
-				{"tags", "标签", icoTag},
-				{"remotes", "远端", icoCloud},
-				{"submodules", "子模块", icoBox},
-				{"reflog", "Reflog", icoCommit},
-				{"merge", "合并", icoMerge},
-				{"compare", "对比", icoColumns},
-			} {
-				tab := tab
-				active := a.gitOpsTab == tab.id
-				fg := p.TextSecondary
-				kc := c.Key("gops-tab-" + tab.id)
-				el := ui.Row(kc).Padding(4, 9).Gap(5).Radius(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-				if active {
-					el.Background(p.AccentSoft)
-					fg = p.AccentSoftText
-				}
-				if el.Hovered() && !active {
-					el.Background(p.SurfaceHover)
-					fg = p.TextPrimary
-				}
-				if el.Clicked() {
-					a.gitOpsTab = tab.id
-					a.gitOpsConfirm = ""
-				}
-				el.Children(func() {
-					drawIcon(kc, tab.svg, 13, fg)
-					ui.Text(kc, tab.label).FontSize(11.5).FontWeight(weightMedium).TextColor(fg)
-				})
-			}
-			ui.Spacer(c)
-		})
+		ui.Row(c).Grow(1).FillWidth().Gap(10).Children(func() {
+			buildModalNav(c, p, 166, []modalNavItem{
+				{ID: "stash", Label: "Stash", Group: "常用", Icon: icoArchive},
+				{ID: "rebase", Label: "Rebase", Group: "历史", Icon: icoBranch},
+				{ID: "reflog", Label: "Reflog", Group: "历史", Icon: icoRestore},
+				{ID: "commit", Label: "Cherry-pick", Group: "历史", Icon: icoCommit},
+				{ID: "compare", Label: "Ref 对比", Group: "历史", Icon: icoColumns},
+				{ID: "merge", Label: "合并", Group: "分支", Icon: icoMerge},
+				{ID: "remotes", Label: "远端", Group: "分支", Icon: icoCloud},
+				{ID: "tags", Label: "标签", Group: "仓库", Icon: icoTag},
+				{ID: "submodules", Label: "子模块", Group: "仓库", Icon: icoBox},
+			}, a.gitOpsTab, func(id string) {
+				a.gitOpsTab = id
+				a.gitOpsConfirm = ""
+			})
 
-		if a.gitOpsState.Busy() {
-			ui.Row(c).FillWidth().Padding(6, 8).Gap(8).AlignItems(ui.Center).Radius(4).Background(p.AmberSoft).Children(func() {
-				drawIcon(c, icoAlert, 13, p.Amber)
-				op := "合并"
-				switch {
-				case a.gitOpsState.Rebase:
-					op = "Rebase"
-				case a.gitOpsState.CherryPick:
-					op = "Cherry-pick"
-				case a.gitOpsState.Revert:
-					op = "Revert"
-				}
-				ui.Text(c, fmt.Sprintf("%s · %d 个冲突", op, len(a.gitOpsState.Conflicts))).FontSize(10.5).FontWeight(weightMedium).TextColor(p.Amber).Grow(1)
-				if len(a.gitOpsState.Conflicts) > 0 {
-					iconAction(c, p, "gops-resolve", icoMerge, "解决冲突", true, func() {
-						a.showGitOps = false
-						a.openConflictResolver(a.gitOpsRepo)
+			ui.Column(c).Grow(1).FillHeight().Gap(6).Children(func() {
+				if a.gitOpsState.Busy() {
+					ui.Row(c).FillWidth().Padding(6, 8).Gap(8).AlignItems(ui.Center).Radius(4).Background(p.AmberSoft).Children(func() {
+						drawIcon(c, icoAlert, 13, p.Amber)
+						op := "合并"
+						switch {
+						case a.gitOpsState.Rebase:
+							op = "Rebase"
+						case a.gitOpsState.CherryPick:
+							op = "Cherry-pick"
+						case a.gitOpsState.Revert:
+							op = "Revert"
+						}
+						ui.Text(c, fmt.Sprintf("%s · %d 个冲突", op, len(a.gitOpsState.Conflicts))).FontSize(10.5).FontWeight(weightMedium).TextColor(p.Amber).Grow(1)
+						if len(a.gitOpsState.Conflicts) > 0 {
+							iconAction(c, p, "gops-resolve", icoMerge, "解决冲突", true, func() {
+								a.showGitOps = false
+								a.openConflictResolver(a.gitOpsRepo)
+							})
+						}
+						toolButton(c, p, "gops-continue", icoPlay, "继续", false, true, func() {
+							a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
+								return gitops.ContinueOperation(ctx, path)
+							})
+						})
+						toolButton(c, p, "gops-abort", icoStop, "中止", false, true, func() {
+							a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
+								return "已中止", gitops.AbortOperation(ctx, path)
+							})
+						})
 					})
 				}
-				toolButton(c, p, "gops-continue", icoPlay, "继续", false, true, func() {
-					a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
-						return gitops.ContinueOperation(ctx, path)
+				if a.gitOpsErr != "" {
+					ui.Row(c).FillWidth().Padding(5, 7).Gap(6).Radius(4).Background(p.DangerSoft).Children(func() {
+						drawIcon(c, icoAlert, 12, p.Danger)
+						ui.Text(c, a.gitOpsErr).FontSize(10).TextColor(p.Danger).MaxLines(5)
 					})
-				})
-				toolButton(c, p, "gops-abort", icoStop, "中止", false, true, func() {
-					a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
-						return "已中止", gitops.AbortOperation(ctx, path)
+				}
+				if a.gitOpsNotice != "" {
+					ui.Row(c).FillWidth().Padding(5, 7).Gap(6).Radius(4).Background(p.GreenSoft).Children(func() {
+						drawIcon(c, icoCheck, 12, p.Green)
+						ui.Text(c, a.gitOpsNotice).FontSize(10).TextColor(p.Green).MaxLines(3)
 					})
-				})
-			})
-		}
-		if a.gitOpsErr != "" {
-			ui.Row(c).FillWidth().Padding(5, 7).Gap(6).Radius(4).Background(p.DangerSoft).Children(func() {
-				drawIcon(c, icoAlert, 12, p.Danger)
-				ui.Text(c, a.gitOpsErr).FontSize(10).TextColor(p.Danger).MaxLines(5)
-			})
-		}
-		if a.gitOpsNotice != "" {
-			ui.Row(c).FillWidth().Padding(5, 7).Gap(6).Radius(4).Background(p.GreenSoft).Children(func() {
-				drawIcon(c, icoCheck, 12, p.Green)
-				ui.Text(c, a.gitOpsNotice).FontSize(10).TextColor(p.Green).MaxLines(3)
-			})
-		}
+				}
 
-		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Gap(6).Children(func() {
-				switch a.gitOpsTab {
-				case "rebase":
-					a.buildGitOpsRebase(c, p)
-				case "commit":
-					a.buildGitOpsCommitOps(c, p)
-				case "tags":
-					a.buildGitOpsTags(c, p)
-				case "remotes":
-					a.buildGitOpsRemotes(c, p)
-				case "submodules":
-					a.buildGitOpsSubmodules(c, p)
-				case "reflog":
-					a.buildGitOpsReflog(c, p)
-				case "merge":
-					a.buildGitOpsMerge(c, p)
-				case "compare":
-					a.buildGitOpsCompare(c, p)
-				default:
-					a.buildGitOpsStash(c, p)
-				}
+				ui.Scroll(c).Grow(1).FillWidth().Children(func() {
+					ui.Column(c).FillWidth().Gap(6).Children(func() {
+						switch a.gitOpsTab {
+						case "rebase":
+							a.buildGitOpsRebase(c, p)
+						case "commit":
+							a.buildGitOpsCommitOps(c, p)
+						case "tags":
+							a.buildGitOpsTags(c, p)
+						case "remotes":
+							a.buildGitOpsRemotes(c, p)
+						case "submodules":
+							a.buildGitOpsSubmodules(c, p)
+						case "reflog":
+							a.buildGitOpsReflog(c, p)
+						case "merge":
+							a.buildGitOpsMerge(c, p)
+						case "compare":
+							a.buildGitOpsCompare(c, p)
+						default:
+							a.buildGitOpsStash(c, p)
+						}
+					})
+				})
 			})
 		})
 	})
