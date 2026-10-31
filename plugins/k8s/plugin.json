@@ -1,0 +1,35 @@
+{
+  "id": "k8s",
+  "name": "Kubernetes",
+  "version": "1.0.0",
+  "description": "Kubernetes Dashboard：命名空间、Pod、工作负载、Service、Ingress、事件与节点可视化，支持日志、扩缩容、滚动重启和 Pod 删除。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.6.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": [
+    "network.http"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "k8s",
+        "title": "Kubernetes",
+        "icon": "k8s"
+      }
+    ],
+    "commands": [
+      {
+        "id": "k8s.open",
+        "title": "Kubernetes: 打开集群面板",
+        "action": "openDashboard"
+      },
+      {
+        "id": "k8s.settings",
+        "title": "Kubernetes: 连接设置",
+        "action": "openSettings"
+      }
+    ]
+  }
+}

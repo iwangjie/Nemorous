@@ -132,6 +132,8 @@
 - **完整安装器与插件市场**：内置官方索引 + 远程市场，支持安装、更新、启用、禁用、卸载与本地 `.zip` 安装；远程包强制 SHA-256 校验，压缩包做体积与路径越界检查，内置插件离线可用。
 - **官方 Maven 插件（为大型多仓 Reactor 设计）**：跨全部仓库发现 Maven 模块，按父子/模块关系组织，计算构建批次与版本冲突，展示跨仓内部依赖边；支持 `clean/compile/test/package/install`、默认并发构建（`-T 1C`）、项目 wrapper、Maven/JVM 设置、实时输出、`dependency:tree` 与 Effective POM。
 - **官方 Java 插件**：扫描工作区 `src/main/java` 与 `src/test/java`，识别主类/测试类，通过 Maven/Gradle 或原生 `java` 运行并流式输出，可开启 JDWP 端口供远程调试。
+- **官方 Jenkins 插件**：连接公司 Jenkins，自动处理 Session Cookie 与 CSRF；浏览文件夹与常见任务类型，支持搜索、仓库关联、参数化构建、队列/构建状态轮询、构建历史与控制台输出。
+- **官方 Kubernetes 插件**：原生 K8s Dashboard，查看命名空间、Pod、Deployment、StatefulSet、Service、Ingress、事件与节点；流式查看 Pod 日志、扩缩容、滚动重启，无需 kubectl。
 - **官方预览与远程插件**：Markdown/CSV 默认以主编辑器视图打开（Markdown 语法高亮、双栏/单栏/实时预览、本地图片与保存；CSV 表格与搜索）；公司 GitLab 私服 MR/流水线/Issue；代码行数统计与语言分布；SSH 主机保存并直接在底部终端连接。
 
 <picture>
@@ -142,6 +144,11 @@
 <picture>
   <img src="docs/screenshots/14_markdown_plugin_light.png" width="49%" alt="Markdown 双栏预览、表格与代码高亮">
   <img src="docs/screenshots/15_gitlab_plugin_light.png" width="49%" alt="GitLab 私服 Merge Request、批准与评论">
+</picture>
+
+<picture>
+  <img src="docs/screenshots/16_jenkins_plugin_light.png" width="49%" alt="Jenkins 任务、仓库关联与构建历史">
+  <img src="docs/screenshots/17_k8s_plugin_light.png" width="49%" alt="Kubernetes 命名空间、Pod 与工作负载仪表盘">
 </picture>
 
 插件开发指南：[docs/plugins.md](docs/plugins.md)。

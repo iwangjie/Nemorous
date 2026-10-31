@@ -132,6 +132,8 @@ As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenC
 - **Full Installer & Marketplace**: Browse the embedded official index or a remote registry, install/update/enable/disable/uninstall in place, or install a local `.zip` package. Remote packages are SHA-256 verified, archives are size- and path-checked, and every operation works offline for bundled plugins.
 - **Official Maven Plugin, built for large reactors**: Discovers Maven modules across every repository, groups them by parent/module hierarchy, computes dependency waves and version conflicts, explains cross-repo internal edges, and runs `clean/compile/test/package/install` with concurrent builds (`-T 1C` by default), project wrappers, Maven/JVM settings, streaming output, `dependency:tree`, and Effective POM.
 - **Official Java Plugin**: Scans `src/main/java` and `src/test/java` across the workspace, finds main/test classes, runs them through Maven/Gradle or plain `java`, streams output, and opens a JDWP port for remote debugging.
+- **Official Jenkins Plugin**: Connects to private Jenkins with session-cookie/CSRF handling, browses folders and every common job type, searches and associates jobs with workspace repositories, runs parameterized builds, watches the queue and build status, and shows history plus console output.
+- **Official Kubernetes Plugin**: A native dashboard for namespaces, pods, deployments, stateful sets, services, ingress, events and nodes; stream pod logs, scale or restart workloads, and inspect cluster health without kubectl.
 - **Official Preview & Remote Plugins**: Markdown and CSV are native editor integrations that open automatically in the main editor (split/single/live Markdown with syntax highlighting and saving), joined by private GitLab MR/pipeline/issue integration, code line statistics, and saved SSH hosts that open the embedded terminal.
 
 <picture>
@@ -142,6 +144,11 @@ As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenC
 <picture>
   <img src="docs/screenshots/14_markdown_plugin_light.png" width="49%" alt="Markdown split preview with tables and code highlighting">
   <img src="docs/screenshots/15_gitlab_plugin_light.png" width="49%" alt="GitLab private server merge requests, approvals and comments">
+</picture>
+
+<picture>
+  <img src="docs/screenshots/16_jenkins_plugin_light.png" width="49%" alt="Jenkins jobs, repository association and build history">
+  <img src="docs/screenshots/17_k8s_plugin_light.png" width="49%" alt="Kubernetes namespace, pods and workload dashboard">
 </picture>
 
 Plugin authoring guide: [docs/plugins.md](docs/plugins.md).

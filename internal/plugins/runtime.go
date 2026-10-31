@@ -54,6 +54,9 @@ type Runtime struct {
 	seq            uint64
 	jobSeq         int
 	jobs           map[string]*runtimeJob
+	timerMu        sync.Mutex
+	timerSeq       int
+	timers         map[int]*time.Timer
 	storage        map[string]any
 	logs           []string
 	evalErr        error
@@ -67,6 +70,7 @@ func newRuntime(mgr *Manager, p Plugin) *Runtime {
 		stopCh:  make(chan struct{}),
 		done:    make(chan struct{}),
 		jobs:    make(map[string]*runtimeJob),
+		timers:  make(map[int]*time.Timer),
 		storage: make(map[string]any),
 	}
 }
@@ -102,6 +106,12 @@ func (rt *Runtime) run() {
 			for _, job := range rt.jobs {
 				job.cancel()
 			}
+			rt.timerMu.Lock()
+			for _, timer := range rt.timers {
+				timer.Stop()
+			}
+			rt.timers = make(map[int]*time.Timer)
+			rt.timerMu.Unlock()
 			return
 		case fn := <-rt.loop:
 			fn()
@@ -359,6 +369,28 @@ func (rt *Runtime) installAPI(vm *goja.Runtime) error {
 		rt.markDirty()
 		return goja.Undefined()
 	})
+	setTimeoutFn := func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(rt.scheduleTimer(call.Argument(0), call.Argument(1).ToInteger(), false))
+	}
+	setIntervalFn := func(call goja.FunctionCall) goja.Value {
+		return vm.ToValue(rt.scheduleTimer(call.Argument(0), call.Argument(1).ToInteger(), true))
+	}
+	clearTimerFn := func(call goja.FunctionCall) goja.Value {
+		rt.clearTimer(int(call.Argument(0).ToInteger()))
+		return goja.Undefined()
+	}
+	for _, pair := range []struct {
+		name string
+		fn   func(goja.FunctionCall) goja.Value
+	}{
+		{"setTimeout", setTimeoutFn},
+		{"setInterval", setIntervalFn},
+		{"clearTimeout", clearTimerFn},
+		{"clearInterval", clearTimerFn},
+	} {
+		api.Set(pair.name, pair.fn)
+		_ = vm.Set(pair.name, pair.fn)
+	}
 
 	fsAPI := vm.NewObject()
 	fsAPI.Set("read", func(call goja.FunctionCall) goja.Value {
@@ -805,6 +837,59 @@ func (rt *Runtime) startHTTP(arg goja.Value) error {
 		})
 	}()
 	return nil
+}
+
+func (rt *Runtime) scheduleTimer(fn goja.Value, delayMS int64, repeat bool) int {
+	if _, ok := goja.AssertFunction(fn); !ok {
+		return 0
+	}
+	if delayMS < 50 {
+		delayMS = 50
+	}
+	if delayMS > 10*60*1000 {
+		delayMS = 10 * 60 * 1000
+	}
+	rt.timerMu.Lock()
+	if len(rt.timers) >= 128 {
+		rt.timerMu.Unlock()
+		return 0
+	}
+	rt.timerMu.Unlock()
+	rt.timerSeq++
+	id := rt.timerSeq
+	delay := time.Duration(delayMS) * time.Millisecond
+	var timer *time.Timer
+	timer = time.AfterFunc(delay, func() {
+		rt.post(func() {
+			if !repeat {
+				rt.timerMu.Lock()
+				delete(rt.timers, id)
+				rt.timerMu.Unlock()
+			}
+			rt.callJob(fn)
+			rt.markDirty()
+			if repeat {
+				rt.timerMu.Lock()
+				if current := rt.timers[id]; current != nil {
+					current.Reset(delay)
+				}
+				rt.timerMu.Unlock()
+			}
+		})
+	})
+	rt.timerMu.Lock()
+	rt.timers[id] = timer
+	rt.timerMu.Unlock()
+	return id
+}
+
+func (rt *Runtime) clearTimer(id int) {
+	rt.timerMu.Lock()
+	if timer := rt.timers[id]; timer != nil {
+		timer.Stop()
+		delete(rt.timers, id)
+	}
+	rt.timerMu.Unlock()
 }
 
 func (rt *Runtime) callJob(fn goja.Value, args ...any) {

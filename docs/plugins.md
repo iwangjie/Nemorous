@@ -12,6 +12,8 @@ Nemorous 的插件是一个带 `plugin.json` 清单的目录，逻辑写在 Java
 | --- | --- | --- |
 | Maven | 多仓 Maven 模块树、依赖批次与版本冲突、默认并发构建、wrapper、依赖树/Effective POM | `workspace.read`、`process.exec` |
 | Java | 扫描主类/测试类，通过 Maven/Gradle/原生 JVM 运行，JDWP 远程调试 | `workspace.read`、`process.exec` |
+| Jenkins | 任务/文件夹浏览、仓库关联、参数构建、队列与构建历史、控制台 | `workspace.read`、`network.http`、`ui.open` |
+| Kubernetes | 命名空间、Pod/工作负载/网络/事件/节点、日志、扩缩容、滚动重启 | `network.http` |
 | Markdown | 默认安装的主编辑器视图：`.md` 自动接管、语法高亮、双栏/预览、实时编辑、本地图片与保存 | `workspace.read/write`、`editor.read` |
 | CSV Preview | 默认安装的主编辑器视图：CSV/TSV 自动接管、分隔符推断、原生表格、搜索过滤 | `workspace.read`、`editor.read` |
 | GitLab | 私服项目识别、MR、流水线、Issue、批准与评论 | `workspace.read`、`network.http`、`ui.open` |
@@ -123,6 +125,7 @@ function deactivate() {}                    // 可选
 | `nemorous.storage.get/set/remove` | 插件私有 JSON 存储（≤1 MB，跨升级保留） |
 | `nemorous.notify([kind,] message)` | 右下角提示，kind 为 `ok/warn/err/info` |
 | `nemorous.invalidate()` | 请求重绘（宿主限流到 80 ms） |
+| `setTimeout(fn, ms)` / `setInterval(fn, ms)` | 插件 VM 定时器，回调后自动重绘；`clearTimeout` / `clearInterval` 取消 |
 | `nemorous.editor.activeFile()` | 当前代码编辑器文件：`{repoId,repoName,path,relPath,name,content}` 或 `null`（需 `editor.read`） |
 | `nemorous.openURL(url)` | 用系统浏览器打开 http/https 地址（需 `ui.open`） |
 | `nemorous.http.request(opts)` | 异步 HTTP 请求，支持私有 GitLab、自签名证书与回调（需 `network.http`） |

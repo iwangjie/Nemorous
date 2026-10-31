@@ -569,3 +569,30 @@ func TestBundledPluginsUpdateWithApp(t *testing.T) {
 		t.Fatalf("bundled plugin stayed at %s", p.Manifest.Version)
 	}
 }
+
+func TestRuntimeTimers(t *testing.T) {
+	m := newTestManager(t)
+	m.SetWorkspace(t.TempDir(), nil)
+	dir := makePluginDir(t, "timers", `
+var status = "idle";
+function render(panel) { return {type: "text", text: status}; }
+function handleAction(action) {
+  if (action !== "go") return;
+  status = "waiting";
+  setTimeout(function () { status = "fired"; }, 80);
+  var ticks = 0;
+  var interval = setInterval(function () {
+    ticks++;
+    if (ticks >= 2) clearInterval(interval);
+  }, 60);
+}
+`)
+	if _, err := m.store.InstallDir(dir, "test"); err != nil {
+		t.Fatal(err)
+	}
+	m.Load()
+	ref := "timers:main"
+	waitSnapshot(t, m, ref, func(s *PanelSnapshot) bool { return strings.Contains(snapshotText(s), "idle") })
+	m.Dispatch(ref, "go", nil)
+	waitSnapshot(t, m, ref, func(s *PanelSnapshot) bool { return strings.Contains(snapshotText(s), "fired") })
+}

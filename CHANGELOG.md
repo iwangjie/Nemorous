@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+- **新增官方 Jenkins 插件**:
+  - 连接公司 Jenkins，兼容经典 JSON API；自动处理 Basic Auth、Session Cookie 与 CSRF Crumb，支持登录失败/权限不足提示。
+  - 任务面板：文件夹/多分支递归展开，支持自由风格、Pipeline、Maven、矩阵、MultiJob 等类型；搜索、状态与健康度、最近构建展示。
+  - 任务关联工作区仓库；参数化构建自动生成 String/Choice/Boolean/Password 等参数控件，构建后轮询队列与构建状态，展示构建历史、参数与控制台输出。
+  - 真实测试环境 E2E：读取任务、打开参数任务、触发构建并确认成功。
+- **新增官方 Kubernetes 插件**:
+  - 命名空间、Pod、Deployment、StatefulSet、DaemonSet、Job/CronJob、Service、Ingress、Event 与 Node 仪表盘。
+  - Pod 日志、Deployment/StatefulSet 扩缩容、滚动重启、Pod 删除、15 秒自动刷新；兼容 Kubernetes 1.19+，Ingress v1/v1beta1 自动回退。
+  - 真实测试集群 E2E：连接、切换命名空间、读取 Pod/工作负载/网络/事件、打开容器日志。
+- **插件运行时**: 新增 `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval`，支持构建队列轮询与 Dashboard 自动刷新。
+- **文档**: 更新中英 README、插件矩阵与 Jenkins/Kubernetes 截图。
+
 ## 0.6.0
 - **Maven 插件 1.1：为大型多仓 Reactor 重新设计**:
   - 模块树保留父子/聚合关系，左侧可搜索；右侧聚焦当前模块的坐标、打包方式、Profile、生命周期、自定义目标与实时输出。
