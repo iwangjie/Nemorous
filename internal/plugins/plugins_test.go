@@ -648,3 +648,17 @@ function handleAction(action) {
 		t.Fatalf("db result = %s", txt)
 	}
 }
+
+func TestSQLiteDSNNormalization(t *testing.T) {
+	cases := map[string]string{
+		"C:\\data\\app.db": "file:C:/data/app.db",
+		"/tmp/app.db":      "file:/tmp/app.db",
+		"file::memory:":    "file::memory:",
+		"relative.db":      "relative.db",
+	}
+	for in, want := range cases {
+		if got := sqliteDSN(in); got != want {
+			t.Errorf("sqliteDSN(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

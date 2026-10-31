@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -150,7 +151,11 @@ func runDBQuery(opts dbOptions) (dbResult, error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
-	db, err := sql.Open(opts.driver, opts.dsn)
+	dsn := opts.dsn
+	if opts.driver == "sqlite" {
+		dsn = sqliteDSN(dsn)
+	}
+	db, err := sql.Open(opts.driver, dsn)
 	if err != nil {
 		return dbResult{}, err
 	}
@@ -209,6 +214,21 @@ func runDBQuery(opts dbOptions) (dbResult, error) {
 	out.RowCount = len(out.Rows)
 	out.DurationMs = time.Since(start).Milliseconds()
 	return out, nil
+}
+
+func sqliteDSN(dsn string) string {
+	if strings.HasPrefix(dsn, "file:") {
+		return dsn
+	}
+	// SQLite interprets a bare Windows drive as a URI scheme; use its file:
+	// form so `C:\data\app.db` opens instead of failing with SQLITE_CANTOPEN.
+	if len(dsn) >= 2 && dsn[1] == ':' {
+		return "file:" + strings.ReplaceAll(filepath.ToSlash(dsn), "\\", "/")
+	}
+	if !filepath.IsAbs(dsn) {
+		return dsn
+	}
+	return "file:" + filepath.ToSlash(dsn)
 }
 
 func normalizeDBValue(v any) any {
