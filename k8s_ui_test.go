@@ -83,6 +83,15 @@ func TestKubernetesPluginEndToEnd(t *testing.T) {
 	waitPluginSnapshotTimeout(t, app, ref, 20, func(s *plugins.PanelSnapshot) bool {
 		return nodeContainsText(s.Root, "Deployment /") && nodeContainsText(s.Root, "工作负载")
 	})
+	app.pluginMgr.Dispatch(ref, "selectWorkload", map[string]any{"kind": "Deployment", "name": "agent-api"})
+	waitPluginSnapshotTimeout(t, app, ref, 10, func(s *plugins.PanelSnapshot) bool {
+		return nodeContainsText(s.Root, "Deployment / agent-api") && nodeContainsText(s.Root, "滚动重启")
+	})
+	app.pluginMgr.Dispatch(ref, "scale", map[string]any{"kind": "Deployment", "name": "agent-api", "delta": 1})
+	waitPluginSnapshotTimeout(t, app, ref, 10, func(s *plugins.PanelSnapshot) bool {
+		return nodeContainsText(s.Root, "确认调整为")
+	})
+	app.pluginMgr.Dispatch(ref, "cancelScale", nil)
 	app.pluginMgr.Dispatch(ref, "tab", map[string]any{"value": "network"})
 	waitPluginSnapshotTimeout(t, app, ref, 20, func(s *plugins.PanelSnapshot) bool {
 		return nodeContainsText(s.Root, "Services") && nodeContainsText(s.Root, "Ingress")

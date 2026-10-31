@@ -650,6 +650,32 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 		} else {
 			scroll.Grow(1)
 		}
+		listKey := ref + "::" + path
+		if a.pluginScroll == nil {
+			a.pluginScroll = make(map[string]*ui.ScrollState)
+		}
+		st := a.pluginScroll[listKey]
+		if st == nil {
+			st = &ui.ScrollState{}
+			a.pluginScroll[listKey] = st
+		}
+		scroll.TrackScroll(st)
+		if a.pluginListSelected == nil {
+			a.pluginListSelected = make(map[string]string)
+		}
+		selectedKey := ""
+		selectedIndex := -1
+		for i, item := range n.Items {
+			if item.Selected {
+				selectedKey = fmt.Sprintf("%d\x00%s\x00%s", i, item.Text, item.Detail)
+				selectedIndex = i
+				break
+			}
+		}
+		if selectedIndex >= 0 && a.pluginListSelected[listKey] != selectedKey {
+			a.pluginListSelected[listKey] = selectedKey
+			st.Y = max(0, float32(selectedIndex*22-66))
+		}
 		scroll.Children(func() {
 			for i, item := range n.Items {
 				key := fmt.Sprintf("%s.i%d", path, i)

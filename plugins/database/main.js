@@ -21,6 +21,7 @@ var state = {
   columns: [],
   indexes: [],
   schemaLoading: false,
+  schemaSeq: 0,
   editing: null,
   form: emptyForm(),
   formKey: 0
@@ -170,7 +171,6 @@ function runQuery() {
     if (mode === "query") state.result = result;
     else state.execResult = result;
     addHistory(sql, true, Date.now() - started);
-    if (state.view === "schema" && state.selectedTable) loadTable(state.selectedTable);
     nemorous.invalidate();
   }, function (e) {
     addHistory(sql, false, Date.now() - started);
@@ -270,25 +270,33 @@ function selectTable(name) {
   state.selectedTable = name;
   state.columns = [];
   state.indexes = [];
-  loadTable(name);
+  state.schemaSeq++;
+  loadTable(name, state.schemaSeq);
 }
-function loadTable(name) {
+function loadTable(name, seq) {
   var c = selectedConnection();
   if (!c || !name) return;
+  var token = seq || ++state.schemaSeq;
   state.schemaLoading = true;
   callDB("query", columnsQuery(c, name), function (result) {
+    if (token !== state.schemaSeq || name !== state.selectedTable) return;
     state.columns = rowsToObjects(result);
     nemorous.invalidate();
     callDB("query", indexesQuery(c, name), function (idx) {
+      if (token !== state.schemaSeq || name !== state.selectedTable) return;
       state.indexes = rowsToObjects(idx);
       state.schemaLoading = false;
       nemorous.invalidate();
     }, function () {
+      if (token !== state.schemaSeq || name !== state.selectedTable) return;
       state.indexes = [];
       state.schemaLoading = false;
       nemorous.invalidate();
     });
-  }, function (e) { state.schemaLoading = false; setError(errText(e)); });
+  }, function (e) {
+    if (token !== state.schemaSeq || name !== state.selectedTable) return;
+    state.schemaLoading = false; setError(errText(e));
+  });
 }
 function previewTable() {
   if (!state.selectedTable) return;
@@ -382,10 +390,7 @@ function header() {
     text("Database", { bold: true, size: 13 }),
     c ? badge(driverLabel(c.driver), "accent") : badge("未连接", "muted"),
     c ? text(c.name, { size: 10.5, muted: true }) : null,
-    state.status ? badge(state.status, state.statusTone || "muted") : null,
-    spacer(),
-    btn("连接管理", "openConnections", null, { small: true }),
-    btn("刷新", "refresh", null, { small: true, disabled: state.running })
+    spacer()
   ], { gap: 5 });
 }
 function tabs() {
@@ -409,7 +414,7 @@ function connectionSidebar() {
     });
   }
   return col([
-    row([text("连接", { bold: true, size: 10 }), spacer(), btn("+", "newConnection", null, { small: true })], { gap: 3 }),
+    text("连接", { bold: true, size: 10 }),
     items.length ? list(items, { grow: true, scroll: true }) : hint("还没有数据库连接。"),
     state.connections.length ? text(state.connections.length + " 个连接", { size: 9, muted: true }) : null
   ], { width: 190, heightPercent: 100, gap: 5 });
@@ -577,7 +582,7 @@ function handleAction(action, payload, panelID) {
     case "selectConnection":
       state.selected = p.id || "";
       nemorous.storage.set("selected", state.selected);
-      state.tables = []; state.selectedTable = ""; state.columns = []; state.indexes = [];
+      state.tables = []; state.selectedTable = ""; state.columns = []; state.indexes = []; state.schemaSeq++;
       state.result = null; state.execResult = null;
       if (state.view === "connections") editConnection(selectedConnection());
       else state.view = "query";
@@ -624,10 +629,6 @@ function handleAction(action, payload, panelID) {
       return;
     case "clearSQL":
       state.sql = ""; state.sqlKey++; state.result = null; state.execResult = null;
-      break;
-    case "refresh":
-      if (state.view === "schema") loadTables();
-      else if (state.view === "query" && state.selected) state.sqlKey++;
       break;
     case "loadTables":
       loadTables(); return;

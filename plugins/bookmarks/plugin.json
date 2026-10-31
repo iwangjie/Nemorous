@@ -1,7 +1,7 @@
 {
   "id": "bookmarks",
   "name": "Bookmarks",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "常用网站书签：分类、搜索、持久化存储、自动抓取 favicon 与自动生成字母图标。",
   "author": "Nemorous",
   "homepage": "https://github.com/iwangjie/Nemorous",

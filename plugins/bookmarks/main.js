@@ -19,7 +19,8 @@ var state = {
   confirmDelete: "",
   fetching: {},
   iconTimer: 0,
-  iconQueue: []
+  iconQueue: [],
+  iconForce: false
 };
 
 function emptyForm() {
@@ -276,7 +277,7 @@ function applyIcon(bm, data, force) {
   nemorous.invalidate();
 }
 function finishIcon(bm, force) {
-  if (!bm.icon || force) bm.icon = letterIcon(bm);
+  if (!bm.icon) bm.icon = letterIcon(bm);
   bm.iconAt = Date.now();
   delete state.fetching[bm.id];
   if (bm.id === "__form__") {
@@ -294,13 +295,28 @@ function refreshMissingIcons() {
     var b = state.bookmarks[i];
     if (!b.icon || !b.iconAt || (now - b.iconAt > 30 * 86400000)) queue.push(b);
   }
+  state.iconForce = false;
   state.iconQueue = queue.slice(0, 8);
   fetchNextIcon();
 }
+function refreshAllIcons() {
+  if (state.iconTimer) clearTimeout(state.iconTimer);
+  state.iconForce = true;
+  state.iconQueue = state.bookmarks.slice(0);
+  state.status = "正在刷新 " + state.iconQueue.length + " 个网站图标…";
+  state.statusTone = "accent";
+  nemorous.invalidate();
+  fetchNextIcon();
+}
 function fetchNextIcon() {
-  if (!state.iconQueue.length) return;
+  if (!state.iconQueue.length) {
+    state.status = "图标刷新完成";
+    state.statusTone = "ok";
+    nemorous.invalidate();
+    return;
+  }
   var bm = state.iconQueue.shift();
-  fetchIcon(bm, false);
+  fetchIcon(bm, state.iconForce);
   state.iconTimer = setTimeout(fetchNextIcon, 500);
 }
 
@@ -311,7 +327,7 @@ function header() {
     badge(state.bookmarks.length + " 个", "muted"),
     state.categories.length ? badge(state.categories.length + " 分类", "muted") : null,
     spacer(),
-    btn("刷新图标", "refreshIcons", null, { small: true }),
+    btn("刷新全部图标", "refreshIcons", null, { small: true }),
     btn("添加书签", "addBookmark", null, { primary: true, small: true })
   ], { gap: 5 });
 }
@@ -329,8 +345,7 @@ function sidebar() {
   }
   return col([
     text("分类", { bold: true, size: 10 }),
-    list(items, { grow: true, scroll: true }),
-    hint("在书签编辑器中输入新分类即可创建。")
+    list(items, { grow: true, scroll: true })
   ], { width: 165, heightPercent: 100, gap: 5 });
 }
 function bookmarkCard(b) {
@@ -397,6 +412,7 @@ function editView() {
     field("标题", "title", f.title, "例如 GitHub"),
     field("网址", "url", f.url, "https://github.com"),
     field("分类", "category", f.category, "例如 开发 / 运维"),
+    hint("输入新分类即可创建。"),
     categorySuggestions(),
     text("描述", { muted: true, size: 9.5 }),
     el("textarea", { key: "bm-desc:" + state.formKey, value: f.description, action: "field", height: 60, grow: true }),
@@ -551,9 +567,7 @@ function handleAction(action, payload, panelID) {
       state.formKey++;
       break;
     case "refreshIcons":
-      state.status = "正在刷新图标…";
-      state.statusTone = "accent";
-      refreshMissingIcons();
+      refreshAllIcons();
       break;
     default:
       return;

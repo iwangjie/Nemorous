@@ -50,6 +50,10 @@ func TestBookmarksPluginAddFetchSearchAndCategory(t *testing.T) {
 	waitPluginSnapshotTimeout(t, app, ref, 10, func(s *plugins.PanelSnapshot) bool {
 		return hasImageSrc(s.Root, "data:image/png;base64,")
 	})
+	app.pluginMgr.Dispatch(ref, "refreshIcons", nil)
+	waitPluginSnapshotTimeout(t, app, ref, 10, func(s *plugins.PanelSnapshot) bool {
+		return nodeContainsText(s.Root, "图标刷新完成")
+	})
 	app.pluginMgr.Dispatch(ref, "filter", map[string]any{"value": "demo bookmark"})
 	waitPluginSnapshot(t, app, ref, func(s *plugins.PanelSnapshot) bool { return nodeContainsText(s.Root, "Example") })
 	app.pluginMgr.Dispatch(ref, "category", map[string]any{"value": "Test"})

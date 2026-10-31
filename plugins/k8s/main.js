@@ -44,6 +44,7 @@ var state = {
   selectedService: null,
   selectedIngress: null,
   deletePodConfirm: "",
+  scalePending: null,
   pollTimer: 0,
   seq: 0
 };
@@ -143,6 +144,10 @@ function metric(label, value, tone, sub) {
 }
 function sectionTitle(value, extra) {
   return row([text(value, { bold: true, size: 10.5 }), extra || null, spacer()], { gap: 4 });
+}
+function shortLabel(value, max) {
+  var s = String(value || "");
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 function baseURL() { return String(state.settings.baseUrl || "").replace(/\/+$/, ""); }
 function tail(s, max) { s = String(s || ""); return s.length > max ? s.substring(s.length - max) : s; }
@@ -303,6 +308,7 @@ function loadNamespace(ns, silent) {
     state.selectedPod = null;
     state.podLogs = "";
     state.selectedWorkload = null;
+    state.scalePending = null;
     state.selectedService = null;
     state.selectedIngress = null;
   }
@@ -580,14 +586,16 @@ function deletePod() {
     loadNamespace(p.namespace, true);
   }, { onError: function (resp) { setError("删除 Pod 失败：" + apiError(resp)); } });
 }
-function scaleWorkload(w, delta) {
+function scaleWorkload(w, replicas) {
   if (!w || (w.kind !== "Deployment" && w.kind !== "StatefulSet")) {
     state.error = "只有 Deployment / StatefulSet 支持扩缩容";
     return;
   }
-  var replicas = Math.max(0, (w.raw.spec && w.raw.spec.replicas !== undefined ? w.raw.spec.replicas : w.desired) + delta);
   var path = "/apis/apps/v1/namespaces/" + encPath(w.namespace) + "/" + (w.kind === "Deployment" ? "deployments" : "statefulsets") + "/" + encPath(w.name) + "/scale";
+  state.status = "正在调整 " + w.name + "…";
+  state.statusTone = "accent";
   apiRequest("PATCH", path, JSON.stringify({ spec: { replicas: replicas } }), "application/merge-patch+json", function () {
+    state.scalePending = null;
     state.status = w.name + " 已调整为 " + replicas + " 副本";
     state.statusTone = "ok";
     loadNamespace(w.namespace, true);
@@ -614,19 +622,11 @@ function restartWorkload(w) {
 
 // ---------- UI ----------
 function header() {
-  var failed = 0, running = 0, restarts = 0;
-  for (var i = 0; i < state.pods.length; i++) {
-    var p = state.pods[i];
-    if (p.phase === "Failed") failed++;
-    if (p.phase === "Running") running++;
-    restarts += p.restarts;
-  }
   return row([
     text("Kubernetes", { bold: true, size: 13 }),
     badge(state.connected ? "在线" : "未连接", state.connected ? "ok" : "muted"),
     state.version ? badge(state.version, "muted") : null,
     state.ns ? badge("ns/" + state.ns, "accent") : null,
-    failed ? badge(failed + " Failed", "err") : null,
     state.lastUpdated ? text("更新 " + state.lastUpdated, { muted: true, size: 9 }) : null,
     spacer(),
     btn("刷新", "refresh", null, { small: true, disabled: state.loading }),
@@ -687,42 +687,38 @@ function contentView() {
   return overviewView();
 }
 function overviewView() {
-  var running = 0, pending = 0, failed = 0, succeeded = 0, restarts = 0;
+  var running = 0, pending = 0, failed = 0, restarts = 0;
   for (var i = 0; i < state.pods.length; i++) {
     var p = state.pods[i];
     if (p.phase === "Running") running++;
     else if (p.phase === "Pending") pending++;
     else if (p.phase === "Failed") failed++;
-    else if (p.phase === "Succeeded") succeeded++;
     restarts += p.restarts;
   }
-  var workloads = state.deployments.length + state.statefulsets.length + state.daemonsets.length;
+  var readyWorkloads = 0;
+  var allWorkloads = state.deployments.concat(state.statefulsets).concat(state.daemonsets);
+  for (var wi = 0; wi < allWorkloads.length; wi++) if (allWorkloads[wi].desired > 0 && allWorkloads[wi].ready >= allWorkloads[wi].desired) readyWorkloads++;
+  var warningEvents = 0;
+  for (var ei = 0; ei < state.events.length; ei++) if (state.events[ei].type === "Warning") warningEvents++;
   var children = [];
   children.push(row([
-    metric("Pods", state.pods.length, "accent", running + " Running"),
-    metric("重启次数", restarts, restarts > 0 ? "warn" : "ok", "全部容器累计"),
-    metric("工作负载", workloads, "accent", state.deployments.length + " Deployments")
+    metric("Running", running, "ok", "共 " + state.pods.length + " Pods"),
+    metric("Pending", pending, pending ? "warn" : "muted", "等待调度/启动"),
+    metric("Failed", failed, failed ? "err" : "muted", "最近采集")
   ], { gap: 6 }));
   children.push(row([
-    metric("Services", state.services.length, "muted", state.ingresses.length + " Ingress"),
-    metric("事件", state.events.length, failed ? "warn" : "muted", "最近 100 条"),
-    metric("节点", state.nodes.length, state.nodes.length ? "ok" : "muted", "集群容量")
+    metric("重启次数", restarts, restarts > 0 ? "warn" : "ok", "全部容器累计"),
+    metric("已就绪", readyWorkloads, readyWorkloads ? "ok" : "warn", "共 " + allWorkloads.length + " 工作负载"),
+    metric("Warning", warningEvents, warningEvents ? "warn" : "ok", "最近 " + state.events.length + " 条事件")
   ], { gap: 6 }));
-  children.push(card([
-    sectionTitle("Pod 状态", badge(running + " / " + state.pods.length + " 运行", "ok")),
-    el("bar", { text: "Running", detail: running + " Pods", fraction: state.pods.length ? running / state.pods.length : 0, tone: "ok" }),
-    pending ? el("bar", { text: "Pending", detail: pending + " Pods", fraction: pending / state.pods.length, tone: "warn" }) : null,
-    failed ? el("bar", { text: "Failed", detail: failed + " Pods", fraction: failed / state.pods.length, tone: "err" }) : null,
-    succeeded ? el("bar", { text: "Succeeded", detail: succeeded + " Pods", fraction: succeeded / state.pods.length, tone: "muted" }) : null
-  ], { padding: 10, gap: 4 }));
   var readiness = [];
   for (var d = 0; d < state.deployments.length && d < 5; d++) {
     var w = state.deployments[d];
-    readiness.push(el("bar", { text: w.name, detail: w.ready + " / " + w.desired, fraction: w.desired ? Math.min(1, w.ready / w.desired) : 0, tone: w.ready >= w.desired && w.desired > 0 ? "ok" : "warn" }));
+    readiness.push(el("bar", { text: shortLabel(w.name, 24), detail: w.ready + " / " + w.desired, fraction: w.desired ? Math.min(1, w.ready / w.desired) : 0, tone: w.ready >= w.desired && w.desired > 0 ? "ok" : "warn" }));
   }
   for (var st = 0; st < state.statefulsets.length && st < 3; st++) {
     var sw = state.statefulsets[st];
-    readiness.push(el("bar", { text: sw.name + " (STS)", detail: sw.ready + " / " + sw.desired, fraction: sw.desired ? Math.min(1, sw.ready / sw.desired) : 0, tone: sw.ready >= sw.desired && sw.desired > 0 ? "ok" : "warn" }));
+    readiness.push(el("bar", { text: shortLabel(sw.name, 19) + " (STS)", detail: sw.ready + " / " + sw.desired, fraction: sw.desired ? Math.min(1, sw.ready / sw.desired) : 0, tone: sw.ready >= sw.desired && sw.desired > 0 ? "ok" : "warn" }));
   }
   children.push(card([
     sectionTitle("工作负载就绪度", btn("查看全部", "tab", { value: "workloads" }, { small: true })),
@@ -860,11 +856,13 @@ function workloadDetail(w) {
       text(w.kind + " / " + w.name, { bold: true, size: 11.5, mono: true }),
       badge(w.ready + "/" + w.desired, w.ready >= w.desired && w.desired > 0 ? "ok" : "warn"),
       spacer(),
-      (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn("−1", "scale", { kind: w.kind, name: w.name, delta: -1 }, { small: true }) : null,
-      (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn("+1", "scale", { kind: w.kind, name: w.name, delta: 1 }, { small: true }) : null,
+      (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn(scaleLabel(w, -1), "scale", { kind: w.kind, name: w.name, delta: -1 }, { small: true, active: scalePendingFor(w, -1) }) : null,
+      (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn(scaleLabel(w, 1), "scale", { kind: w.kind, name: w.name, delta: 1 }, { small: true, active: scalePendingFor(w, 1) }) : null,
       btn("滚动重启", "restart", null, { small: true })
     ], { gap: 4 }),
-    w.images.length ? text(w.images.join(" · "), { muted: true, size: 9, mono: true }) : null
+    w.images.length ? text(w.images.join(" · "), { muted: true, size: 9, mono: true }) : null,
+    state.scalePending && state.scalePending.kind === w.kind && state.scalePending.name === w.name ?
+      row([text("确认调整为 " + state.scalePending.target + " 副本？", { size: 9.5, tone: "warn" }), spacer(), btn("取消", "cancelScale", null, { small: true })], { gap: 4 }) : null
   ], { padding: 10, gap: 5 }));
   var items = [];
   for (var i = 0; i < w.conditions.length; i++) {
@@ -874,6 +872,36 @@ function workloadDetail(w) {
   if (items.length) children.push(card([sectionTitle("Conditions", badge(items.length + " 条", "muted")), list(items, { maxHeight: 140, scroll: true })], { padding: 10, gap: 4 }));
   return children;
 }
+function scaleTarget(w, delta) {
+  var current = w.raw.spec && w.raw.spec.replicas !== undefined ? w.raw.spec.replicas : w.desired;
+  return Math.max(0, current + delta);
+}
+function scalePendingFor(w, delta) {
+  return !!state.scalePending && state.scalePending.kind === w.kind &&
+    state.scalePending.name === w.name && state.scalePending.target === scaleTarget(w, delta);
+}
+function scaleLabel(w, delta) {
+  var label = (delta < 0 ? "−1" : "+1");
+  return scalePendingFor(w, delta) ? label + " 确认" : label;
+}
+function scaleRequest(w, delta) {
+  if (!w || (w.kind !== "Deployment" && w.kind !== "StatefulSet")) {
+    state.error = "只有 Deployment / StatefulSet 支持扩缩容";
+    return;
+  }
+  var target = scaleTarget(w, delta);
+  if (state.scalePending && state.scalePending.kind === w.kind &&
+      state.scalePending.name === w.name && state.scalePending.target === target) {
+    state.scalePending = null;
+    scaleWorkload(w, target);
+    return;
+  }
+  state.scalePending = { kind: w.kind, name: w.name, target: target };
+  state.status = "再次点击确认将 " + w.name + " 调整为 " + target + " 副本";
+  state.statusTone = "warn";
+  nemorous.invalidate();
+}
+
 function serviceItem(service) {
   return {
     text: service.name,
@@ -981,6 +1009,7 @@ function nodesView() {
 function settingsView() {
   var k = state.settingsKey;
   return [
+    row([btn("← 返回仪表盘", "backDashboard", null, { small: true }), spacer()], { gap: 4 }),
     card([
       text("集群连接", { bold: true, size: 11.5 }),
       text("API Server", { muted: true, size: 9.5 }),
@@ -1057,8 +1086,14 @@ function handleAction(action, payload, panelID) {
       if (!state.connected) connect();
       break;
     case "settings":
+      if (state.view === "settings" && state.connected) state.view = "dashboard";
+      else state.view = "settings";
+      break;
     case "openSettings":
       state.view = "settings";
+      break;
+    case "backDashboard":
+      state.view = "dashboard";
       break;
     case "settingsView":
       state.view = "settings";
@@ -1109,10 +1144,16 @@ function handleAction(action, payload, panelID) {
       return;
     case "selectWorkload":
       state.selectedWorkload = findWorkload(p.kind, p.name);
+      state.scalePending = null;
       break;
     case "scale":
-      scaleWorkload(findWorkload(p.kind, p.name), Number(p.delta || 0));
+      scaleRequest(findWorkload(p.kind, p.name), Number(p.delta || 0));
       return;
+    case "cancelScale":
+      state.scalePending = null;
+      state.status = "";
+      state.statusTone = "";
+      break;
     case "restart":
       restartWorkload(state.selectedWorkload);
       return;

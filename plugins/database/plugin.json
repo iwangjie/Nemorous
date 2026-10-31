@@ -1,7 +1,7 @@
 {
   "id": "database",
   "name": "Database",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "多数据库 SQL 工作台：MySQL、PostgreSQL、Oracle、SQLite 连接管理、查询、表结构与索引浏览、结果表格与查询历史。",
   "author": "Nemorous",
   "homepage": "https://github.com/iwangjie/Nemorous",

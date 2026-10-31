@@ -441,6 +441,7 @@ type App struct {
 	pluginMarketConfirm   string
 	pluginRegistryLoading bool
 	pluginScroll          map[string]*ui.ScrollState
+	pluginListSelected    map[string]string
 	pluginScrollText      map[string]string
 	pluginIconCache       map[string]*ui.SVG
 

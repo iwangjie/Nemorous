@@ -303,7 +303,7 @@
     {
       "id": "jenkins",
       "name": "Jenkins",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "description": "连接 Jenkins：任务浏览与搜索、构建历史、参数化构建、队列与实时状态、控制台输出、仓库关联与版本兼容的 REST 客户端。",
       "author": "Nemorous",
       "homepage": "https://github.com/iwangjie/Nemorous",
@@ -347,7 +347,7 @@
     {
       "id": "k8s",
       "name": "Kubernetes",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "description": "Kubernetes Dashboard：命名空间、Pod、工作负载、Service、Ingress、事件与节点可视化，支持日志、扩缩容、滚动重启和 Pod 删除。",
       "author": "Nemorous",
       "homepage": "https://github.com/iwangjie/Nemorous",
@@ -389,7 +389,7 @@
     {
       "id": "database",
       "name": "Database",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "多数据库 SQL 工作台：MySQL、PostgreSQL、Oracle、SQLite 连接管理、查询、表结构与索引浏览、结果表格与查询历史。",
       "author": "Nemorous",
       "homepage": "https://github.com/iwangjie/Nemorous",
@@ -435,7 +435,7 @@
     {
       "id": "bookmarks",
       "name": "Bookmarks",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "常用网站书签：分类、搜索、持久化存储、自动抓取 favicon 与自动生成字母图标。",
       "author": "Nemorous",
       "homepage": "https://github.com/iwangjie/Nemorous",

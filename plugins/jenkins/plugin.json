@@ -1,7 +1,7 @@
 {
   "id": "jenkins",
   "name": "Jenkins",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "连接 Jenkins：任务浏览与搜索、构建历史、参数化构建、队列与实时状态、控制台输出、仓库关联与版本兼容的 REST 客户端。",
   "author": "Nemorous",
   "homepage": "https://github.com/iwangjie/Nemorous",

@@ -472,7 +472,7 @@ function connect() {
     var flat = flattenJobs(data.jobs || [], "", []);
     state.jobs = flat;
     state.connected = true;
-    state.status = "已连接 · " + flat.length + " 个任务";
+    state.status = "";
     state.statusTone = "ok";
     state.view = "jobs";
     if (!state.selected || !findJob(state.selected)) {
@@ -512,7 +512,7 @@ function loadJob(url) {
     state.builds = data.builds || [];
     if (!state.builds.length && data.lastBuild) state.builds = [data.lastBuild];
     state.selected = data.url || url;
-    state.status = "任务详情已加载";
+    state.status = "";
     state.statusTone = "ok";
     initParams();
     refreshJobInList(data);
@@ -584,7 +584,7 @@ function loadBuild(url) {
   jsonRequest(ensureSlash(url) + "api/json?tree=number,url,result,building,duration,estimatedDuration,timestamp,displayName,fullDisplayName,description,builtOn,actions[parameters[name,value]],changeSet[items[commitId,msg,author[fullName]]]", function (data) {
     state.build = data;
     state.buildURL = ensureSlash(data.url || url);
-    state.status = "构建 #" + data.number + " · " + resultLabel(data.result, data.building);
+    state.status = data.building ? "构建 #" + data.number + " · 运行中" : "";
     state.statusTone = buildTone(data.result, data.building);
     loadConsole(data.building);
     if (data.building && state.settings.autoRefresh) scheduleBuildPoll(ensureSlash(data.url));
@@ -739,13 +739,10 @@ function buildHistory() {
 
 // ---------- UI ----------
 function header() {
-  var counts = jobCounts();
   return row([
     text("Jenkins", { bold: true, size: 13 }),
     badge(state.connected ? "在线" : "未连接", state.connected ? "ok" : "muted"),
     state.jenkinsVersion ? badge("v" + state.jenkinsVersion, "muted") : null,
-    counts.fail ? badge(counts.fail + " 失败", "err") : null,
-    counts.running ? badge(counts.running + " 运行中", "accent") : null,
     spacer(),
     btn("刷新", "refresh", null, { small: true, disabled: state.loading }),
     btn("设置", "settings", null, { small: true, active: state.view === "settings" })
@@ -754,8 +751,7 @@ function header() {
 function tabs() {
   return row([
     btn("任务", "view", { value: "jobs" }, { small: true, active: state.view === "jobs" }),
-    btn("构建", "view", { value: "build" }, { small: true, active: state.view === "build" }),
-    btn("设置", "view", { value: "settings" }, { small: true, active: state.view === "settings" })
+    btn("构建", "view", { value: "build" }, { small: true, active: state.view === "build" })
   ], { gap: 2 });
 }
 function summaryFilters() {
