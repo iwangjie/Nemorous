@@ -1009,7 +1009,7 @@ func SwitchToMainAll(ctx context.Context, repos []mani.DiscoveredRepo, concurren
 	})
 }
 
-// ListWorkspaceFiles lists tracked/unignored files across all repositories in parallel for fast code browsing and Cmd+K search.
+// ListWorkspaceFiles lists tracked/unignored files across all repositories in parallel for fast code browsing and Cmd+P search.
 func ListWorkspaceFiles(ctx context.Context, repos []mani.DiscoveredRepo, maxPerRepo int) []WorkspaceFile {
 	if maxPerRepo <= 0 {
 		maxPerRepo = 2500

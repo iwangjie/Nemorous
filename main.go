@@ -319,6 +319,10 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildGitHubModal(c, p)
 		a.buildRunConfigModal(c, p)
 		a.buildWorkspaceModal(c, p)
+		a.buildLSPReferencesModal(c, p)
+		a.buildLSPCodeActionsModal(c, p)
+		a.buildLSPProblemsModal(c, p)
+		a.buildCommitResetModal(c, p)
 	})
 }
 
@@ -376,7 +380,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
 		a.openGlobalSearch()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyK) || c.Shortcut(ui.Cmd, ui.KeyP) {
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd, ui.KeyP) {
 		a.showCmdPalette = !a.showCmdPalette
 		a.cmdPaletteQuery = ""
 		if a.showCmdPalette {
@@ -395,6 +399,31 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyR) {
 		a.RefreshAsync()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyK) {
+		a.activeTab = TabChanges
+		a.gitDiffOpen = false
+		a.commitInputHandle.Focus()
+	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyK) {
+		a.TriggerPushAllAhead()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyT) {
+		a.TriggerBatchPull()
+	}
+	if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyZ) {
+		a.rollbackSelectedChange()
+	}
+	if a.activeTab == TabCode {
+		if c.Shortcut(ui.Alt, ui.KeyF7) {
+			a.openLSPReferences()
+		}
+		if c.Shortcut(ui.Alt, ui.KeyEnter) {
+			a.openLSPCodeActions()
+		}
+		if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyL) {
+			a.triggerLSPFormat()
+		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		if a.activeTab == TabChanges {

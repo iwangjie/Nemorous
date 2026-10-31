@@ -5,6 +5,13 @@ on:
     branches: [main, master]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   verify:
     strategy:
@@ -12,6 +19,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +36,19 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
 
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          files=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
+
       - name: Run MyGo static lifetime vet
         run: go tool mygo vet .
 
@@ -38,6 +59,10 @@ jobs:
         env:
           CGO_ENABLED: "0"
         run: go test -v ./...
+
+      - name: Run backend race tests
+        if: runner.os == 'Linux'
+        run: go test -race ./internal/... -count=1
 
       - name: Build native package
         run: go tool mygo build

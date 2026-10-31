@@ -647,3 +647,142 @@ func SplitCommand(s string) []string {
 	flush()
 	return out
 }
+
+// DiagnosticContext is a diagnostic sent with a code-action request.
+type DiagnosticContext struct {
+	Range    Range  `json:"range"`
+	Severity int    `json:"severity"`
+	Message  string `json:"message"`
+	Source   string `json:"source"`
+}
+
+// CodeAction is a quick fix returned by a language server.
+type CodeAction struct {
+	Title       string              `json:"title"`
+	Kind        string              `json:"kind"`
+	Edit        *WorkspaceEdit      `json:"edit"`
+	Command     *Command            `json:"command"`
+	Diagnostics []DiagnosticContext `json:"diagnostics"`
+}
+
+// Command is an LSP command, optionally carrying workspace edits elsewhere.
+type Command struct {
+	Title     string            `json:"title"`
+	Command   string            `json:"command"`
+	Arguments []json.RawMessage `json:"arguments"`
+}
+
+// WorkspaceEdit holds file edits from a code action or rename.
+type WorkspaceEdit struct {
+	Changes         map[string][]TextEdit `json:"changes"`
+	DocumentChanges []struct {
+		TextDocument struct {
+			URI     string `json:"uri"`
+			Version *int   `json:"version"`
+		} `json:"textDocument"`
+		Edits []TextEdit `json:"edits"`
+	} `json:"documentChanges"`
+}
+
+// EditsByURI flattens changes and documentChanges into one map.
+func (w WorkspaceEdit) EditsByURI() map[string][]TextEdit {
+	out := make(map[string][]TextEdit, len(w.Changes)+len(w.DocumentChanges))
+	for uri, edits := range w.Changes {
+		out[uri] = append(out[uri], edits...)
+	}
+	for _, change := range w.DocumentChanges {
+		if change.TextDocument.URI != "" {
+			out[change.TextDocument.URI] = append(out[change.TextDocument.URI], change.Edits...)
+		}
+	}
+	return out
+}
+
+// InlayHint is a type or parameter hint shown inside the text.
+type InlayHint struct {
+	Position     Position `json:"position"`
+	Label        any      `json:"label"`
+	Kind         int      `json:"kind"`
+	PaddingLeft  bool     `json:"paddingLeft"`
+	PaddingRight bool     `json:"paddingRight"`
+}
+
+// InlayText flattens a string or label-parts array.
+func InlayText(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case []any:
+		var b strings.Builder
+		for _, part := range x {
+			if m, ok := part.(map[string]any); ok {
+				if s, ok := m["value"].(string); ok {
+					b.WriteString(s)
+				}
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+// Formatting requests whole-document formatting edits.
+func (c *Client) Formatting(ctx context.Context, uri string, tabSize int, insertSpaces bool) ([]TextEdit, error) {
+	res, err := c.request(ctx, "textDocument/formatting", map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"options":      map[string]any{"tabSize": tabSize, "insertSpaces": insertSpaces},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var edits []TextEdit
+	if err := json.Unmarshal(res, &edits); err != nil {
+		return nil, err
+	}
+	return edits, nil
+}
+
+// CodeActions requests quick fixes for a range and its diagnostics.
+func (c *Client) CodeActions(ctx context.Context, uri string, r Range, diagnostics []DiagnosticContext) ([]CodeAction, error) {
+	res, err := c.request(ctx, "textDocument/codeAction", map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"range":        r,
+		"context":      map[string]any{"diagnostics": diagnostics},
+	})
+	if err != nil {
+		return nil, err
+	}
+	var actions []CodeAction
+	if err := json.Unmarshal(res, &actions); err != nil {
+		return nil, err
+	}
+	return actions, nil
+}
+
+// ExecuteCommand asks the server to run a command from a code action.
+func (c *Client) ExecuteCommand(ctx context.Context, command string, args []json.RawMessage) error {
+	if strings.TrimSpace(command) == "" {
+		return nil
+	}
+	_, err := c.request(ctx, "workspace/executeCommand", map[string]any{
+		"command": command, "arguments": args,
+	})
+	return err
+}
+
+// InlayHints requests hints for a document range.
+func (c *Client) InlayHints(ctx context.Context, uri string, r Range) ([]InlayHint, error) {
+	res, err := c.request(ctx, "textDocument/inlayHint", map[string]any{
+		"textDocument": map[string]any{"uri": uri},
+		"range":        r,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var hints []InlayHint
+	if err := json.Unmarshal(res, &hints); err != nil {
+		return nil, err
+	}
+	return hints, nil
+}

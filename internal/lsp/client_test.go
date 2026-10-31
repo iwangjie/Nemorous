@@ -86,6 +86,24 @@ func TestClientAgainstFakeServer(t *testing.T) {
 	if err != nil || len(changes[uri]) != 1 || changes[uri][0].NewText != "y" {
 		t.Fatalf("rename=%+v err=%v", changes, err)
 	}
+	edits, err := client.Formatting(context.Background(), uri, 4, true)
+	if err != nil || len(edits) != 1 || edits[0].NewText != "z" {
+		t.Fatalf("formatting=%+v err=%v", edits, err)
+	}
+	actions, err := client.CodeActions(context.Background(), uri, lsp.Range{}, nil)
+	if err != nil || len(actions) != 1 || actions[0].Title != "Fix it" || actions[0].Edit == nil {
+		t.Fatalf("code actions=%+v err=%v", actions, err)
+	}
+	if got := len(actions[0].Edit.EditsByURI()[uri]); got != 1 {
+		t.Fatalf("code action edits=%d", got)
+	}
+	hints, err := client.InlayHints(context.Background(), uri, lsp.Range{})
+	if err != nil || len(hints) != 1 || lsp.InlayText(hints[0].Label) != "hint" {
+		t.Fatalf("inlay hints=%+v err=%v", hints, err)
+	}
+	if err := client.ExecuteCommand(context.Background(), "test.command", nil); err != nil {
+		t.Fatalf("execute command: %v", err)
+	}
 }
 
 // TestFakeLSPServer is both a normal (skipped) test and the fake server process.
@@ -153,6 +171,25 @@ func runFakeServer() {
 			result = []map[string]any{{"uri": uri, "range": map[string]any{"start": map[string]int{"line": 0, "character": 0}, "end": map[string]int{"line": 0, "character": 1}}}}
 		case "textDocument/rename":
 			result = map[string]any{"changes": map[string]any{uri: []map[string]any{{"range": map[string]any{"start": map[string]int{"line": 0, "character": 0}, "end": map[string]int{"line": 0, "character": 1}}, "newText": "y"}}}}
+		case "textDocument/formatting":
+			result = []map[string]any{{"range": map[string]any{"start": map[string]int{"line": 0, "character": 0}, "end": map[string]int{"line": 0, "character": 1}}, "newText": "z"}}
+		case "textDocument/codeAction":
+			result = []map[string]any{{
+				"title": "Fix it",
+				"kind":  "quickfix",
+				"edit": map[string]any{
+					"changes": map[string]any{
+						uri: []map[string]any{{
+							"range":   map[string]any{"start": map[string]int{"line": 0, "character": 0}, "end": map[string]int{"line": 0, "character": 1}},
+							"newText": "fixed",
+						}},
+					},
+				},
+			}}
+		case "textDocument/inlayHint":
+			result = []map[string]any{{"position": map[string]int{"line": 0, "character": 1}, "label": "hint"}}
+		case "workspace/executeCommand":
+			result = nil
 		}
 		writeTestFrame(out, map[string]any{"jsonrpc": "2.0", "id": *msg.ID, "result": result})
 	}

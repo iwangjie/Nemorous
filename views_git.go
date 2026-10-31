@@ -589,6 +589,9 @@ func (a *App) buildGitBranchRow(c *ui.Context, p Palette, st gitops.RepoStatus, 
 		if m.Item("查看此分支历史").Chosen() {
 			a.setGitBranchFilter(st.Repo.ID, biCopy.Name)
 		}
+		if m.Item("与当前分支比较").Chosen() {
+			a.compareBranchWithCurrent(st.Repo.ID, biCopy.Name)
+		}
 		if m.Item("复制分支名").Chosen() {
 			a.pendingClipboard = biCopy.Name
 		}
@@ -692,6 +695,36 @@ func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutt
 		if m.Item("查看变更文件").Chosen() {
 			a.TriggerGitDetail(entry)
 		}
+		if m.Item("与当前分支比较").Chosen() {
+			a.compareWithCurrent(entry)
+		}
+		if m.Item("检出此提交（Detached）…").Chosen() {
+			a.pendingCommitReset = &CommitReset{RepoPath: entry.RepoPath, RepoName: entry.RepoName, Hash: entry.Hash, Mode: "checkout"}
+			a.showCommitReset = true
+		}
+		m.Submenu("重置当前分支到此提交…", func(sm *ui.Menu) {
+			for _, mode := range []string{"soft", "mixed", "hard", "keep"} {
+				mode := mode
+				if sm.Item(mode).Chosen() {
+					a.pendingCommitReset = &CommitReset{RepoPath: entry.RepoPath, RepoName: entry.RepoName, Hash: entry.Hash, Mode: mode}
+					a.showCommitReset = true
+				}
+			}
+		})
+		m.Separator()
+		if m.Item("Cherry-pick 到当前分支").Chosen() {
+			hash := entry.Hash
+			a.runCommitRepoAction(entry, "Cherry-pick", func(ctx context.Context, repoPath string) (string, error) {
+				return gitops.CherryPick(ctx, repoPath, hash)
+			})
+		}
+		if m.Item("还原此提交").Chosen() {
+			hash := entry.Hash
+			a.runCommitRepoAction(entry, "Revert", func(ctx context.Context, repoPath string) (string, error) {
+				return gitops.Revert(ctx, repoPath, hash, 0)
+			})
+		}
+		m.Separator()
 		if m.Item("复制仓库路径").Chosen() {
 			a.pendingClipboard = entry.RepoPath
 		}

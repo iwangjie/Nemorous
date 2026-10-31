@@ -253,3 +253,36 @@ func TestWorkspaceHideAndRestoreUI(t *testing.T) {
 	}
 	waitApp(t, "repo restored", func() bool { return len(app.repos) == 1 && !app.cfg.IsRepoHidden("demo") })
 }
+
+func TestIDEAShortcutCommitAndRollback(t *testing.T) {
+	ws := makeP0Repo(t, 1)
+	if err := os.WriteFile(filepath.Join(ws, "f.txt"), []byte("line\nchanged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := newGapTestApp(t, ws)
+	app.activeTab = TabCode
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	tt.Key(ui.Cmd, ui.KeyK)
+	tt.Frame()
+	if app.activeTab != TabChanges {
+		t.Fatal("Cmd+K did not focus the commit view")
+	}
+	if len(app.statuses) == 0 || len(app.statuses[0].Files) == 0 {
+		t.Fatal("no changed file")
+	}
+	app.selectChangedFile(app.statuses[0].Files[0])
+	tt.Frame()
+	tt.Key(ui.Cmd|ui.Alt, ui.KeyZ)
+	tt.Frame()
+	if app.pendingDiscard == nil {
+		t.Fatal("Cmd+Alt+Z did not open rollback confirmation")
+	}
+	app.pendingDiscard = nil
+	tt.Frame()
+	tt.Key(ui.Cmd|ui.Shift, ui.KeyP)
+	tt.Frame()
+	if !app.showCmdPalette {
+		t.Fatal("Cmd+Shift+P did not open the command palette")
+	}
+}

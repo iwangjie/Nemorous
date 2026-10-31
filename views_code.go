@@ -330,7 +330,7 @@ func (a *App) buildCodeWelcome(c *ui.Context, p Palette) {
 		shortcutRow("branch", "切换分支", "⌘B", func() {
 			a.openBranchSwitchModal()
 		})
-		shortcutRow("cmd", "命令面板", "⌘K", func() {
+		shortcutRow("cmd", "命令面板", "⇧⌘P", func() {
 			a.showCmdPalette = true
 			a.cmdInputHandle.Focus()
 		})
@@ -514,6 +514,13 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 						}
 					}
 				})
+				if a.canUseLSP(tab) {
+					ui.Box(c).Width(1).Height(14).Background(p.Border).MarginX(4)
+					miniBtn(c, p, "引用", func() { a.openLSPReferences() })
+					miniBtn(c, p, "修复", func() { a.openLSPCodeActions() })
+					miniBtn(c, p, "LSP 格式化", func() { a.triggerLSPFormat() })
+					miniBtn(c, p, fmt.Sprintf("Problems (%d)", tab.lspDiagErrors+tab.lspDiagWarns), func() { a.openLSPProblems() })
+				}
 			})
 		}
 

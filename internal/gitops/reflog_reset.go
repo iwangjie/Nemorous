@@ -127,3 +127,12 @@ func ForcePushWithLease(ctx context.Context, repoPath string) (string, error) {
 	}
 	return RunGit(ctx, repoPath, "push", "--force-with-lease", "origin", branch)
 }
+
+// CheckoutDetached checks out a commit without moving a local branch.
+func CheckoutDetached(ctx context.Context, repoPath, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if err := checkBranchOrRef(ref); err != nil {
+		return "", err
+	}
+	return RunGit(ctx, repoPath, "checkout", "--detach", ref)
+}

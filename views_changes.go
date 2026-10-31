@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
+	"github.com/iwangjie/nemorous/internal/mani"
 )
 
 // changeTreeNode is the directory hierarchy of one repository's changed files.
@@ -564,6 +565,30 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, section string, st 
 				}
 			}
 			m.Separator()
+			if m.Item("Fetch 本仓").Chosen() {
+				a.runRepoSyncAction(stCopy.Repo, "Fetch", func(ctx context.Context) (string, error) {
+					res := gitops.FetchAll(ctx, []mani.DiscoveredRepo{stCopy.Repo}, 1)
+					if len(res) > 0 && res[0].Err != nil {
+						return res[0].Message, res[0].Err
+					}
+					return "已 fetch", nil
+				})
+			}
+			if m.Item("Pull 本仓").Chosen() {
+				a.runRepoSyncAction(stCopy.Repo, "Pull", func(ctx context.Context) (string, error) {
+					res := gitops.PullAll(ctx, []mani.DiscoveredRepo{stCopy.Repo}, 1)
+					if len(res) > 0 && res[0].Err != nil {
+						return res[0].Message, res[0].Err
+					}
+					return "已 pull", nil
+				})
+			}
+			if m.Item("Push 本仓").Chosen() {
+				a.runRepoSyncAction(stCopy.Repo, "Push", func(ctx context.Context) (string, error) {
+					out, err := gitops.PushRepo(ctx, stCopy.Repo.AbsPath)
+					return out, err
+				})
+			}
 			if m.Item("复制仓库路径").Chosen() {
 				a.pendingClipboard = stCopy.Repo.AbsPath
 			}
@@ -767,6 +792,16 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 		if m.Item("复制相对路径").Chosen() {
 			a.pendingClipboard = cfCopy.Path
 		}
+		m.Separator()
+		if m.Item("AI 生成提交说明").Chosen() {
+			a.checkedChanges = map[string]bool{key: true}
+			a.TriggerGenerateCommitMessage()
+		}
+		if m.Item("聚焦提交框").Chosen() {
+			a.activeTab = TabChanges
+			a.commitInputHandle.Focus()
+		}
+		m.Separator()
 		if m.Item("查看文件历史").Chosen() {
 			a.openFileHistory(cfCopy)
 		}
@@ -883,6 +918,21 @@ func (a *App) buildCommitBox(c *ui.Context, p Palette, checkedRepos, checkedFile
 				ta = ta.Lines(2, 6)
 			}
 			ta.Background(p.AppBg).Border(0, p.Border).Radius(3).Padding(4, 6)
+
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				label := "AI 生成"
+				if strings.TrimSpace(a.commitMessage) != "" {
+					label = "AI 重新生成"
+				}
+				if a.commitMsgGenerating {
+					ui.Spinner(c).Size(12, 12).Label("生成中").TextColor(p.TextMuted)
+				} else {
+					iconPill(c, p, icoSparkles, label, false, func() { a.TriggerGenerateCommitMessage() })
+				}
+				if a.commitMsgErr != "" {
+					ui.Text(c, a.commitMsgErr).FontSize(9.5).TextColor(p.Danger).MaxLines(2).Grow(1)
+				}
+			})
 
 			ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
 				if canCommit {
@@ -1381,4 +1431,21 @@ func (a *App) stageSelectedDiffLines(sel editor.DiffLineRange) {
 			a.selectChangedFile(cf)
 		})
 	}()
+}
+
+// rollbackSelectedChange opens the same rollback confirmation used by the
+// file context menu.
+func (a *App) rollbackSelectedChange() {
+	if a.selectedChangeFile == nil {
+		a.showToast("warn", "先选择一个改动文件")
+		return
+	}
+	cf := *a.selectedChangeFile
+	a.pendingDiscard = &PendingDiscard{
+		RepoID:    cf.RepoID,
+		RepoPath:  cf.RepoPath,
+		RepoName:  cf.RepoName,
+		RelPath:   cf.Path,
+		Untracked: cf.Untracked,
+	}
 }

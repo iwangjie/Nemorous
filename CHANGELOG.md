@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.10.0
+- **AI 提交说明生成**:
+  - 提交面板新增「AI 生成 / 重新生成」，根据勾选文件的真实 Patch、分支与近期提交风格生成提交说明。
+  - 支持本机 omp / pi / claude / codex CLI；不内置模型、不在后台自动调用。
+  - 对 Patch、提示词和结果做大小限制，生成结果不会自动提交。
+- **LSP 深度**:
+  - 新增引用查找（`⌥F7`）、快速修复 / Code Action（`⌥↩`）、LSP 格式化（`⌘⌥L`）。
+  - 新增 Problems 面板、Inlay Hints、代码操作工作区编辑与命令执行。
+  - 保留可选开关，默认关闭；请求带超时和结果条数上限。
+- **IDEA 风格 Git UX**:
+  - `⌘K` 聚焦提交、`⌘⇧K` 推送、`⌘T` 更新、`⌘⌥Z` 还原选中变更。
+  - 提交图右键新增与当前分支比较、检出 Detached、按 soft / mixed / hard / keep 重置、Cherry-pick、Revert。
+  - 分支右键新增与当前分支比较；仓库分组右键新增 Fetch / Pull / Push 本仓。
+  - 文件右键新增 AI 生成提交说明、聚焦提交框；保留既有暂存、Diff、历史、回滚等菜单。
+- **工程化与文档**:
+  - CI 新增 gofmt 检查、模块校验、Linux 后端 Race 测试与超时/并发控制。
+  - 新增 CONTRIBUTING、SECURITY、CODE_OF_CONDUCT、Issue/PR 模板与 Dependabot。
+  - 重写中英 README，使用独立的合成 demo 工作区截图，不包含内部项目信息。
+- **验证**:
+  - 全量单元与无头 UI 测试、三平台 CI、后端 Race 测试、打包 App 冒烟通过。
+
 ## 0.9.1
 - **IDEA 风格操作简化（功能不减少）**:
   - Git 高级操作从 9 个横向 Tab 改为左侧分组导航：常用 / 历史 / 分支 / 仓库，所有动作仍在原位置可达。

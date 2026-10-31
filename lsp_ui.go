@@ -132,6 +132,7 @@ func (a *App) openLSPDocument(tab *codeTab) {
 	if client.DidOpen(a.lspURI(tab), text) == nil {
 		tab.lspVersion = version
 		tab.lspOpened = true
+		a.refreshInlayHints(tab)
 	}
 }
 
@@ -160,6 +161,7 @@ func (a *App) notifyLSPDidSave(tab *codeTab) {
 	}
 	if client := a.lspClients[tab.lspKey]; client != nil {
 		_ = client.DidSave(a.lspURI(tab), tab.state.Buffer.String())
+		a.refreshInlayHints(tab)
 	}
 }
 
@@ -398,6 +400,7 @@ func (a *App) applyLSPDiagnostics(uri string, ds []lsp.Diagnostic) {
 		tab.state.SetDiagnostics(tab.state.Buffer.Version(), out)
 		tab.lspDiagErrors, tab.lspDiagWarns, tab.lspDiagMsg = errs, warns, msg
 	}
+	a.refreshLSPProblems()
 }
 
 // requestLSPRename asks the server for a rename; the returned edits must be

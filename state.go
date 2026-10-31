@@ -17,6 +17,7 @@ import (
 	"github.com/egoist/mygo/ui/editor"
 	"github.com/egoist/mygo/ui/markdown"
 	"github.com/iwangjie/nemorous/internal/aimerge"
+	"github.com/iwangjie/nemorous/internal/commitmsg"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/conflict"
 	"github.com/iwangjie/nemorous/internal/credentials"
@@ -64,6 +65,23 @@ type AppNotification struct {
 
 // codeTab is one open file in the code viewer, with its own editor buffer so
 // switching tabs keeps unsaved edits and scroll positions intact.
+// CommitReset is a pending reset or detached checkout from the commit graph.
+type CommitReset struct {
+	RepoPath string
+	RepoName string
+	Hash     string
+	Mode     string // soft, mixed, hard, keep, or checkout
+}
+
+type lspProblem struct {
+	RepoID   string
+	RepoName string
+	RelPath  string
+	Line     int
+	Message  string
+	Severity int
+}
+
 type codeTab struct {
 	file  gitops.WorkspaceFile
 	state *editor.State
@@ -184,6 +202,8 @@ type App struct {
 	diffStageBusy            bool
 	commitMessage            string
 	commitAmend              bool
+	commitMsgGenerating      bool
+	commitMsgErr             string
 	lastBatchResults         []gitops.OpResult
 	pendingClipboard         string
 	changesFilterQuery       string
@@ -323,6 +343,19 @@ type App struct {
 	lspRenameErr  string
 	lspGen        uint64
 
+	showLSPReferences     bool
+	lspReferences         []lsp.Location
+	lspReferencesTitle    string
+	lspReferencesLoading  bool
+	lspReferencesErr      string
+	showLSPCodeActions    bool
+	lspCodeActions        []lsp.CodeAction
+	lspCodeActionTab      *codeTab
+	lspCodeActionsLoading bool
+	lspCodeActionsErr     string
+	showLSPProblems       bool
+	lspProblems           []lspProblem
+
 	// Mani Tasks State
 	showManiPanel         bool
 	maniRootCollapsed     bool
@@ -375,6 +408,8 @@ type App struct {
 	gitOpsMergeBranch   string
 	gitOpsMergeStrategy string
 	gitOpsMergeMessage  string
+	pendingCommitReset  *CommitReset
+	showCommitReset     bool
 
 	// Arbitrary ref comparison
 	gitOpsCompareOld     string
@@ -829,7 +864,8 @@ func (a *App) overlayOpen() bool {
 		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil ||
 		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket ||
 		a.showGitOps || a.showConflict || a.showLocalHistory || a.showStructure || a.showTodos ||
-		a.showBookmarks || a.showChangeListModal || a.showGitHub || a.showRunConfig || a.showWorkspaceManager
+		a.showBookmarks || a.showChangeListModal || a.showGitHub || a.showRunConfig || a.showWorkspaceManager ||
+		a.showLSPReferences || a.showLSPCodeActions || a.showLSPProblems || a.showCommitReset
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -2160,6 +2196,80 @@ func (a *App) stageChangeFiles(files []gitops.ChangedFile, stage bool) {
 				a.showToast("ok", fmt.Sprintf("已取消暂存 %d 个文件", len(seen)))
 			}
 			a.RefreshAsync()
+		})
+	}()
+}
+
+// TriggerGenerateCommitMessage asks the configured AI CLI for a message
+// grounded in the selected files' patches. It never stages or commits.
+func (a *App) TriggerGenerateCommitMessage() {
+	if a.commitMsgGenerating {
+		return
+	}
+	files := a.commitFiles()
+	if len(files) == 0 {
+		a.showToast("warn", "请先勾选要提交的文件")
+		return
+	}
+	if strings.TrimSpace(a.aiAgentBin) == "" {
+		a.showToast("warn", "未检测到 AI 命令行工具，请在设置中配置 omp / pi / claude / codex")
+		return
+	}
+	copied := append([]gitops.ChangedFile(nil), files...)
+	// A commit message does not need an unbounded patch. Bound both the
+	// number of Git invocations and the prompt payload.
+	if len(copied) > 40 {
+		copied = copied[:40]
+	}
+	agentName, agentBin := a.aiAgentName, a.aiAgentBin
+	branch := ""
+	if len(a.statuses) > 0 {
+		branch = a.statuses[0].Branch
+	}
+	a.commitMsgGenerating = true
+	a.commitMsgErr = ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		var changes []commitmsg.Change
+		seen := make(map[string]bool, len(copied))
+		for _, f := range copied {
+			key := f.RepoPath + "\x00" + f.Path
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			patch, _ := gitops.RunGitRaw(ctx, f.RepoPath, "diff", "HEAD", "--", f.Path)
+			if strings.TrimSpace(patch) == "" {
+				if data, err := os.ReadFile(filepath.Join(f.RepoPath, f.Path)); err == nil {
+					patch = "new file content:\n" + string(data)
+				}
+			}
+			if len(patch) > 12<<10 {
+				patch = patch[:12<<10] + "\n[diff truncated]"
+			}
+			changes = append(changes, commitmsg.Change{Repo: f.RepoName, Path: f.Path, Patch: patch, Status: f.Kind})
+		}
+		var subjects []string
+		if len(copied) > 0 {
+			if out, err := gitops.RunGit(ctx, copied[0].RepoPath, "log", "-6", "--format=%s"); err == nil {
+				subjects = strings.Split(out, "\n")
+			}
+		}
+		msg, err := commitmsg.Generate(ctx, agentName, agentBin, commitmsg.Request{
+			Branch: branch, Changes: changes, Subjects: subjects,
+		})
+		a.runUI(func() {
+			a.commitMsgGenerating = false
+			if err != nil {
+				a.commitMsgErr = err.Error()
+				a.showToast("warn", err.Error())
+				return
+			}
+			a.commitMessage = msg
+			a.commitMsgErr = ""
+			a.commitInputHandle.Focus()
+			a.showToast("ok", "已生成提交说明")
 		})
 	}()
 }
