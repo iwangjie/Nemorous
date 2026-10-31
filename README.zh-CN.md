@@ -134,6 +134,8 @@
 - **官方 Java 插件**：扫描工作区 `src/main/java` 与 `src/test/java`，识别主类/测试类，通过 Maven/Gradle 或原生 `java` 运行并流式输出，可开启 JDWP 端口供远程调试。
 - **官方 Jenkins 插件**：连接公司 Jenkins，自动处理 Session Cookie 与 CSRF；浏览文件夹与常见任务类型，支持搜索、仓库关联、参数化构建、队列/构建状态轮询、构建历史与控制台输出。
 - **官方 Kubernetes 插件**：原生 K8s Dashboard，查看命名空间、Pod、Deployment、StatefulSet、Service、Ingress、事件与节点；流式查看 Pod 日志、扩缩容、滚动重启，无需 kubectl。
+- **官方 Database 插件**：MySQL / PostgreSQL / Oracle / SQLite 多数据库 SQL 工作台，支持连接管理、查询结果、表结构与索引浏览、表预览与查询历史。
+- **官方 Bookmarks 插件**：分类、搜索、持久化书签面板，自动抓取网站 favicon，抓取失败时自动生成首字母图标。
 - **官方预览与远程插件**：Markdown/CSV 默认以主编辑器视图打开（Markdown 语法高亮、双栏/单栏/实时预览、本地图片与保存；CSV 表格与搜索）；公司 GitLab 私服 MR/流水线/Issue；代码行数统计与语言分布；SSH 主机保存并直接在底部终端连接。
 
 <picture>
@@ -149,6 +151,11 @@
 <picture>
   <img src="docs/screenshots/16_jenkins_plugin_light.png" width="49%" alt="Jenkins 任务、仓库关联与构建历史">
   <img src="docs/screenshots/17_k8s_plugin_light.png" width="49%" alt="Kubernetes 命名空间、Pod 与工作负载仪表盘">
+</picture>
+
+<picture>
+  <img src="docs/screenshots/18_database_plugin_light.png" width="49%" alt="Database SQL 工作台与表结构浏览">
+  <img src="docs/screenshots/19_bookmarks_plugin_light.png" width="49%" alt="Bookmarks 分类、搜索与网站图标">
 </picture>
 
 插件开发指南：[docs/plugins.md](docs/plugins.md)。

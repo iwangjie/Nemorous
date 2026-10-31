@@ -603,3 +603,48 @@ function handleAction(action) {
 	m.Dispatch(ref, "go", nil)
 	waitSnapshot(t, m, ref, func(s *PanelSnapshot) bool { return strings.Contains(snapshotText(s), "fired") })
 }
+
+func TestRuntimeDatabaseSQLite(t *testing.T) {
+	m := newTestManager(t)
+	m.SetWorkspace(t.TempDir(), nil)
+	dbPath := filepath.Join(t.TempDir(), "db.sqlite")
+	script := `
+var status = "idle";
+function render() { return {type: "text", text: status}; }
+function handleAction(action) {
+  if (action !== "run") return;
+  status = "running";
+  var dsn = "` + dbPath + `";
+  function fail(e) { status = "err:" + e; }
+  nemorous.db.exec({driver: "sqlite", dsn: dsn, sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"}, function () {
+    nemorous.db.exec({driver: "sqlite", dsn: dsn, sql: "INSERT INTO items (name) VALUES ('alpha')"}, function () {
+      nemorous.db.query({driver: "sqlite", dsn: dsn, sql: "SELECT id, name FROM items"}, function (r) {
+        status = "ok:" + r.rowCount + ":" + r.rows[0][1] + ":" + r.columns[1];
+      }, fail);
+    }, fail);
+  }, fail);
+}
+`
+	dir := t.TempDir()
+	manifest := `{"id":"dbtest","name":"DB Test","version":"1.0.0","main":"main.js","minAppVersion":"0.5.0","permissions":["database"],"contributes":{"panels":[{"id":"p","title":"DB"}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.js"), []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.store.InstallDir(dir, "test"); err != nil {
+		t.Fatal(err)
+	}
+	m.Load()
+	ref := "dbtest:p"
+	waitSnapshot(t, m, ref, func(s *PanelSnapshot) bool { return strings.Contains(snapshotText(s), "idle") })
+	m.Dispatch(ref, "run", nil)
+	waitSnapshot(t, m, ref, func(s *PanelSnapshot) bool {
+		txt := snapshotText(s)
+		return strings.Contains(txt, "ok:1:alpha:name") || strings.Contains(txt, "err:")
+	})
+	if txt := snapshotText(m.Snapshot(ref)); !strings.Contains(txt, "ok:1:alpha:name") {
+		t.Fatalf("db result = %s", txt)
+	}
+}

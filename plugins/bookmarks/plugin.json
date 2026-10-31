@@ -1,0 +1,36 @@
+{
+  "id": "bookmarks",
+  "name": "Bookmarks",
+  "version": "1.0.0",
+  "description": "常用网站书签：分类、搜索、持久化存储、自动抓取 favicon 与自动生成字母图标。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.8.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": [
+    "network.http",
+    "ui.open"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "bookmarks",
+        "title": "Bookmarks",
+        "icon": "bookmarks"
+      }
+    ],
+    "commands": [
+      {
+        "id": "bookmarks.open",
+        "title": "Bookmarks: 打开书签",
+        "action": "openBookmarks"
+      },
+      {
+        "id": "bookmarks.add",
+        "title": "Bookmarks: 添加书签",
+        "action": "addBookmark"
+      }
+    ]
+  }
+}

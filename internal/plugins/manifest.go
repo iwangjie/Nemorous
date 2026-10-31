@@ -28,6 +28,7 @@ const (
 	PermissionEditorRead     = "editor.read"
 	PermissionTerminalOpen   = "terminal.open"
 	PermissionUIOpen         = "ui.open"
+	PermissionDatabase       = "database"
 )
 
 var allowedPermissions = map[string]bool{
@@ -38,6 +39,7 @@ var allowedPermissions = map[string]bool{
 	PermissionEditorRead:     true,
 	PermissionTerminalOpen:   true,
 	PermissionUIOpen:         true,
+	PermissionDatabase:       true,
 }
 
 var (

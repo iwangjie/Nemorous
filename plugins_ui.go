@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -492,6 +494,18 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 			} else {
 				scroll.Grow(1)
 			}
+			if n.Width > 0 {
+				scroll.Width(float32(n.Width))
+			}
+			if n.WidthPercent > 0 {
+				scroll.WidthPercent(float32(n.WidthPercent))
+			}
+			if n.Height > 0 {
+				scroll.Height(float32(n.Height))
+			}
+			if n.HeightPercent > 0 {
+				scroll.HeightPercent(float32(n.HeightPercent))
+			}
 			scroll.Children(func() {
 				inner := ui.Column(c).Gap(float32(n.Gap)).Padding(float32(n.Padding))
 				inner.Children(children)
@@ -501,6 +515,36 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 		el := ui.Column(c)
 		applyPluginBox(el, n)
 		el.Children(children)
+	case "image":
+		if !strings.HasPrefix(n.Src, "data:image/") {
+			return
+		}
+		raw := n.Src
+		if i := strings.Index(raw, ";base64,"); i >= 0 {
+			raw = raw[i+len(";base64,"):]
+		} else {
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			return
+		}
+		img, err := ui.DecodeImage(data)
+		if err != nil {
+			return
+		}
+		w, h := float32(n.Width), float32(n.Height)
+		if w <= 0 {
+			w = 22
+		}
+		if h <= 0 {
+			h = w
+		}
+		keyTail := raw
+		if len(keyTail) > 16 {
+			keyTail = keyTail[:16] + strconv.Itoa(len(raw))
+		}
+		ui.Image(c, img).Key(path+":"+keyTail).Size(w, h).Radius(4)
 	case "card":
 		el := ui.Column(c.Key(path)).Radius(8).Background(p.Surface2).Border(1, p.BorderSubtle)
 		applyPluginBox(el, n)

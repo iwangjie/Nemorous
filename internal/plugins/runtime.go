@@ -482,6 +482,17 @@ func (rt *Runtime) installAPI(vm *goja.Runtime) error {
 		}
 		return goja.Undefined()
 	})
+	dbAPI := vm.NewObject()
+	dbAPI.Set("query", func(call goja.FunctionCall) goja.Value {
+		rt.startDatabase(call, "query")
+		return goja.Undefined()
+	})
+	dbAPI.Set("exec", func(call goja.FunctionCall) goja.Value {
+		rt.startDatabase(call, "exec")
+		return goja.Undefined()
+	})
+	api.Set("db", dbAPI)
+
 	editorAPI := vm.NewObject()
 	editorAPI.Set("activeFile", func(goja.FunctionCall) goja.Value {
 		if !rt.plugin.Manifest.HasPermission(PermissionEditorRead) {

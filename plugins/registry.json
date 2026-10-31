@@ -385,6 +385,95 @@
         "dashboard"
       ],
       "official": true
+    },
+    {
+      "id": "database",
+      "name": "Database",
+      "version": "1.0.0",
+      "description": "多数据库 SQL 工作台：MySQL、PostgreSQL、Oracle、SQLite 连接管理、查询、表结构与索引浏览、结果表格与查询历史。",
+      "author": "Nemorous",
+      "homepage": "https://github.com/iwangjie/Nemorous",
+      "minAppVersion": "0.8.0",
+      "main": "main.js",
+      "icon": "database",
+      "builtin": true,
+      "permissions": [
+        "workspace.read",
+        "database"
+      ],
+      "contributes": {
+        "panels": [
+          {
+            "id": "database",
+            "title": "Database",
+            "icon": "database"
+          }
+        ],
+        "commands": [
+          {
+            "id": "database.query",
+            "title": "Database: 打开 SQL 查询",
+            "action": "openQuery"
+          },
+          {
+            "id": "database.connections",
+            "title": "Database: 管理连接",
+            "action": "openConnections"
+          }
+        ]
+      },
+      "tags": [
+        "database",
+        "sql",
+        "mysql",
+        "postgres",
+        "oracle",
+        "sqlite"
+      ],
+      "official": true
+    },
+    {
+      "id": "bookmarks",
+      "name": "Bookmarks",
+      "version": "1.0.0",
+      "description": "常用网站书签：分类、搜索、持久化存储、自动抓取 favicon 与自动生成字母图标。",
+      "author": "Nemorous",
+      "homepage": "https://github.com/iwangjie/Nemorous",
+      "minAppVersion": "0.8.0",
+      "main": "main.js",
+      "icon": "bookmarks",
+      "builtin": true,
+      "permissions": [
+        "network.http",
+        "ui.open"
+      ],
+      "contributes": {
+        "panels": [
+          {
+            "id": "bookmarks",
+            "title": "Bookmarks",
+            "icon": "bookmarks"
+          }
+        ],
+        "commands": [
+          {
+            "id": "bookmarks.open",
+            "title": "Bookmarks: 打开书签",
+            "action": "openBookmarks"
+          },
+          {
+            "id": "bookmarks.add",
+            "title": "Bookmarks: 添加书签",
+            "action": "addBookmark"
+          }
+        ]
+      },
+      "tags": [
+        "bookmarks",
+        "links",
+        "web"
+      ],
+      "official": true
     }
   ]
 }

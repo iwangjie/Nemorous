@@ -25,6 +25,7 @@ type Node struct {
 	Key         string `json:"key,omitempty"`
 	Text        string `json:"text,omitempty"`
 	Detail      string `json:"detail,omitempty"`
+	Src         string `json:"src,omitempty"`
 	Placeholder string `json:"placeholder,omitempty"`
 	BasePath    string `json:"basePath,omitempty"`
 	Language    string `json:"language,omitempty"`
@@ -80,7 +81,7 @@ type Item struct {
 }
 
 var nodeTypes = map[string]bool{
-	"column": true, "row": true, "card": true, "text": true, "button": true,
+	"column": true, "row": true, "card": true, "image": true, "text": true, "button": true,
 	"input": true, "textarea": true, "codeeditor": true, "checkbox": true, "list": true, "code": true,
 	"markdown": true, "table": true, "bar": true,
 	"badge": true, "divider": true, "spacer": true, "spinner": true,
@@ -132,6 +133,7 @@ func normalizeNode(n *Node, depth int, count, text *int) error {
 		n.Text = trimText(n.Text, textLimit)
 	}
 	n.Detail = trimText(n.Detail, 8<<10)
+	n.Src = trimTextHead(n.Src, 128<<10)
 	n.Placeholder = trimTextHead(n.Placeholder, 200)
 	n.BasePath = trimTextHead(n.BasePath, 4096)
 	n.Language = trimTextHead(n.Language, 80)
@@ -142,7 +144,7 @@ func normalizeNode(n *Node, depth int, count, text *int) error {
 	}
 	n.Key = trimTextHead(n.Key, 512)
 	n.Action = trimTextHead(n.Action, 120)
-	*text += len(n.Text) + len(n.Detail) + len(n.Value)
+	*text += len(n.Text) + len(n.Detail) + len(n.Value) + len(n.Src)
 	if *text > 4<<20 {
 		return fmt.Errorf("render: too much text")
 	}

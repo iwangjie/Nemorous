@@ -13,6 +13,8 @@ Nemorous 的插件是一个带 `plugin.json` 清单的目录，逻辑写在 Java
 | Maven | 多仓 Maven 模块树、依赖批次与版本冲突、默认并发构建、wrapper、依赖树/Effective POM | `workspace.read`、`process.exec` |
 | Java | 扫描主类/测试类，通过 Maven/Gradle/原生 JVM 运行，JDWP 远程调试 | `workspace.read`、`process.exec` |
 | Jenkins | 任务/文件夹浏览、仓库关联、参数构建、队列与构建历史、控制台 | `workspace.read`、`network.http`、`ui.open` |
+| Database | MySQL/PostgreSQL/Oracle/SQLite 查询、表结构、索引、历史 | `workspace.read`、`database` |
+| Bookmarks | 分类/搜索/持久化书签、favicon 自动抓取与字母图标 | `network.http`、`ui.open` |
 | Kubernetes | 命名空间、Pod/工作负载/网络/事件/节点、日志、扩缩容、滚动重启 | `network.http` |
 | Markdown | 默认安装的主编辑器视图：`.md` 自动接管、语法高亮、双栏/预览、实时编辑、本地图片与保存 | `workspace.read/write`、`editor.read` |
 | CSV Preview | 默认安装的主编辑器视图：CSV/TSV 自动接管、分隔符推断、原生表格、搜索过滤 | `workspace.read`、`editor.read` |
@@ -60,7 +62,7 @@ my-plugin/
 | `version` | `x.y.z`，市场据此判断更新 |
 | `minAppVersion` | 低于该 Nemorous 版本时市场禁用安装 |
 | `main` | 包内 `.js` 路径，禁止 `..` 与绝对路径 |
-| `permissions` | `workspace.read`、`workspace.write`、`process.exec`、`network.http`、`editor.read`、`terminal.open`、`ui.open`；未声明则对应 API 抛错 |
+| `permissions` | `workspace.read`、`workspace.write`、`process.exec`、`network.http`、`editor.read`、`terminal.open`、`ui.open`、`database`；未声明则对应 API 抛错 |
 | `contributes.panels` | 右侧工具窗口，最多 8 个 |
 | `contributes.editors` | 按文件名接管主编辑器，最多 8 个；见「编辑器贡献」 |
 | `contributes.commands` | 命令面板条目，`action` 会传给 `handleAction` |
@@ -129,6 +131,8 @@ function deactivate() {}                    // 可选
 | `nemorous.editor.activeFile()` | 当前代码编辑器文件：`{repoId,repoName,path,relPath,name,content}` 或 `null`（需 `editor.read`） |
 | `nemorous.openURL(url)` | 用系统浏览器打开 http/https 地址（需 `ui.open`） |
 | `nemorous.http.request(opts)` | 异步 HTTP 请求，支持私有 GitLab、自签名证书与回调（需 `network.http`） |
+| `nemorous.db.query(opts, onOK, onErr)` | 异步执行 `SELECT`，返回列、行、耗时（需 `database`） |
+| `nemorous.db.exec(opts, onOK, onErr)` | 异步执行 DDL/DML，返回影响行数与 Last Insert ID（需 `database`） |
 | `nemorous.terminal.open(opts)` | 在底部内置终端打开命令，例如交互式 SSH（需 `terminal.open`） |
 | `nemorous.terminal.close()` | 关闭插件打开的内置终端 |
 
@@ -186,7 +190,7 @@ nemorous.terminal.open({
 ```js
 {
   type: "column",             // column | row | card | text | button | input | textarea |
-                              // codeeditor | checkbox | list | code | markdown | table | bar |
+                              // codeeditor | checkbox | list | code | markdown | table | bar | image |
                               // badge | divider | spacer | spinner
   grow: true,                 // 占据剩余空间
   gap: 8, padding: 10,
@@ -199,6 +203,7 @@ nemorous.terminal.open({
 | --- | --- |
 | `column` / `row` | `children`, `gap`, `padding`, `grow`, `scroll`, `maxHeight`, `width` |
 | `card` | `children`, `padding`, `gap`, `width`, `widthPercent`, `grow`；宿主主题卡片背景与边框 |
+| `image` | `src`（`data:image/...;base64,...`）, `width`, `height`；仅允许内嵌图片数据 |
 | `text` | `text`, `size`, `bold`, `muted`, `mono`, `tone`, `grow` |
 | `button` | `text`, `action`, `payload`, `primary`, `active`, `small`, `disabled` |
 | `input` | `key`, `value`, `placeholder`, `action`, `grow`, `width`, `autoFocus`, `password` |

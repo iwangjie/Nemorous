@@ -1,0 +1,36 @@
+{
+  "id": "database",
+  "name": "Database",
+  "version": "1.0.0",
+  "description": "多数据库 SQL 工作台：MySQL、PostgreSQL、Oracle、SQLite 连接管理、查询、表结构与索引浏览、结果表格与查询历史。",
+  "author": "Nemorous",
+  "homepage": "https://github.com/iwangjie/Nemorous",
+  "minAppVersion": "0.8.0",
+  "main": "main.js",
+  "icon": "icon.svg",
+  "permissions": [
+    "workspace.read",
+    "database"
+  ],
+  "contributes": {
+    "panels": [
+      {
+        "id": "database",
+        "title": "Database",
+        "icon": "database"
+      }
+    ],
+    "commands": [
+      {
+        "id": "database.query",
+        "title": "Database: 打开 SQL 查询",
+        "action": "openQuery"
+      },
+      {
+        "id": "database.connections",
+        "title": "Database: 管理连接",
+        "action": "openConnections"
+      }
+    ]
+  }
+}

@@ -134,6 +134,8 @@ As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenC
 - **Official Java Plugin**: Scans `src/main/java` and `src/test/java` across the workspace, finds main/test classes, runs them through Maven/Gradle or plain `java`, streams output, and opens a JDWP port for remote debugging.
 - **Official Jenkins Plugin**: Connects to private Jenkins with session-cookie/CSRF handling, browses folders and every common job type, searches and associates jobs with workspace repositories, runs parameterized builds, watches the queue and build status, and shows history plus console output.
 - **Official Kubernetes Plugin**: A native dashboard for namespaces, pods, deployments, stateful sets, services, ingress, events and nodes; stream pod logs, scale or restart workloads, and inspect cluster health without kubectl.
+- **Official Database Plugin**: A multi-database SQL workbench for MySQL, PostgreSQL, Oracle and SQLite with saved connections, query results, schema/index browsing, table previews and query history.
+- **Official Bookmarks Plugin**: A persistent categorized bookmark dashboard with instant search, automatic favicon discovery and generated letter avatars as a fallback.
 - **Official Preview & Remote Plugins**: Markdown and CSV are native editor integrations that open automatically in the main editor (split/single/live Markdown with syntax highlighting and saving), joined by private GitLab MR/pipeline/issue integration, code line statistics, and saved SSH hosts that open the embedded terminal.
 
 <picture>
@@ -149,6 +151,11 @@ As AI coding assistants and autonomous agents (Claude Code, Codex, Cursor, OpenC
 <picture>
   <img src="docs/screenshots/16_jenkins_plugin_light.png" width="49%" alt="Jenkins jobs, repository association and build history">
   <img src="docs/screenshots/17_k8s_plugin_light.png" width="49%" alt="Kubernetes namespace, pods and workload dashboard">
+</picture>
+
+<picture>
+  <img src="docs/screenshots/18_database_plugin_light.png" width="49%" alt="Database SQL workbench and schema browser">
+  <img src="docs/screenshots/19_bookmarks_plugin_light.png" width="49%" alt="Bookmarks with categories and favicons">
 </picture>
 
 Plugin authoring guide: [docs/plugins.md](docs/plugins.md).
