@@ -40,7 +40,7 @@ func TestKubernetesPluginEndToEnd(t *testing.T) {
 	app.pluginMgr.Dispatch(ref, "settingBool", map[string]any{"key": "autoRefresh", "checked": false})
 	app.pluginMgr.Dispatch(ref, "saveConnect", nil)
 	waitPluginSnapshotTimeout(t, app, ref, 40, func(s *plugins.PanelSnapshot) bool {
-		return nodeContainsText(s.Root, "已连接") && nodeContainsText(s.Root, "test")
+		return nodeContainsText(s.Root, "在线") && nodeContainsText(s.Root, "test")
 	})
 	app.pluginMgr.Dispatch(ref, "selectNS", map[string]any{"value": "test"})
 	waitPluginSnapshotTimeout(t, app, ref, 40, func(s *plugins.PanelSnapshot) bool {

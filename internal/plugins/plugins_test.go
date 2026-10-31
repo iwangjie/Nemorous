@@ -585,6 +585,13 @@ function handleAction(action) {
     ticks++;
     if (ticks >= 2) clearInterval(interval);
   }, 60);
+  var chain = 0;
+  function again() {
+    chain++;
+    if (chain < 3) setTimeout(again, 40);
+    else status = "fired";
+  }
+  setTimeout(again, 40);
 }
 `)
 	if _, err := m.store.InstallDir(dir, "test"); err != nil {

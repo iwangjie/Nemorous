@@ -501,6 +501,14 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 		el := ui.Column(c)
 		applyPluginBox(el, n)
 		el.Children(children)
+	case "card":
+		el := ui.Column(c.Key(path)).Radius(8).Background(p.Surface2).Border(1, p.BorderSubtle)
+		applyPluginBox(el, n)
+		el.Children(func() {
+			for i, child := range n.Children {
+				a.renderPluginNode(c, p, ref, child, fmt.Sprintf("%s.%d", path, i))
+			}
+		})
 	case "row":
 		el := ui.Row(c).AlignItems(ui.Center).Wrap()
 		applyPluginBox(el, n)
@@ -629,7 +637,7 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 			}
 		})
 	case "code":
-		scroll := ui.Scroll(c)
+		scroll := ui.ScrollBoth(c)
 		if n.MaxHeight > 0 {
 			scroll.MaxHeight(float32(n.MaxHeight))
 		} else {
@@ -648,7 +656,10 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 			st.Y = math.MaxFloat32
 		}
 		scroll.Children(func() {
-			ui.Text(c, n.Text).Font("monospace").FontSize(10).TextColor(p.TextSecondary)
+			line := ui.Text(c, n.Text).Font("monospace").FontSize(10).TextColor(p.TextSecondary)
+			if !n.SoftWrap {
+				line.NoWrap()
+			}
 		})
 	case "codeeditor":
 		if n.Key == "" {

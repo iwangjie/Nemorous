@@ -15,8 +15,8 @@ func TestJenkinsAndKubernetesPluginsRenderSettings(t *testing.T) {
 	t.Cleanup(app.closePluginManager)
 	app.syncPluginsWorkspace(app.reposSnapshot())
 	cases := []struct{ id, ref, text string }{
-		{"jenkins", "jenkins:jenkins", "Jenkins 连接"},
-		{"k8s", "k8s:k8s", "Kubernetes 连接"},
+		{"jenkins", "jenkins:jenkins", "连接设置"},
+		{"k8s", "k8s:k8s", "集群连接"},
 	}
 	for _, tc := range cases {
 		if _, err := app.pluginMgr.InstallBuiltin(context.Background(), tc.id); err != nil {

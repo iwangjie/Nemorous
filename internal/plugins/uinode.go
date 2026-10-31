@@ -80,7 +80,7 @@ type Item struct {
 }
 
 var nodeTypes = map[string]bool{
-	"column": true, "row": true, "text": true, "button": true,
+	"column": true, "row": true, "card": true, "text": true, "button": true,
 	"input": true, "textarea": true, "codeeditor": true, "checkbox": true, "list": true, "code": true,
 	"markdown": true, "table": true, "bar": true,
 	"badge": true, "divider": true, "spacer": true, "spinner": true,

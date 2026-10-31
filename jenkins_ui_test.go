@@ -40,24 +40,44 @@ func TestJenkinsPluginEndToEnd(t *testing.T) {
 	}
 	app.pluginMgr.Dispatch(ref, "saveConnect", nil)
 	waitPluginSnapshotTimeout(t, app, ref, 30, func(s *plugins.PanelSnapshot) bool {
-		return nodeContainsText(s.Root, "已连接") && nodeContainsText(s.Root, "test")
+		return nodeContainsText(s.Root, "在线") && nodeContainsText(s.Root, "test")
 	})
 	app.pluginMgr.Dispatch(ref, "selectJob", map[string]any{"url": base + "job/dosrouter/"})
 	waitPluginSnapshotTimeout(t, app, ref, 30, func(s *plugins.PanelSnapshot) bool {
-		return nodeContainsText(s.Root, "构建参数") && nodeContainsText(s.Root, "NAMESPACE")
+		return nodeContainsText(s.Root, "/job/dosrouter/") && nodeContainsText(s.Root, "构建参数") && nodeContainsText(s.Root, "NAMESPACE")
 	})
 	app.pluginMgr.Dispatch(ref, "selectJob", map[string]any{"url": base + "job/test/"})
 	waitPluginSnapshotTimeout(t, app, ref, 30, func(s *plugins.PanelSnapshot) bool {
-		return nodeContainsText(s.Root, "构建历史") && nodeContainsText(s.Root, "最近")
+		return nodeContainsText(s.Root, "/job/test/") && nodeContainsText(s.Root, "最近构建") && nodeContainsText(s.Root, "查看构建")
 	})
 	app.pluginMgr.Dispatch(ref, "build", nil)
 	waitPluginSnapshotTimeout(t, app, ref, 90, func(s *plugins.PanelSnapshot) bool {
-		return nodeContainsText(s.Root, "构建 #") && (nodeContainsText(s.Root, "成功") || nodeContainsText(s.Root, "失败"))
+		return nodeContainsText(s.Root, "构建历史") && nodeContainsText(s.Root, "控制台输出") && (nodeContainsText(s.Root, "成功") || nodeContainsText(s.Root, "失败"))
 	})
+	if s := app.pluginMgr.Snapshot(ref); s != nil {
+		t.Logf("ERR=%q", s.Err)
+		dumpJenkinsText(t, s.Root, 0)
+	}
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
 	tt.Frame()
 	if !tt.HasText("Jenkins") || !tt.HasText("构建历史") {
 		t.Fatal("Jenkins panel did not render")
+	}
+}
+
+func dumpJenkinsText(t *testing.T, n *plugins.Node, depth int) {
+	if n == nil || depth > 4 {
+		return
+	}
+	if n.Text != "" {
+		t.Logf("%*s%s %q", depth*2, "", n.Type, n.Text)
+	}
+	for _, it := range n.Items {
+		t.Logf("%*sitem %q %q", (depth+1)*2, "", it.Text, it.Detail)
+	}
+	for _, c := range n.Children {
+		dumpJenkinsText(t, c, depth+1)
 	}
 }
 
@@ -69,6 +89,10 @@ func waitPluginSnapshotTimeout(t *testing.T, app *App, ref string, seconds int, 
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
+	}
+	if snap := app.pluginMgr.Snapshot(ref); snap != nil {
+		t.Logf("snapshot error: %q", snap.Err)
+		dumpJenkinsText(t, snap.Root, 0)
 	}
 	t.Fatalf("timed out waiting for %s", ref)
 }

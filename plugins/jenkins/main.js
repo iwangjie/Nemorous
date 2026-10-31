@@ -16,7 +16,7 @@ var state = {
   settingsKey: 0,
   jobs: [],
   filter: "",
-  onlyAssociated: false,
+  statusFilter: "",
   selected: "",
   job: null,
   builds: [],
@@ -136,6 +136,12 @@ function list(items, props) {
   n.items = items;
   return n;
 }
+function card(children, props) {
+  var n = props || {};
+  n.type = "card";
+  n.children = clean(children);
+  return n;
+}
 function clean(children) {
   var out = [];
   for (var i = 0; i < (children || []).length; i++) if (children[i]) out.push(children[i]);
@@ -186,6 +192,14 @@ function baseURL() {
 function nowText(ms) {
   if (!ms) return "";
   try { return new Date(ms).toLocaleString(); } catch (e) { return ""; }
+}
+function shortTime(ms) {
+  if (!ms) return "";
+  try {
+    var d = new Date(ms);
+    function pad(n) { return n < 10 ? "0" + n : "" + n; }
+    return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  } catch (e) { return ""; }
 }
 function durationText(ms) {
   var n = Number(ms || 0);
@@ -418,6 +432,7 @@ function flattenJobs(items, prefix, out) {
       cls: cls,
       type: jobType(j._class),
       typeRaw: j._class || "",
+      depth: prefix ? prefix.split("/").length : 0,
       associated: repoForJob(j.url || "")
     });
   }
@@ -563,10 +578,12 @@ function loadBuild(url) {
   if (!url) return;
   stopPolling();
   state.buildURL = url;
+  state.console = "";
   state.status = "正在读取构建详情…";
   state.statusTone = "accent";
   jsonRequest(ensureSlash(url) + "api/json?tree=number,url,result,building,duration,estimatedDuration,timestamp,displayName,fullDisplayName,description,builtOn,actions[parameters[name,value]],changeSet[items[commitId,msg,author[fullName]]]", function (data) {
     state.build = data;
+    state.buildURL = ensureSlash(data.url || url);
     state.status = "构建 #" + data.number + " · " + resultLabel(data.result, data.building);
     state.statusTone = buildTone(data.result, data.building);
     loadConsole(data.building);
@@ -577,10 +594,16 @@ function loadBuild(url) {
     state.statusTone = "err";
   });
 }
+function stripANSI(text) {
+  return String(text || "")
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r/g, "");
+}
 function loadConsole(building) {
   if (!state.buildURL) return;
   request("GET", ensureSlash(state.buildURL) + "consoleText", "", null, function (resp) {
-    state.console = trimConsole(resp.body || "");
+    state.console = trimConsole(stripANSI(resp.body || ""));
     if (!building) state.loading = false;
   }, function (resp) {
     state.error = "读取控制台失败：" + errorText(resp);
@@ -635,6 +658,7 @@ function triggerBuild() {
   }
   var endpoint = ensureSlash(job.url) + (params.length ? "buildWithParameters" : "build");
   stopPolling();
+  state.view = "build";
   state.error = "";
   state.status = "正在触发构建…";
   state.statusTone = "accent";
@@ -675,7 +699,7 @@ function pollQueue() {
       state.statusTone = "warn";
       return;
     }
-    state.status = "排队中" + (data.why ? " · " + data.why : "…");
+    state.status = "排队中 #" + q.count + (data.why ? " · " + data.why : "…");
     state.statusTone = "accent";
     state.pollTimer = setTimeout(pollQueue, 1200);
   }, function (resp) {
@@ -689,28 +713,28 @@ function pollQueue() {
     state.statusTone = "err";
   }, true);
 }
+function buildLabel(b) {
+  var label = b.displayName || "";
+  if (!label) label = "#" + b.number;
+  else if (label.indexOf("#") !== 0) label = "#" + b.number + " " + label;
+  return label;
+}
 function buildHistory() {
   var out = [];
   var builds = state.builds || [];
-  for (var i = 0; i < builds.length && i < 25; i++) {
+  for (var i = 0; i < builds.length && i < 30; i++) {
     var b = builds[i];
-    var label = b.displayName || "";
-    if (!label) label = "#" + b.number;
-    else if (label.indexOf("#") !== 0) label = "#" + b.number + " " + label;
     out.push({
-      text: label,
-      detail: resultLabel(b.result, false) + " · " + nowText(b.timestamp) + " · " + durationText(b.duration),
+      text: buildLabel(b),
+      detail: resultLabel(b.result, false) + " · " + shortTime(b.timestamp) + " · " + durationText(b.duration),
       tone: buildTone(b.result, false),
       action: "selectBuild",
       payload: { url: b.url },
       selected: state.build && state.build.number === b.number,
-      mono: true
+      mono: false
     });
   }
   return out;
-}
-function selectedBuildData() {
-  return state.build;
 }
 
 // ---------- UI ----------
@@ -718,9 +742,8 @@ function header() {
   var counts = jobCounts();
   return row([
     text("Jenkins", { bold: true, size: 13 }),
-    badge(state.connected ? "已连接" : "未连接", state.connected ? "ok" : "muted"),
-    state.jenkinsVersion ? badge("Jenkins " + state.jenkinsVersion, "muted") : null,
-    badge(counts.all + " 任务", "muted"),
+    badge(state.connected ? "在线" : "未连接", state.connected ? "ok" : "muted"),
+    state.jenkinsVersion ? badge("v" + state.jenkinsVersion, "muted") : null,
     counts.fail ? badge(counts.fail + " 失败", "err") : null,
     counts.running ? badge(counts.running + " 运行中", "accent") : null,
     spacer(),
@@ -731,31 +754,28 @@ function header() {
 function tabs() {
   return row([
     btn("任务", "view", { value: "jobs" }, { small: true, active: state.view === "jobs" }),
+    btn("构建", "view", { value: "build" }, { small: true, active: state.view === "build" }),
     btn("设置", "view", { value: "settings" }, { small: true, active: state.view === "settings" })
   ], { gap: 2 });
 }
-function summary() {
+function summaryFilters() {
   var c = jobCounts();
   return row([
-    badge(c.all + " 全部", "muted"),
-    badge(c.ok + " 成功", "ok"),
-    badge(c.fail + " 失败", c.fail ? "err" : "muted"),
-    badge(c.running + " 运行中", c.running ? "accent" : "muted"),
-    badge(c.associated + " 已关联仓库", c.associated ? "accent" : "muted")
+    btn("全部 " + c.all, "filterStatus", { value: "" }, { small: true, active: state.statusFilter === "" }),
+    btn("失败 " + c.fail, "filterStatus", { value: "failed" }, { small: true, active: state.statusFilter === "failed" }),
+    btn("运行中 " + c.running, "filterStatus", { value: "running" }, { small: true, active: state.statusFilter === "running" }),
+    btn("已关联 " + c.associated, "filterStatus", { value: "associated" }, { small: true, active: state.statusFilter === "associated" }),
+    spacer(),
+    text(state.jobs.length + " 个任务", { muted: true, size: 9.5 })
   ], { gap: 4 });
 }
 function jobsView(children) {
-  if (!state.repos.length) children.push(hint("未发现工作区仓库，仍可浏览 Jenkins 任务。"));
-  children.push(summary());
+  children.push(summaryFilters());
   var jobs = filteredJobs();
   var left = col([
-    input("filter", state.filter, "搜索任务 / 类型 / 仓库", { action: "filter" }),
-    row([
-      btn(state.onlyAssociated ? "仅关联 ✓" : "仅关联仓库", "toggleAssociated", null, { small: true, active: state.onlyAssociated }),
-      spacer(),
-      text(jobs.length + " 个任务", { muted: true, size: 9.5 })
-    ], { gap: 4 }),
-    jobList(jobs)
+    input("filter", state.filter, "搜索任务、类型或仓库", { action: "filter" }),
+    jobList(jobs),
+    text(jobs.length + " 个匹配", { muted: true, size: 9.5 })
   ], { width: 300, heightPercent: 100, gap: 5 });
   var right = col(jobDetail(), { grow: true, heightPercent: 100, gap: 6 });
   children.push(row([left, { type: "divider", vertical: true }, right], { grow: true, gap: 6 }));
@@ -766,7 +786,10 @@ function filteredJobs() {
   for (var i = 0; i < state.jobs.length; i++) {
     var j = state.jobs[i];
     var assoc = state.associations[ensureSlash(j.url)];
-    if (state.onlyAssociated && !assoc) continue;
+    var st = jobStatus(j);
+    if (state.statusFilter === "failed" && st.tone !== "err") continue;
+    if (state.statusFilter === "running" && !st.building) continue;
+    if (state.statusFilter === "associated" && !assoc) continue;
     var hay = (j.name + " " + j.fullName + " " + j.type + " " + (assoc || "")).toLowerCase();
     if (q && hay.indexOf(q) < 0) continue;
     out.push(j);
@@ -780,8 +803,9 @@ function jobList(jobs) {
     var st = jobStatus(j);
     var repo = repoForJob(j.url);
     items.push({
-      text: j.fullName || j.name,
+      text: j.name,
       detail: j.type + (repo ? " · " + repo.name : "") + " · " + st.text,
+      depth: j.depth || 0,
       tone: st.tone,
       action: "selectJob",
       payload: { url: j.url },
@@ -792,7 +816,6 @@ function jobList(jobs) {
   return list(items, { grow: true, scroll: true });
 }
 function jobDetail() {
-  if (state.view === "settings") return settingsView();
   if (!state.connected) {
     return [
       text("连接 Jenkins", { bold: true, size: 12.5 }),
@@ -803,118 +826,121 @@ function jobDetail() {
   if (!state.job) return [hint("从左侧选择一个任务。")];
   var j = state.job;
   var st = jobStatus(j);
-  var children = [];
   var repo = repoForJob(j.url);
-  children.push(row([
-    text(j.name || "", { bold: true, size: 12.5 }),
-    badge(st.text, st.tone),
-    badge(jobType(j._class), "muted"),
-    repo ? badge("关联 " + repo.name, "accent") : null,
-    spacer(),
-    j.buildable === false ? badge("不可构建", "muted") : null,
-    btn("打开", "openJob", null, { small: true })
-  ], { gap: 5 }));
-  if (j.description) children.push(text(j.description, { size: 10.5, muted: true }));
-  children.push(row([
-    j.lastBuild ? text("最近 #" + j.lastBuild.number + " · " + resultLabel(j.lastBuild.result, j.lastBuild.building), { size: 9.5, muted: true, mono: true }) : text("尚无构建", { size: 9.5, muted: true }),
-    j.inQueue ? badge("队列中", "accent") : null,
-    healthBadge(j),
-    spacer(),
-    btn("刷新", "loadJob", null, { small: true, disabled: state.loading }),
-    btn("构建", "build", null, { primary: true, small: true, disabled: state.loading || j.buildable === false }),
-    btn("历史", "loadJob", null, { small: true, disabled: state.loading })
-  ], { gap: 5 }));
-  children.push(associationRow(j));
+  var children = [];
+  children.push(card([
+    row([
+      text(j.name || "", { bold: true, size: 13 }),
+      badge(st.text, st.tone),
+      badge(jobType(j._class), "muted"),
+      healthBadge(j),
+      spacer(),
+      btn("打开", "openJob", null, { small: true })
+    ], { gap: 5 }),
+    text(j.url, { muted: true, size: 9, mono: true }),
+    j.description ? text(j.description, { size: 10.5, muted: true }) : null,
+    row([
+      j.lastBuild ? text("最近构建 #" + j.lastBuild.number + " · " + resultLabel(j.lastBuild.result, j.lastBuild.building), { size: 9.5, muted: true, mono: true }) : text("尚无构建历史", { size: 9.5, muted: true }),
+      j.inQueue ? badge("队列中", "accent") : null,
+      spacer(),
+      btn("刷新", "loadJob", null, { small: true, disabled: state.loading }),
+      btn("查看构建", "openBuilds", null, { small: true }),
+      btn("构建", "build", null, { primary: true, small: true, disabled: state.loading || j.buildable === false })
+    ], { gap: 4 })
+  ], { padding: 10, gap: 6 }));
+
+  children.push(card([
+    row([text("仓库关联", { bold: true, size: 10.5 }), repo ? badge(repo.name, "accent") : badge("未关联", "muted"), spacer()], { gap: 4 }),
+    associationButtons(j)
+  ], { padding: 10, gap: 5 }));
+
   var params = extractParams(j);
-  if (params.length) children.push(paramsForm(params));
-  if (state.build) children.push(buildDetail());
-  children.push(divider());
-  children.push(row([text("构建历史", { bold: true, size: 10.5 }), spacer(), badge(state.builds.length + " 次", "muted")], { gap: 4 }));
-  var hist = buildHistory();
-  if (hist.length) children.push(list(hist, { maxHeight: 185, scroll: true }));
-  else children.push(hint("这个任务还没有构建历史。"));
+  if (params.length) {
+    children.push(card([
+      row([text("构建参数", { bold: true, size: 10.5 }), badge(params.length + " 项", "muted"), spacer()], { gap: 4 }),
+      paramsForm(params)
+    ], { padding: 10, gap: 5 }));
+  }
   return children;
+}
+function associationButtons(j) {
+  var children = [];
+  if (!state.repos.length) return hint("工作区没有仓库");
+  var current = state.associations[ensureSlash(j.url)] || "";
+  for (var i = 0; i < state.repos.length && i < 10; i++) {
+    var r = state.repos[i];
+    children.push(btn(r.name, "associate", { url: j.url, repoID: r.id }, { small: true, active: current === r.id }));
+  }
+  if (current) children.push(btn("解除", "associate", { url: j.url, repoID: "" }, { small: true }));
+  return row(children, { gap: 3 });
 }
 function healthBadge(j) {
   var reports = j.healthReport || [];
   if (!reports.length) return null;
   return badge("健康 " + reports[0].score + "%", reports[0].score >= 80 ? "ok" : reports[0].score >= 50 ? "warn" : "err");
 }
-function associationRow(j) {
-  var children = [text("关联仓库", { muted: true, size: 9.5 })];
-  if (!state.repos.length) {
-    children.push(hint("工作区没有仓库"));
-    return row(children, { gap: 4 });
-  }
-  var current = state.associations[ensureSlash(j.url)] || "";
-  for (var i = 0; i < state.repos.length && i < 8; i++) {
-    var r = state.repos[i];
-    children.push(btn(r.name, "associate", { url: j.url, repoID: r.id }, {
-      small: true,
-      active: current === r.id
-    }));
-  }
-  if (current) children.push(btn("解除关联", "associate", { url: j.url, repoID: "" }, { small: true }));
-  return row(children, { gap: 3 });
-}
 function paramsForm(params) {
-  var children = [text("构建参数", { bold: true, size: 10.5 })];
-  for (var i = 0; i < params.length && i < 12; i++) {
+  var children = [];
+  for (var i = 0; i < params.length && i < 10; i++) {
     var p = params[i];
     var val = selectedParam(p.name);
     if (p.type === "BooleanParameterDefinition") {
       children.push(row([
-        text(p.name, { muted: true, size: 9.5, width: 140 }),
+        text(p.name, { muted: true, size: 9.5, width: 150 }),
         el("checkbox", {
-          key: "param:" + p.name,
+          key: "param:" + p.name + "@" + state.selected,
           text: String(val) === "true" ? "true" : "false",
           checked: String(val) === "true",
           action: "paramBool",
           payload: { name: p.name }
         })
       ], { gap: 4 }));
-    } else {
-      if (p.choices && p.choices.length) {
-        var choices = [text(p.name, { muted: true, size: 9.5, width: 140 })];
-        for (var c = 0; c < p.choices.length && c < 8; c++) {
-          choices.push(btn(String(p.choices[c]), "paramChoice", { name: p.name, value: String(p.choices[c]) }, {
-            small: true,
-            active: String(val) === String(p.choices[c])
-          }));
-        }
-        children.push(row(choices, { gap: 3 }));
-      } else {
-        children.push(row([
-          text(p.name, { muted: true, size: 9.5, width: 140 }),
-          input("param:" + p.name + "@" + state.selected, val, p.defaultValue || p.description || p.type, {
-            action: "param",
-            grow: true,
-            password: p.type === "PasswordParameterDefinition"
-          })
-        ], { gap: 4 }));
+    } else if (p.choices && p.choices.length) {
+      var choices = [text(p.name, { muted: true, size: 9.5, width: 150 })];
+      for (var c = 0; c < p.choices.length && c < 8; c++) {
+        choices.push(btn(String(p.choices[c]), "paramChoice", { name: p.name, value: String(p.choices[c]) }, {
+          small: true,
+          active: String(val) === String(p.choices[c])
+        }));
       }
+      children.push(row(choices, { gap: 3 }));
+    } else {
+      children.push(row([
+        text(p.name, { muted: true, size: 9.5, width: 150 }),
+        input("param:" + p.name + "@" + state.selected, val, p.defaultValue || p.description || p.type, {
+          action: "param",
+          grow: true,
+          password: p.type === "PasswordParameterDefinition"
+        })
+      ], { gap: 4 }));
     }
   }
-  if (params.length > 12) children.push(hint("仅显示前 12 个参数，其余使用默认值。"));
-  return col(children, { gap: 4 });
+  if (params.length > 10) children.push(hint("仅展示前 10 个参数，其余使用默认值。"));
+  return col(children, { gap: 4, maxHeight: params.length > 6 ? 210 : 0, scroll: params.length > 6 });
 }
-function buildDetail() {
-  var b = state.build;
-  var children = [];
+function buildView(children) {
+  var j = state.job;
+  var st = j ? jobStatus(j) : { text: "未选择", tone: "muted" };
   children.push(row([
-    text("构建 #" + b.number, { bold: true, size: 11 }),
-    badge(resultLabel(b.result, b.building), buildTone(b.result, b.building)),
-    text(durationText(b.duration), { muted: true, size: 9.5 }),
+    btn("← 任务", "backJobs", null, { small: true }),
+    j ? text(j.name, { bold: true, size: 12 }) : text("构建", { bold: true, size: 12 }),
+    j ? badge(jobType(j._class), "muted") : null,
+    j ? badge(st.text, st.tone) : null,
     spacer(),
-    btn("刷新构建", "refreshBuild", null, { small: true })
-  ], { gap: 5 }));
-  var items = [];
-  var params = buildParams(b);
-  for (var i = 0; i < params.length; i++) items.push({ text: params[i].name, detail: String(params[i].value), mono: true });
-  if (items.length) children.push(list(items, { maxHeight: 90, scroll: true }));
-  if (state.console) children.push(code(state.console, { maxHeight: 240, scroll: true, follow: !!b.building }));
-  else children.push(hint("控制台输出会在构建开始后显示。"));
-  return col(children, { gap: 5 });
+    btn("刷新历史", "loadJob", null, { small: true, disabled: state.loading }),
+    j ? btn("构建", "build", null, { primary: true, small: true, disabled: state.loading || j.buildable === false }) : null
+  ], { gap: 4 }));
+  if (!j) {
+    children.push(hint("先从任务页选择一个 Jenkins 任务。"));
+    return;
+  }
+  var historyItems = buildHistory();
+  var left = col([
+    row([text("构建历史", { bold: true, size: 10.5 }), badge(state.builds.length + " 次", "muted"), spacer()], { gap: 4 }),
+    historyItems.length ? list(historyItems, { grow: true, scroll: true }) : hint("这个任务还没有构建。")
+  ], { width: 270, heightPercent: 100, gap: 5 });
+  var right = col(buildPane(), { grow: true, heightPercent: 100, gap: 6 });
+  children.push(row([left, { type: "divider", vertical: true }, right], { grow: true, gap: 6 }));
 }
 function buildParams(b) {
   var out = [];
@@ -931,38 +957,83 @@ function buildParams(b) {
   }
   return out;
 }
+
+function buildPane() {
+  var b = state.build;
+  if (!b) {
+    if (state.queue) return [card([row([text("构建队列", { bold: true, size: 11 }), badge("等待中", "accent")]), hint(state.status || "正在等待可执行节点…")], { padding: 10, gap: 5 })];
+    return [card([text("选择一个构建", { bold: true, size: 11 }), hint("左侧构建历史中的构建会在这里显示状态、参数与控制台输出。")], { padding: 10, gap: 5 })];
+  }
+  var children = [];
+  children.push(card([
+    row([
+      text(buildLabel(b), { bold: true, size: 13 }),
+      badge(resultLabel(b.result, b.building), buildTone(b.result, b.building)),
+      badge(durationText(b.duration), "muted"),
+      spacer(),
+      btn("打开", "openBuild", null, { small: true }),
+      btn("刷新", "refreshBuild", null, { small: true })
+    ], { gap: 5 }),
+    row([
+      text(shortTime(b.timestamp), { muted: true, size: 9.5, mono: true }),
+      b.builtOn ? text("· " + b.builtOn, { muted: true, size: 9.5, mono: true }) : null,
+      spacer(),
+      b.building ? badge("自动刷新中", "accent") : badge("已完成", buildTone(b.result, false))
+    ], { gap: 4 })
+  ], { padding: 10, gap: 6 }));
+  var params = buildParams(b);
+  if (params.length) {
+    var items = [];
+    for (var i = 0; i < params.length; i++) items.push({ text: params[i].name, detail: String(params[i].value), mono: true });
+    children.push(card([
+      text("构建参数", { bold: true, size: 10.5 }),
+      list(items, { maxHeight: 110, scroll: true })
+    ], { padding: 10, gap: 5 }));
+  }
+  children.push(card([
+    row([text("控制台输出", { bold: true, size: 10.5 }), spacer(), b.building ? badge("LIVE", "accent") : null, btn("刷新", "reloadConsole", null, { small: true })], { gap: 4 }),
+    state.console ? code(state.console, { maxHeight: 360, scroll: true, follow: !!b.building }) : hint("构建开始后，控制台会实时显示在这里。")
+  ], { padding: 10, gap: 5 }));
+  return children;
+}
 function settingsView() {
   var k = state.settingsKey;
   return [
-    text("Jenkins 连接", { bold: true, size: 12 }),
-    text("Jenkins 地址", { muted: true, size: 9.5 }),
-    input("baseUrl", state.settings.baseUrl, "http://jenkins.example.com:8080/", { action: "setting" }),
-    row([
-      col([
-        text("用户名", { muted: true, size: 9.5 }),
-        input("username", state.settings.username, "user", { action: "setting", grow: true })
-      ], { grow: true, gap: 3 }),
-      col([
-        text("密码 / API Token", { muted: true, size: 9.5 }),
-        input("password", state.settings.password, "API Token", { action: "setting", password: true, grow: true })
-      ], { grow: true, gap: 3 })
-    ], { gap: 8 }),
-    el("checkbox", {
-      key: "insecure:" + k,
-      text: "跳过 TLS 校验（自签名 Jenkins）",
-      checked: state.settings.insecure,
-      action: "settingBool",
-      payload: { key: "insecure" }
-    }),
-    row([
-      btn("保存并连接", "saveConnect", null, { primary: true }),
-      btn("仅保存", "saveSettings", null, { small: true }),
-      spacer(),
-      btn("清除会话", "resetSession", null, { small: true })
-    ], { gap: 4 }),
-    hint("会话 Cookie、CSRF Crumb 由插件自动处理；认证失败时请确认账号有 Job/Read、Build 权限。"),
-    hint("已支持自由风格、Pipeline、Maven、矩阵、多分支与文件夹任务；构建参数按 Jenkins API 自动生成。"),
-    hint("工作区：" + (nemorous.workspace().path || "未打开") + " · 仓库：" + state.repos.length)
+    card([
+      text("连接设置", { bold: true, size: 11.5 }),
+      text("Jenkins 地址", { muted: true, size: 9.5 }),
+      input("baseUrl", state.settings.baseUrl, "http://jenkins.example.com:8080/", { action: "setting" }),
+      row([
+        col([
+          text("用户名", { muted: true, size: 9.5 }),
+          input("username", state.settings.username, "user", { action: "setting", grow: true })
+        ], { grow: true, gap: 3 }),
+        col([
+          text("密码 / API Token", { muted: true, size: 9.5 }),
+          input("password", state.settings.password, "API Token", { action: "setting", password: true, grow: true })
+        ], { grow: true, gap: 3 })
+      ], { gap: 8 }),
+      el("checkbox", {
+        key: "insecure:" + k,
+        text: "跳过 TLS 校验（自签名 Jenkins）",
+        checked: state.settings.insecure,
+        action: "settingBool",
+        payload: { key: "insecure" }
+      }),
+      row([
+        btn("保存并连接", "saveConnect", null, { primary: true }),
+        btn("仅保存", "saveSettings", null, { small: true }),
+        spacer(),
+        btn("清除会话", "resetSession", null, { small: true })
+      ], { gap: 4 })
+    ], { padding: 10, gap: 6 }),
+    card([
+      text("兼容与权限", { bold: true, size: 10.5 }),
+      hint("使用经典 /api/json API，兼容新旧 Jenkins；自动处理 Session Cookie 与 CSRF Crumb。"),
+      hint("支持自由风格、Pipeline、Maven、矩阵、MultiJob、文件夹与多分支任务；参数控件由 Jenkins 参数定义生成。"),
+      hint("账号需要 Job/Read 与 Build 权限；凭据仅保存在本地插件存储。"),
+      hint("工作区：" + (nemorous.workspace().path || "未打开") + " · 仓库：" + state.repos.length)
+    ], { padding: 10, gap: 5 })
   ];
 }
 
@@ -985,16 +1056,30 @@ function handleAction(action, payload, panelID) {
     case "view":
       state.view = p.value || "jobs";
       if (state.view === "jobs" && !state.connected) connect();
+      if (state.view === "build" && state.job && !state.build && state.builds.length) loadBuild(state.builds[0].url);
       break;
+    case "backJobs":
+      state.view = "jobs";
+      break;
+    case "openBuilds":
+      state.view = "build";
+      if (state.job && !state.build && state.builds.length) loadBuild(state.builds[0].url);
+      return;
+    case "filterStatus":
+      state.statusFilter = p.value || "";
+      break;
+    case "openBuild":
+      if (state.build && state.build.url) nemorous.openURL(state.build.url);
+      return;
+    case "reloadConsole":
+      loadConsole(!!(state.build && state.build.building));
+      return;
     case "refresh":
       if (state.view === "settings") break;
       if (state.connected) connect();
       break;
     case "filter":
       state.filter = String(p.value || "");
-      break;
-    case "toggleAssociated":
-      state.onlyAssociated = !state.onlyAssociated;
       break;
     case "selectJob":
       loadJob(p.url || "");
@@ -1021,6 +1106,7 @@ function handleAction(action, payload, panelID) {
       setParam(p.name, String(p.selected) === "true" || String(p.checked) === "true" ? "true" : "false");
       break;
     case "selectBuild":
+      state.view = "build";
       loadBuild(p.url || "");
       return;
     case "refreshBuild":
@@ -1084,13 +1170,17 @@ function render(panelID) {
   if (state.loading) children.push({ type: "spinner", text: state.status || "正在读取 Jenkins…" });
   else if (state.status) children.push(text(state.status, { size: 9.5, muted: true, tone: state.statusTone === "muted" ? "" : state.statusTone }));
   if (state.error) children.push(text(state.error, { tone: "err", size: 9.5 }));
-  if (state.view === "settings") {
-    var settings = settingsView();
-    for (var i = 0; i < settings.length; i++) children.push(settings[i]);
-  } else if (!state.connected) {
-    children.push(text("连接 Jenkins", { bold: true, size: 12.5 }));
-    children.push(hint("打开设置填写地址、用户名与密码 / API Token。"));
-    children.push(btn("连接设置", "settings", null, { primary: true }));
+  if (state.view === "settings" || !state.connected) {
+    if (!state.connected && state.view !== "settings") {
+      children.push(text("连接 Jenkins", { bold: true, size: 12.5 }));
+      children.push(hint("打开设置填写地址、用户名与密码 / API Token。"));
+      children.push(btn("连接设置", "settings", null, { primary: true }));
+    } else {
+      var settings = settingsView();
+      for (var i = 0; i < settings.length; i++) children.push(settings[i]);
+    }
+  } else if (state.view === "build") {
+    buildView(children);
   } else {
     jobsView(children);
   }

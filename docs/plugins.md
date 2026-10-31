@@ -185,7 +185,7 @@ nemorous.terminal.open({
 
 ```js
 {
-  type: "column",             // column | row | text | button | input | textarea |
+  type: "column",             // column | row | card | text | button | input | textarea |
                               // codeeditor | checkbox | list | code | markdown | table | bar |
                               // badge | divider | spacer | spinner
   grow: true,                 // 占据剩余空间
@@ -198,6 +198,7 @@ nemorous.terminal.open({
 | 类型 | 主要字段 |
 | --- | --- |
 | `column` / `row` | `children`, `gap`, `padding`, `grow`, `scroll`, `maxHeight`, `width` |
+| `card` | `children`, `padding`, `gap`, `width`, `widthPercent`, `grow`；宿主主题卡片背景与边框 |
 | `text` | `text`, `size`, `bold`, `muted`, `mono`, `tone`, `grow` |
 | `button` | `text`, `action`, `payload`, `primary`, `active`, `small`, `disabled` |
 | `input` | `key`, `value`, `placeholder`, `action`, `grow`, `width`, `autoFocus`, `password` |

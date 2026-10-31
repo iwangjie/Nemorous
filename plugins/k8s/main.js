@@ -18,6 +18,10 @@ var state = {
   namespaces: [],
   nsFilter: "",
   ns: "",
+  podFilter: "",
+  workloadFilter: "",
+  eventWarningsOnly: false,
+  lastUpdated: "",
   pending: 0,
   loading: false,
   status: "",
@@ -37,6 +41,8 @@ var state = {
   podLogs: "",
   selectedWorkload: null,
   selectedNode: null,
+  selectedService: null,
+  selectedIngress: null,
   deletePodConfirm: "",
   pollTimer: 0,
   seq: 0
@@ -115,6 +121,12 @@ function list(items, props) {
   n.items = items;
   return n;
 }
+function card(children, props) {
+  var n = props || {};
+  n.type = "card";
+  n.children = clean(children);
+  return n;
+}
 function clean(children) {
   var out = [];
   for (var i = 0; i < (children || []).length; i++) if (children[i]) out.push(children[i]);
@@ -122,6 +134,16 @@ function clean(children) {
 }
 function spacer() { return { type: "spacer" }; }
 function divider() { return { type: "divider" }; }
+function metric(label, value, tone, sub) {
+  return card([
+    text(String(value), { bold: true, size: 18, tone: tone || "" }),
+    text(label, { size: 9.5, muted: true }),
+    sub ? text(sub, { size: 8.5, muted: true }) : null
+  ], { padding: 9, gap: 1, widthPercent: 32 });
+}
+function sectionTitle(value, extra) {
+  return row([text(value, { bold: true, size: 10.5 }), extra || null, spacer()], { gap: 4 });
+}
 function baseURL() { return String(state.settings.baseUrl || "").replace(/\/+$/, ""); }
 function tail(s, max) { s = String(s || ""); return s.length > max ? s.substring(s.length - max) : s; }
 function age(ts) {
@@ -214,7 +236,9 @@ function doneLoad() {
   if (state.pending <= 0) {
     state.pending = 0;
     state.loading = false;
-    state.status = "已加载 " + state.ns + " · " + state.pods.length + " Pods · " + state.deployments.length + " Deployments";
+    syncSelections();
+    state.lastUpdated = new Date().toLocaleTimeString();
+    state.status = "";
     state.statusTone = "ok";
     nemorous.invalidate();
   }
@@ -279,6 +303,8 @@ function loadNamespace(ns, silent) {
     state.selectedPod = null;
     state.podLogs = "";
     state.selectedWorkload = null;
+    state.selectedService = null;
+    state.selectedIngress = null;
   }
   beginLoad(10);
   function guard(fn) {
@@ -292,15 +318,21 @@ function loadNamespace(ns, silent) {
   }
   get("/api/v1" + nsPath + "/pods?limit=500", guard(function (data) {
     state.pods = (data.items || []).map(normalizePod);
+    if (state.selectedPod) {
+      var keep = null;
+      for (var pi = 0; pi < state.pods.length; pi++) if (state.pods[pi].name === state.selectedPod.name) keep = state.pods[pi];
+      state.selectedPod = keep;
+      if (!keep) state.podLogs = "";
+    }
   }), { onError: fail });
   get("/apis/apps/v1" + nsPath + "/deployments?limit=500", guard(function (data) {
-    state.deployments = (data.items || []).map(normalizeWorkload);
+    state.deployments = (data.items || []).map(function (x) { return normalizeWorkload(x, "Deployment"); });
   }), { onError: fail });
   get("/apis/apps/v1" + nsPath + "/statefulsets?limit=500", guard(function (data) {
-    state.statefulsets = (data.items || []).map(normalizeWorkload);
+    state.statefulsets = (data.items || []).map(function (x) { return normalizeWorkload(x, "StatefulSet"); });
   }), { onError: fail });
   get("/apis/apps/v1" + nsPath + "/daemonsets?limit=500", guard(function (data) {
-    state.daemonsets = (data.items || []).map(normalizeWorkload);
+    state.daemonsets = (data.items || []).map(function (x) { return normalizeWorkload(x, "DaemonSet"); });
   }), { onError: fail });
   get("/api/v1" + nsPath + "/services?limit=500", guard(function (data) {
     state.services = (data.items || []).map(normalizeService);
@@ -451,8 +483,8 @@ function normalizeService(s) {
     clusterIP: spec.clusterIP || "",
     ports: ports.join(", "),
     selector: spec.selector || {},
-    created: meta.creationTimestamp,
-    raw: s
+    raw: s,
+    created: meta.creationTimestamp
   };
 }
 function normalizeIngress(ing) {
@@ -472,6 +504,7 @@ function normalizeIngress(ing) {
     className: spec.ingressClassName || "",
     hosts: hosts,
     tls: (spec.tls || []).length,
+    rules: rules,
     created: meta.creationTimestamp,
     raw: ing
   };
@@ -510,6 +543,8 @@ function normalizeNode(n) {
     memory: capacity.memory || "",
     pods: capacity.pods || "",
     ip: ip,
+    addresses: addresses,
+    conditions: conds,
     created: meta.creationTimestamp,
     raw: n
   };
@@ -579,21 +614,39 @@ function restartWorkload(w) {
 
 // ---------- UI ----------
 function header() {
+  var failed = 0, running = 0, restarts = 0;
+  for (var i = 0; i < state.pods.length; i++) {
+    var p = state.pods[i];
+    if (p.phase === "Failed") failed++;
+    if (p.phase === "Running") running++;
+    restarts += p.restarts;
+  }
   return row([
     text("Kubernetes", { bold: true, size: 13 }),
-    badge(state.connected ? "已连接" : "未连接", state.connected ? "ok" : "muted"),
-    state.version ? badge("K8s " + state.version, "muted") : null,
+    badge(state.connected ? "在线" : "未连接", state.connected ? "ok" : "muted"),
+    state.version ? badge(state.version, "muted") : null,
     state.ns ? badge("ns/" + state.ns, "accent") : null,
-    state.nodes.length ? badge(state.nodes.length + " 节点", "muted") : null,
+    failed ? badge(failed + " Failed", "err") : null,
+    state.lastUpdated ? text("更新 " + state.lastUpdated, { muted: true, size: 9 }) : null,
     spacer(),
     btn("刷新", "refresh", null, { small: true, disabled: state.loading }),
     btn("设置", "settings", null, { small: true, active: state.view === "settings" })
   ], { gap: 5 });
 }
 function tabs() {
-  var defs = [["overview", "概览"], ["pods", "Pods"], ["workloads", "工作负载"], ["network", "网络"], ["events", "事件"], ["nodes", "节点"]];
+  var defs = [
+    ["overview", "概览", ""],
+    ["pods", "Pods", state.pods.length],
+    ["workloads", "工作负载", state.deployments.length + state.statefulsets.length + state.daemonsets.length],
+    ["network", "网络", state.services.length + state.ingresses.length],
+    ["events", "事件", state.events.length],
+    ["nodes", "节点", state.nodes.length]
+  ];
   var children = [];
-  for (var i = 0; i < defs.length; i++) children.push(btn(defs[i][1], "tab", { value: defs[i][0] }, { small: true, active: state.tab === defs[i][0] }));
+  for (var i = 0; i < defs.length; i++) {
+    var label = defs[i][1] + (defs[i][2] !== "" ? " " + defs[i][2] : "");
+    children.push(btn(label, "tab", { value: defs[i][0] }, { small: true, active: state.tab === defs[i][0] }));
+  }
   return row(children, { gap: 2 });
 }
 function namespaceSidebar() {
@@ -604,24 +657,25 @@ function namespaceSidebar() {
     if (q && n.name.toLowerCase().indexOf(q) < 0) continue;
     items.push({
       text: n.name,
-      detail: n.phase || "",
+      detail: n.name === state.ns ? "当前" : (n.phase || "Active"),
       action: "selectNS",
       payload: { value: n.name },
       selected: n.name === state.ns
     });
   }
   return col([
+    text("命名空间", { bold: true, size: 10 }),
     input("nsFilter", state.nsFilter, "过滤命名空间", { action: "filterNS" }),
     list(items, { grow: true, scroll: true }),
-    text(state.namespaces.length + " 个命名空间", { muted: true, size: 9.5 })
-  ], { width: 210, heightPercent: 100, gap: 5 });
+    text(state.namespaces.length + " 个命名空间", { muted: true, size: 9 })
+  ], { width: 190, heightPercent: 100, gap: 5 });
 }
 function dashboard(children) {
-  var content = [tabs()].concat(contentView());
+  var body = col(contentView(), { grow: true, gap: 6, scroll: true });
   children.push(row([
     namespaceSidebar(),
     { type: "divider", vertical: true },
-    col(content, { grow: true, heightPercent: 100, gap: 6 })
+    col([tabs(), body], { grow: true, heightPercent: 100, gap: 6 })
   ], { grow: true, gap: 6 }));
 }
 function contentView() {
@@ -633,52 +687,89 @@ function contentView() {
   return overviewView();
 }
 function overviewView() {
-  var running = 0, pending = 0, failed = 0, restarts = 0;
+  var running = 0, pending = 0, failed = 0, succeeded = 0, restarts = 0;
   for (var i = 0; i < state.pods.length; i++) {
     var p = state.pods[i];
     if (p.phase === "Running") running++;
     else if (p.phase === "Pending") pending++;
     else if (p.phase === "Failed") failed++;
+    else if (p.phase === "Succeeded") succeeded++;
     restarts += p.restarts;
   }
+  var workloads = state.deployments.length + state.statefulsets.length + state.daemonsets.length;
   var children = [];
   children.push(row([
-    badge(state.pods.length + " Pods", "muted"),
-    badge(running + " Running", "ok"),
-    badge(pending + " Pending", pending ? "warn" : "muted"),
-    badge(failed + " Failed", failed ? "err" : "muted"),
-    badge(restarts + " 重启", restarts ? "warn" : "muted"),
-    badge(state.deployments.length + " Deployments", "accent")
-  ], { gap: 4 }));
-  if (state.pods.length) {
-    children.push(text("Pod 状态", { bold: true, size: 10.5 }));
-    children.push(el("bar", { text: "Running", detail: running + " / " + state.pods.length, fraction: running / state.pods.length, tone: "ok" }));
-    if (pending) children.push(el("bar", { text: "Pending", detail: pending + " / " + state.pods.length, fraction: pending / state.pods.length, tone: "warn" }));
-    if (failed) children.push(el("bar", { text: "Failed", detail: failed + " / " + state.pods.length, fraction: failed / state.pods.length, tone: "err" }));
-  }
-  children.push(divider());
-  children.push(text("工作负载就绪度", { bold: true, size: 10.5 }));
-  if (!state.deployments.length && !state.statefulsets.length) children.push(hint("当前命名空间没有 Deployment / StatefulSet。"));
-  for (var d = 0; d < state.deployments.length && d < 8; d++) {
+    metric("Pods", state.pods.length, "accent", running + " Running"),
+    metric("重启次数", restarts, restarts > 0 ? "warn" : "ok", "全部容器累计"),
+    metric("工作负载", workloads, "accent", state.deployments.length + " Deployments")
+  ], { gap: 6 }));
+  children.push(row([
+    metric("Services", state.services.length, "muted", state.ingresses.length + " Ingress"),
+    metric("事件", state.events.length, failed ? "warn" : "muted", "最近 100 条"),
+    metric("节点", state.nodes.length, state.nodes.length ? "ok" : "muted", "集群容量")
+  ], { gap: 6 }));
+  children.push(card([
+    sectionTitle("Pod 状态", badge(running + " / " + state.pods.length + " 运行", "ok")),
+    el("bar", { text: "Running", detail: running + " Pods", fraction: state.pods.length ? running / state.pods.length : 0, tone: "ok" }),
+    pending ? el("bar", { text: "Pending", detail: pending + " Pods", fraction: pending / state.pods.length, tone: "warn" }) : null,
+    failed ? el("bar", { text: "Failed", detail: failed + " Pods", fraction: failed / state.pods.length, tone: "err" }) : null,
+    succeeded ? el("bar", { text: "Succeeded", detail: succeeded + " Pods", fraction: succeeded / state.pods.length, tone: "muted" }) : null
+  ], { padding: 10, gap: 4 }));
+  var readiness = [];
+  for (var d = 0; d < state.deployments.length && d < 5; d++) {
     var w = state.deployments[d];
-    children.push(el("bar", { text: w.name, detail: w.ready + " / " + w.desired + " 就绪", fraction: w.desired ? Math.min(1, w.ready / w.desired) : 0, tone: w.ready >= w.desired && w.desired > 0 ? "ok" : "warn" }));
+    readiness.push(el("bar", { text: w.name, detail: w.ready + " / " + w.desired, fraction: w.desired ? Math.min(1, w.ready / w.desired) : 0, tone: w.ready >= w.desired && w.desired > 0 ? "ok" : "warn" }));
   }
-  for (var s = 0; s < state.statefulsets.length && s < 5; s++) {
-    var st = state.statefulsets[s];
-    children.push(el("bar", { text: st.name + " (STS)", detail: st.ready + " / " + st.desired + " 就绪", fraction: st.desired ? Math.min(1, st.ready / st.desired) : 0, tone: st.ready >= st.desired && st.desired > 0 ? "ok" : "warn" }));
+  for (var st = 0; st < state.statefulsets.length && st < 3; st++) {
+    var sw = state.statefulsets[st];
+    readiness.push(el("bar", { text: sw.name + " (STS)", detail: sw.ready + " / " + sw.desired, fraction: sw.desired ? Math.min(1, sw.ready / sw.desired) : 0, tone: sw.ready >= sw.desired && sw.desired > 0 ? "ok" : "warn" }));
   }
-  children.push(divider());
-  children.push(row([text("Pod 动态", { bold: true, size: 10.5 }), spacer(), btn("查看全部", "tab", { value: "pods" }, { small: true })], { gap: 4 }));
-  var items = [];
-  for (var k = 0; k < state.pods.length && k < 8; k++) items.push(podItem(state.pods[k]));
-  if (items.length) children.push(list(items, { maxHeight: 180, scroll: true }));
-  else children.push(hint("当前命名空间没有 Pod。"));
+  children.push(card([
+    sectionTitle("工作负载就绪度", btn("查看全部", "tab", { value: "workloads" }, { small: true })),
+    readiness.length ? col(readiness, { gap: 3 }) : hint("当前命名空间没有工作负载。")
+  ], { padding: 10, gap: 4 }));
+  var podItems = [];
+  for (var k = 0; k < state.pods.length && k < 6; k++) podItems.push(podItem(state.pods[k]));
+  children.push(card([
+    sectionTitle("最近 Pod", btn("查看全部", "tab", { value: "pods" }, { small: true })),
+    podItems.length ? list(podItems, { maxHeight: 220, scroll: true }) : hint("当前命名空间没有 Pod。")
+  ], { padding: 10, gap: 3 }));
+  var warnings = [];
+  for (var e = 0; e < state.events.length && warnings.length < 3; e++) if (state.events[e].type === "Warning") warnings.push(state.events[e]);
+  if (warnings.length) {
+    var wi = [];
+    for (var x = 0; x < warnings.length; x++) wi.push({ text: warnings[x].reason + " · " + warnings[x].object, detail: warnings[x].message, tone: "warn" });
+    children.push(card([
+      sectionTitle("Warning 事件", btn("查看全部", "tab", { value: "events" }, { small: true })),
+      list(wi, { maxHeight: 120, scroll: true })
+    ], { padding: 10, gap: 3 }));
+  }
+  return children;
+}
+function filteredPods() {
+  var q = String(state.podFilter || "").toLowerCase();
+  var out = [];
+  for (var i = 0; i < state.pods.length; i++) {
+    var p = state.pods[i];
+    if (q && (p.name + " " + p.phase + " " + p.node + " " + p.reason).toLowerCase().indexOf(q) < 0) continue;
+    out.push(p);
+  }
+  return out;
+}
+function podsView() {
+  var pods = filteredPods();
+  var children = [];
+  children.push(card([
+    row([text("Pods", { bold: true, size: 10.5 }), badge(state.pods.length + " 个", "muted"), spacer(), input("podFilter", state.podFilter, "过滤名称 / 状态 / 节点", { action: "filterPods", width: 220, grow: false })], { gap: 4 }),
+    pods.length ? list(pods.map(podItem), { maxHeight: 260, scroll: true }) : hint("没有匹配的 Pod。")
+  ], { padding: 10, gap: 4 }));
+  if (state.selectedPod) children = children.concat(podDetail(state.selectedPod));
   return children;
 }
 function podItem(p) {
   return {
     text: p.name,
-    detail: p.phase + " · " + p.ready + "/" + p.total + " · 重启 " + p.restarts + " · " + age(p.created),
+    detail: p.phase + " · " + p.ready + "/" + p.total + " · 重启 " + p.restarts + " · " + (p.node || "未调度") + " · " + age(p.created),
     tone: podTone(p),
     action: "selectPod",
     payload: { name: p.name, namespace: p.namespace },
@@ -686,182 +777,240 @@ function podItem(p) {
     mono: true
   };
 }
-function podsView() {
-  var children = [];
-  children.push(row([text("Pods", { bold: true, size: 11 }), badge(state.pods.length + " 个", "muted"), spacer(), btn("刷新", "refresh", null, { small: true })]));
-  var items = [];
-  for (var i = 0; i < state.pods.length; i++) items.push(podItem(state.pods[i]));
-  if (items.length) children.push(list(items, { maxHeight: 260, scroll: true }));
-  else children.push(hint("当前命名空间没有 Pod。"));
-  if (state.selectedPod) children = children.concat(podDetail(state.selectedPod));
-  return children;
-}
 function podDetail(p) {
   var children = [];
-  children.push(divider());
-  children.push(row([
-    text(p.name, { bold: true, size: 11, mono: true }),
-    badge(p.phase, podTone(p)),
-    text("重启 " + p.restarts, { muted: true, size: 9.5 }),
-    spacer(),
-    btn(state.deletePodConfirm === p.name ? "确认删除" : "删除 Pod", "deletePod", null, { small: true, primary: state.deletePodConfirm === p.name })
-  ], { gap: 4 }));
-  children.push(text("节点 " + (p.node || "—") + " · IP " + (p.ip || "—") + " · " + p.containers.length + " 容器", { muted: true, size: 9.5, mono: true }));
+  children.push(card([
+    row([
+      text(p.name, { bold: true, size: 11.5, mono: true }),
+      badge(p.phase, podTone(p)),
+      badge(p.ready + "/" + p.total, p.ready === p.total ? "ok" : "warn"),
+      text("重启 " + p.restarts, { muted: true, size: 9.5 }),
+      spacer(),
+      btn(state.deletePodConfirm === p.name ? "确认删除" : "删除 Pod", "deletePod", null, { small: true, primary: state.deletePodConfirm === p.name })
+    ], { gap: 4 }),
+    row([
+      text("Node " + (p.node || "—"), { size: 9, muted: true, mono: true }),
+      text("IP " + (p.ip || "—"), { size: 9, muted: true, mono: true }),
+      text(age(p.created) + " 前创建", { size: 9, muted: true })
+    ], { gap: 8 })
+  ], { padding: 10, gap: 5 }));
+  var containers = [];
   for (var i = 0; i < p.containers.length; i++) {
     var c = p.containers[i];
-    children.push(row([
-      badge(c.name, c.ready ? "ok" : "warn"),
-      text(c.image || "", { size: 9.5, muted: true, mono: true, grow: true }),
-      text(c.state + " · 重启 " + c.restarts, { size: 9.5, muted: true })
+    containers.push(row([
+      badge(c.ready ? "Ready" : c.state, c.ready ? "ok" : "warn"),
+      text(c.name, { size: 9.5, bold: true, mono: true, width: 110 }),
+      text(c.image || "", { size: 9, muted: true, mono: true, grow: true }),
+      text("重启 " + c.restarts, { size: 9, muted: true })
     ], { gap: 4 }));
   }
-  children.push(row([text("容器日志", { bold: true, size: 10 }), spacer(), btn("重新加载", "reloadLogs", null, { small: true })]));
-  if (state.podLogs) children.push(code(state.podLogs, { maxHeight: 250, scroll: true, follow: true }));
-  else children.push(hint("正在读取日志…"));
+  children.push(card([
+    sectionTitle("容器", badge(p.containers.length + " 个", "muted")),
+    containers.length ? col(containers, { gap: 3 }) : hint("没有容器状态。")
+  ], { padding: 10, gap: 4 }));
+  children.push(card([
+    row([text("容器日志", { bold: true, size: 10 }), spacer(), btn("刷新", "reloadLogs", null, { small: true })], { gap: 4 }),
+    state.podLogs ? code(state.podLogs, { maxHeight: 320, scroll: true, follow: true }) : hint("正在读取日志…")
+  ], { padding: 10, gap: 4 }));
   return children;
 }
-function workloadsView() {
-  var children = [];
+function filteredWorkloads() {
   var all = [];
   for (var i = 0; i < state.deployments.length; i++) all.push(state.deployments[i]);
   for (i = 0; i < state.statefulsets.length; i++) all.push(state.statefulsets[i]);
   for (i = 0; i < state.daemonsets.length; i++) all.push(state.daemonsets[i]);
-  children.push(row([text("工作负载", { bold: true, size: 11 }), badge(all.length + " 个", "muted"), spacer(), btn("刷新", "refresh", null, { small: true })]));
-  var items = [];
-  for (i = 0; i < all.length; i++) {
-    var w = all[i];
-    items.push({
-      text: w.kind + " / " + w.name,
-      detail: w.ready + " / " + w.desired + " 就绪 · " + age(w.created),
-      tone: w.ready >= w.desired && w.desired > 0 ? "ok" : "warn",
-      action: "selectWorkload",
-      payload: { kind: w.kind, name: w.name },
-      selected: state.selectedWorkload && state.selectedWorkload.name === w.name && state.selectedWorkload.kind === w.kind,
-      mono: true
-    });
-  }
-  if (items.length) children.push(list(items, { maxHeight: 240, scroll: true }));
-  else children.push(hint("当前命名空间没有工作负载。"));
+  var q = String(state.workloadFilter || "").toLowerCase();
+  if (!q) return all;
+  var out = [];
+  for (i = 0; i < all.length; i++) if ((all[i].kind + " " + all[i].name).toLowerCase().indexOf(q) >= 0) out.push(all[i]);
+  return out;
+}
+function workloadItem(w) {
+  return {
+    text: w.kind + " / " + w.name,
+    detail: w.ready + " / " + w.desired + " 就绪 · " + age(w.created),
+    tone: w.ready >= w.desired && w.desired > 0 ? "ok" : "warn",
+    action: "selectWorkload",
+    payload: { kind: w.kind, name: w.name },
+    selected: state.selectedWorkload && state.selectedWorkload.name === w.name && state.selectedWorkload.kind === w.kind,
+    mono: true
+  };
+}
+function workloadsView() {
+  var all = filteredWorkloads();
+  var children = [];
+  children.push(card([
+    row([text("工作负载", { bold: true, size: 10.5 }), badge(all.length + " 个", "muted"), spacer(), input("workloadFilter", state.workloadFilter, "过滤名称 / 类型", { action: "filterWorkloads", width: 200 })], { gap: 4 }),
+    all.length ? list(all.map(workloadItem), { maxHeight: 250, scroll: true }) : hint("没有匹配的工作负载。")
+  ], { padding: 10, gap: 4 }));
   if (state.selectedWorkload) children = children.concat(workloadDetail(state.selectedWorkload));
   if (state.jobs.length || state.cronjobs.length) {
-    children.push(divider());
-    children.push(text("Job / CronJob", { bold: true, size: 10 }));
     var jitems = [];
-    for (i = 0; i < state.jobs.length; i++) jitems.push({ text: "Job / " + state.jobs[i].name, detail: state.jobs[i].kind, mono: true });
-    for (i = 0; i < state.cronjobs.length; i++) jitems.push({ text: "CronJob / " + state.cronjobs[i].name, detail: state.cronjobs[i].kind, mono: true });
-    children.push(list(jitems, { maxHeight: 110, scroll: true }));
+    for (var i = 0; i < state.jobs.length; i++) jitems.push({ text: "Job / " + state.jobs[i].name, detail: "Job", mono: true });
+    for (i = 0; i < state.cronjobs.length; i++) jitems.push({ text: "CronJob / " + state.cronjobs[i].name, detail: "CronJob", mono: true });
+    children.push(card([sectionTitle("Job / CronJob", badge(jitems.length + " 个", "muted")), list(jitems, { maxHeight: 150, scroll: true })], { padding: 10, gap: 4 }));
   }
   return children;
 }
 function workloadDetail(w) {
-  if (!w) return hint("选择一个工作负载查看详情。");
-  var children = [divider()];
-  children.push(row([
-    text(w.kind + " / " + w.name, { bold: true, size: 11, mono: true }),
-    badge(w.ready + "/" + w.desired, w.ready >= w.desired && w.desired > 0 ? "ok" : "warn"),
-    spacer(),
-    (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn("−1", "scale", { kind: w.kind, name: w.name, delta: -1 }, { small: true }) : null,
-    (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn("+1", "scale", { kind: w.kind, name: w.name, delta: 1 }, { small: true }) : null,
-    btn("滚动重启", "restart", null, { small: true })
-  ], { gap: 4 }));
-  if (w.images.length) children.push(text(w.images.join(" · "), { muted: true, size: 9.5, mono: true }));
+  if (!w) return [];
+  var children = [];
+  children.push(card([
+    row([
+      text(w.kind + " / " + w.name, { bold: true, size: 11.5, mono: true }),
+      badge(w.ready + "/" + w.desired, w.ready >= w.desired && w.desired > 0 ? "ok" : "warn"),
+      spacer(),
+      (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn("−1", "scale", { kind: w.kind, name: w.name, delta: -1 }, { small: true }) : null,
+      (w.kind === "Deployment" || w.kind === "StatefulSet") ? btn("+1", "scale", { kind: w.kind, name: w.name, delta: 1 }, { small: true }) : null,
+      btn("滚动重启", "restart", null, { small: true })
+    ], { gap: 4 }),
+    w.images.length ? text(w.images.join(" · "), { muted: true, size: 9, mono: true }) : null
+  ], { padding: 10, gap: 5 }));
   var items = [];
   for (var i = 0; i < w.conditions.length; i++) {
     var c = w.conditions[i];
     items.push({ text: c.type, detail: (c.status || "") + (c.reason ? " · " + c.reason : ""), tone: c.status === "True" ? "ok" : "warn", mono: true });
   }
-  if (items.length) children.push(list(items, { maxHeight: 110, scroll: true }));
+  if (items.length) children.push(card([sectionTitle("Conditions", badge(items.length + " 条", "muted")), list(items, { maxHeight: 140, scroll: true })], { padding: 10, gap: 4 }));
   return children;
+}
+function serviceItem(service) {
+  return {
+    text: service.name,
+    detail: service.type + " · " + service.clusterIP + (service.ports ? " · " + service.ports : ""),
+    action: "selectService",
+    payload: { name: service.name },
+    selected: state.selectedService && state.selectedService.name === service.name,
+    mono: true
+  };
 }
 function networkView() {
   var children = [];
-  children.push(row([text("Services", { bold: true, size: 10.5 }), badge(state.services.length + " 个", "muted")]));
+  children.push(card([
+    sectionTitle("Services", badge(state.services.length + " 个", "muted")),
+    state.services.length ? list(state.services.map(serviceItem), { maxHeight: 190, scroll: true }) : hint("当前命名空间没有 Service。")
+  ], { padding: 10, gap: 4 }));
+  if (state.selectedService) {
+    var svc = state.selectedService;
+    var selector = [];
+    for (var k in svc.selector) if (svc.selector.hasOwnProperty(k)) selector.push(k + "=" + svc.selector[k]);
+    children.push(card([
+      sectionTitle("Service / " + svc.name, badge(svc.type, "accent")),
+      text("ClusterIP " + (svc.clusterIP || "—") + " · " + svc.ports, { size: 9.5, muted: true, mono: true }),
+      text("Selector " + (selector.join(", ") || "无"), { size: 9, muted: true, mono: true })
+    ], { padding: 10, gap: 4 }));
+  }
   var items = [];
-  for (var i = 0; i < state.services.length; i++) {
-    var s = state.services[i];
-    items.push({ text: s.name, detail: s.type + " · " + s.clusterIP + (s.ports ? " · " + s.ports : ""), mono: true });
+  for (var i = 0; i < state.ingresses.length; i++) {
+    var ing = state.ingresses[i];
+    items.push({
+      text: ing.name,
+      detail: ing.hosts.join(" · ") || "无规则",
+      action: "selectIngress",
+      payload: { name: ing.name },
+      selected: state.selectedIngress && state.selectedIngress.name === ing.name,
+      mono: true
+    });
   }
-  if (items.length) children.push(list(items, { maxHeight: 150, scroll: true }));
-  else children.push(hint("当前命名空间没有 Service。"));
-  children.push(divider());
-  children.push(row([text("Ingress", { bold: true, size: 10.5 }), badge(state.ingresses.length + " 个", "muted")]));
-  var ings = [];
-  for (i = 0; i < state.ingresses.length; i++) {
-    ings.push({ text: state.ingresses[i].name, detail: state.ingresses[i].hosts.join(" · ") || "无规则", mono: true });
+  children.push(card([
+    sectionTitle("Ingress", badge(state.ingresses.length + " 个", "muted")),
+    items.length ? list(items, { maxHeight: 190, scroll: true }) : hint("当前命名空间没有 Ingress。")
+  ], { padding: 10, gap: 4 }));
+  if (state.selectedIngress) {
+    var sel = state.selectedIngress;
+    children.push(card([
+      sectionTitle("Ingress / " + sel.name, badge("TLS " + sel.tls, sel.tls ? "ok" : "muted")),
+      text(sel.className ? "Class " + sel.className : "默认 class", { size: 9, muted: true, mono: true }),
+      text(sel.hosts.join(" · ") || "无规则", { size: 9.5, muted: true, mono: true })
+    ], { padding: 10, gap: 4 }));
   }
-  if (ings.length) children.push(list(ings, { maxHeight: 150, scroll: true }));
-  else children.push(hint("当前命名空间没有 Ingress。"));
   return children;
 }
 function eventsView() {
   var children = [];
-  children.push(row([text("事件", { bold: true, size: 11 }), badge(state.events.length + " 条", "muted"), spacer(), btn("刷新", "refresh", null, { small: true })]));
   var items = [];
-  for (var i = 0; i < state.events.length && i < 60; i++) {
+  var warnings = 0;
+  for (var i = 0; i < state.events.length && items.length < 80; i++) {
     var e = state.events[i];
+    if (e.type === "Warning") warnings++;
+    if (state.eventWarningsOnly && e.type !== "Warning") continue;
     items.push({
       text: e.reason + " · " + e.object,
       detail: e.message + " · " + e.count + "× · " + age(e.last),
-      tone: e.type === "Warning" ? "warn" : "muted",
-      mono: false
+      tone: e.type === "Warning" ? "warn" : "muted"
     });
   }
-  if (items.length) children.push(list(items, { grow: true, scroll: true }));
-  else children.push(hint("当前命名空间没有事件。"));
+  children.push(card([
+    row([text("事件", { bold: true, size: 10.5 }), badge(state.events.length + " 条", "muted"), badge(warnings + " Warning", warnings ? "warn" : "muted"), spacer(), btn(state.eventWarningsOnly ? "仅 Warning ✓" : "仅 Warning", "filterWarnings", null, { small: true, active: state.eventWarningsOnly })], { gap: 4 }),
+    items.length ? list(items, { maxHeight: 560, scroll: true }) : hint("没有匹配的事件。")
+  ], { padding: 10, gap: 4 }));
   return children;
+}
+function nodeItem(n) {
+  return {
+    text: n.name,
+    detail: n.ready + " · " + n.roles + " · " + n.cpu + " CPU · " + n.memory,
+    tone: n.ready === "Ready" ? "ok" : "err",
+    action: "selectNode",
+    payload: { name: n.name },
+    selected: state.selectedNode && state.selectedNode.name === n.name,
+    mono: true
+  };
 }
 function nodesView() {
   var children = [];
-  children.push(row([text("节点", { bold: true, size: 11 }), badge(state.nodes.length + " 个", "muted"), spacer(), btn("刷新", "refresh", null, { small: true })]));
-  var items = [];
-  for (var i = 0; i < state.nodes.length; i++) {
-    var n = state.nodes[i];
-    items.push({
-      text: n.name,
-      detail: n.ready + " · " + n.roles + " · " + n.cpu + " CPU · " + n.memory + " · " + n.version,
-      tone: n.ready === "Ready" ? "ok" : "err",
-      action: "selectNode",
-      payload: { name: n.name },
-      selected: state.selectedNode && state.selectedNode.name === n.name,
-      mono: true
-    });
-  }
-  if (items.length) children.push(list(items, { maxHeight: 260, scroll: true }));
-  else children.push(hint("无法读取节点，或当前 Token 没有节点读取权限。"));
+  children.push(card([
+    sectionTitle("集群节点", badge(state.nodes.length + " 个", "muted")),
+    state.nodes.length ? list(state.nodes.map(nodeItem), { maxHeight: 260, scroll: true }) : hint("无法读取节点，或当前 Token 没有节点读取权限。")
+  ], { padding: 10, gap: 4 }));
   if (state.selectedNode) {
-    children.push(divider());
-    children.push(row([text(state.selectedNode.name, { bold: true, size: 11, mono: true }), badge(state.selectedNode.ready, state.selectedNode.ready === "Ready" ? "ok" : "err")]));
-    children.push(text("IP " + state.selectedNode.ip + " · " + state.selectedNode.cpu + " CPU · " + state.selectedNode.memory + " 内存 · Pod 上限 " + state.selectedNode.pods, { size: 9.5, muted: true, mono: true }));
+    var n = state.selectedNode;
+    children.push(card([
+      row([text(n.name, { bold: true, size: 11.5, mono: true }), badge(n.ready, n.ready === "Ready" ? "ok" : "err"), spacer(), text(n.version, { muted: true, size: 9, mono: true })], { gap: 4 }),
+      row([text("CPU " + n.cpu, { size: 9.5, muted: true }), text("内存 " + n.memory, { size: 9.5, muted: true }), text("Pod 上限 " + n.pods, { size: 9.5, muted: true }), text(n.ip, { size: 9.5, muted: true, mono: true })], { gap: 8 })
+    ], { padding: 10, gap: 5 }));
+    var conds = [];
+    for (var i = 0; i < n.conditions.length; i++) {
+      var c = n.conditions[i];
+      conds.push({ text: c.type, detail: (c.status || "") + (c.reason ? " · " + c.reason : ""), tone: c.status === "True" ? "ok" : "warn", mono: true });
+    }
+    if (conds.length) children.push(card([sectionTitle("Conditions", badge(conds.length + " 条", "muted")), list(conds, { maxHeight: 180, scroll: true })], { padding: 10, gap: 4 }));
   }
   return children;
 }
 function settingsView() {
   var k = state.settingsKey;
   return [
-    text("Kubernetes 连接", { bold: true, size: 12 }),
-    text("API Server", { muted: true, size: 9.5 }),
-    input("baseUrl", state.settings.baseUrl, "https://kubernetes.example.com:6443", { action: "setting" }),
-    text("Bearer Token", { muted: true, size: 9.5 }),
-    input("token", state.settings.token, "ServiceAccount / 用户 Token", { action: "setting", password: true }),
-    row([
-      col([
-        text("默认命名空间", { muted: true, size: 9.5 }),
-        input("namespace", state.settings.namespace, "default", { action: "setting", grow: true })
-      ], { grow: true, gap: 3 }),
-      col([
-        el("checkbox", { key: "insecure:" + k, text: "跳过 TLS 校验", checked: state.settings.insecure, action: "settingBool", payload: { key: "insecure" } }),
-        el("checkbox", { key: "autoRefresh:" + k, text: "自动刷新 (15s)", checked: state.settings.autoRefresh, action: "settingBool", payload: { key: "autoRefresh" } })
-      ], { grow: true, gap: 3 })
-    ], { gap: 8 }),
-    row([
-      btn("保存并连接", "saveConnect", null, { primary: true }),
-      btn("仅保存", "saveSettings", null, { small: true }),
-      spacer(),
-      btn("停止自动刷新", "stopRefresh", null, { small: true })
-    ], { gap: 4 }),
-    hint("Token 保存在本地插件存储中，不会写入工作区。建议使用只读 ServiceAccount；删除 Pod / 扩缩容需要对应写权限。"),
-    hint("兼容 Kubernetes 1.19+；Ingress 自动尝试 networking.k8s.io/v1 与 extensions/v1beta1。"),
-    state.version ? badge("集群 " + state.version, "ok") : null
+    card([
+      text("集群连接", { bold: true, size: 11.5 }),
+      text("API Server", { muted: true, size: 9.5 }),
+      input("baseUrl", state.settings.baseUrl, "https://kubernetes.example.com:6443", { action: "setting" }),
+      text("Bearer Token", { muted: true, size: 9.5 }),
+      input("token", state.settings.token, "ServiceAccount / 用户 Token", { action: "setting", password: true }),
+      row([
+        col([
+          text("默认命名空间", { muted: true, size: 9.5 }),
+          input("namespace", state.settings.namespace, "default", { action: "setting", grow: true })
+        ], { grow: true, gap: 3 }),
+        col([
+          el("checkbox", { key: "insecure:" + k, text: "跳过 TLS 校验", checked: state.settings.insecure, action: "settingBool", payload: { key: "insecure" } }),
+          el("checkbox", { key: "autoRefresh:" + k, text: "自动刷新 (15s)", checked: state.settings.autoRefresh, action: "settingBool", payload: { key: "autoRefresh" } })
+        ], { grow: true, gap: 3 })
+      ], { gap: 8 }),
+      row([
+        btn("保存并连接", "saveConnect", null, { primary: true }),
+        btn("仅保存", "saveSettings", null, { small: true }),
+        spacer(),
+        btn("停止自动刷新", "stopRefresh", null, { small: true })
+      ], { gap: 4 })
+    ], { padding: 10, gap: 6 }),
+    card([
+      text("行为与安全", { bold: true, size: 10.5 }),
+      hint("Token 仅保存在本地插件存储，不会写入工作区。建议使用带命名空间读取权限的 ServiceAccount。"),
+      hint("删除 Pod、扩缩容与滚动重启需要相应写权限。"),
+      hint("兼容 Kubernetes 1.19+；Ingress 自动在 networking.k8s.io/v1 与 extensions/v1beta1 间回退。"),
+      state.version ? badge("集群 " + state.version, "ok") : null
+    ], { padding: 10, gap: 5 })
   ];
 }
 
@@ -874,6 +1023,27 @@ function findWorkload(kind, name) {
   var arr = kind === "Deployment" ? state.deployments : kind === "StatefulSet" ? state.statefulsets : state.daemonsets;
   for (var i = 0; i < arr.length; i++) if (arr[i].name === name && arr[i].kind === kind) return arr[i];
   return null;
+}
+function findService(name) {
+  for (var i = 0; i < state.services.length; i++) if (state.services[i].name === name) return state.services[i];
+  return null;
+}
+function findIngress(name) {
+  for (var i = 0; i < state.ingresses.length; i++) if (state.ingresses[i].name === name) return state.ingresses[i];
+  return null;
+}
+function syncSelections() {
+  if (state.selectedWorkload) {
+    var w = findWorkload(state.selectedWorkload.kind, state.selectedWorkload.name);
+    state.selectedWorkload = w;
+  }
+  if (state.selectedService) state.selectedService = findService(state.selectedService.name);
+  if (state.selectedIngress) state.selectedIngress = findIngress(state.selectedIngress.name);
+  if (state.selectedNode) {
+    var n = null;
+    for (var i = 0; i < state.nodes.length; i++) if (state.nodes[i].name === state.selectedNode.name) n = state.nodes[i];
+    state.selectedNode = n;
+  }
 }
 function handleAction(action, payload, panelID) {
   var p = payload || {};
@@ -911,6 +1081,21 @@ function handleAction(action, payload, panelID) {
       return;
     case "filterNS":
       state.nsFilter = String(p.value || "");
+      break;
+    case "filterPods":
+      state.podFilter = String(p.value || "");
+      break;
+    case "filterWorkloads":
+      state.workloadFilter = String(p.value || "");
+      break;
+    case "filterWarnings":
+      state.eventWarningsOnly = !state.eventWarningsOnly;
+      break;
+    case "selectService":
+      state.selectedService = findService(p.name);
+      break;
+    case "selectIngress":
+      state.selectedIngress = findIngress(p.name);
       break;
     case "selectPod":
       var pod = findPod(p.name);
