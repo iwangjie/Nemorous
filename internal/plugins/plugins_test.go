@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -614,7 +615,7 @@ function render() { return {type: "text", text: status}; }
 function handleAction(action) {
   if (action !== "run") return;
   status = "running";
-  var dsn = "` + dbPath + `";
+  var dsn = __DBPATH__;
   function fail(e) { status = "err:" + e; }
   nemorous.db.exec({driver: "sqlite", dsn: dsn, sql: "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)"}, function () {
     nemorous.db.exec({driver: "sqlite", dsn: dsn, sql: "INSERT INTO items (name) VALUES ('alpha')"}, function () {
@@ -625,6 +626,7 @@ function handleAction(action) {
   }, fail);
 }
 `
+	script = strings.ReplaceAll(script, "__DBPATH__", strconv.Quote(dbPath))
 	dir := t.TempDir()
 	manifest := `{"id":"dbtest","name":"DB Test","version":"1.0.0","main":"main.js","minAppVersion":"0.5.0","permissions":["database"],"contributes":{"panels":[{"id":"p","title":"DB"}]}}`
 	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), []byte(manifest), 0o644); err != nil {

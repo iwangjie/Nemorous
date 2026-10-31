@@ -135,6 +135,15 @@ func writeMavenFixture(t *testing.T, ws string) {
     <profile><id>fast</id></profile>
     <profile><id>ci</id></profile>
   </profiles>
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-resources-plugin</artifactId><version>3.3.1</version></plugin>
+        <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.11.0</version></plugin>
+        <plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.2.5</version></plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
 </project>`,
 		"core/pom.xml": `<project xmlns="http://maven.apache.org/POM/4.0.0">
   <modelVersion>4.0.0</modelVersion>

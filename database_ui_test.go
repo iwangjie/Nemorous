@@ -10,11 +10,19 @@ import (
 	"github.com/iwangjie/nemorous/internal/plugins"
 )
 
+func sqliteTestDSN(path string) string {
+	p := filepath.ToSlash(path)
+	if len(p) >= 2 && p[1] == ':' {
+		return "file:///" + p
+	}
+	return "file://" + p
+}
+
 func TestDatabasePluginSQLiteWorkflow(t *testing.T) {
 	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
 	ws := t.TempDir()
 	dbPath := filepath.Join(ws, "demo.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", sqliteTestDSN(dbPath))
 	if err != nil {
 		t.Fatal(err)
 	}
