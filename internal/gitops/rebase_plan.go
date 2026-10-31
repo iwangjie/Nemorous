@@ -129,35 +129,19 @@ func InteractiveRebase(ctx context.Context, repoPath, upstream string, steps []R
 	}
 	seqPath := filepath.Join(dir, "sequence-editor")
 	editPath := filepath.Join(dir, "message-editor")
-	if runtime.GOOS == "windows" {
-		seqPath += ".cmd"
-		editPath += ".cmd"
-		if err := os.WriteFile(seqPath, []byte("@echo off\r\ncopy /Y \""+todoPath+"\" \"%~1\" >nul\r\n"), 0o700); err != nil {
-			return "", err
-		}
-		if rewords > 0 {
-			err = os.WriteFile(editPath, []byte("@echo off\r\ncopy /Y \""+msgPath+"\" \"%~1\" >nul\r\n"), 0o700)
-		} else {
-			err = os.WriteFile(editPath, []byte("@echo off\r\nexit /b 0\r\n"), 0o700)
-		}
-		if err != nil {
-			return "", err
-		}
-	} else {
-		if err := os.WriteFile(seqPath, []byte("#!/bin/sh\ncat '"+strings.ReplaceAll(todoPath, "'", `'\''`)+"' > \"$1\"\n"), 0o700); err != nil {
-			return "", err
-		}
-		body := "#!/bin/sh\nexit 0\n"
-		if rewords > 0 {
-			body = "#!/bin/sh\ncat '" + strings.ReplaceAll(msgPath, "'", `'\''`) + "' > \"$1\"\n"
-		}
-		if err := os.WriteFile(editPath, []byte(body), 0o700); err != nil {
-			return "", err
-		}
+	if err := os.WriteFile(seqPath, []byte("#!/bin/sh\ncat '"+strings.ReplaceAll(todoPath, "'", `'\''`)+"' > \"$1\"\n"), 0o700); err != nil {
+		return "", err
+	}
+	body := "#!/bin/sh\nexit 0\n"
+	if rewords > 0 {
+		body = "#!/bin/sh\ncat '" + strings.ReplaceAll(msgPath, "'", `'\''`) + "' > \"$1\"\n"
+	}
+	if err := os.WriteFile(editPath, []byte(body), 0o700); err != nil {
+		return "", err
 	}
 	out, err := runGitEnv(ctx, repoPath, []string{
-		"GIT_SEQUENCE_EDITOR=" + shellQuote(seqPath),
-		"GIT_EDITOR=" + shellQuote(editPath),
+		"GIT_SEQUENCE_EDITOR=sh " + shellQuote(seqPath),
+		"GIT_EDITOR=sh " + shellQuote(editPath),
 	}, "rebase", "-i", upstream)
 	if err != nil {
 		return out, fmt.Errorf("%s", strings.TrimSpace(out))
