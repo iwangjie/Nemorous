@@ -19,10 +19,12 @@ import (
 	"github.com/iwangjie/nemorous/internal/aimerge"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/conflict"
+	"github.com/iwangjie/nemorous/internal/credentials"
 	"github.com/iwangjie/nemorous/internal/dap"
 	"github.com/iwangjie/nemorous/internal/github"
 	"github.com/iwangjie/nemorous/internal/gitops"
 	"github.com/iwangjie/nemorous/internal/localhistory"
+	"github.com/iwangjie/nemorous/internal/lsp"
 	"github.com/iwangjie/nemorous/internal/mani"
 	"github.com/iwangjie/nemorous/internal/plugins"
 )
@@ -78,6 +80,16 @@ type codeTab struct {
 	blameHiddenAt time.Time
 	editorWidth   float32
 	viewHandle    ui.Handle
+
+	// Optional language server. Hooks live on state and callbacks are
+	// installed lazily; the client key is repoID::languageID.
+	lspKey            string
+	lspHooksInstalled bool
+	lspVersion        uint64
+	lspOpened         bool
+	lspDiagErrors     int
+	lspDiagWarns      int
+	lspDiagMsg        string
 }
 
 func (t *codeTab) dirty() bool {
@@ -169,6 +181,7 @@ type App struct {
 	diffStagedOnly           bool
 	diffEditable             bool
 	diffModified             bool
+	diffStageBusy            bool
 	commitMessage            string
 	commitAmend              bool
 	lastBatchResults         []gitops.OpResult
@@ -260,6 +273,51 @@ type App struct {
 	codeTabs        []*codeTab
 	codeTabIdx      int
 
+	// Workspace manager
+	showWorkspaceManager bool
+	workspaceTab         string
+	wsRepo               string
+	wsBusy               bool
+	wsErr                string
+	wsNotice             string
+	wsConfirm            string
+	wsCloneURL           string
+	wsCloneName          string
+	wsInitName           string
+	wsImportPath         string
+	wsCredHost           string
+	wsCredUser           string
+	wsCredToken          string
+	wsCredHelpers        []string
+	wsSSHKeys            []credentials.SSHKey
+	wsAgentKeys          []string
+	wsKeyName            string
+	wsKeyComment         string
+	wsKeyPassphrase      string
+	wsSSHHost            string
+	wsSSHOut             string
+	wsLFS                gitops.LFSState
+	wsLFSPattern         string
+	wsSparse             gitops.SparseState
+	wsSparseInput        string
+	wsWorktrees          []gitops.Worktree
+	wsWorktreePath       string
+	wsWorktreeBranch     string
+	wsSigning            gitops.SigningConfig
+	wsSigningEnabled     bool
+	wsSigningFormat      string
+	wsSigningKey         string
+
+	// Optional LSP state
+	lspClients    map[string]*lsp.Client
+	lspStarting   map[string]bool
+	lspFailed     map[string]string
+	lspRenameOpen bool
+	lspRenameName string
+	lspRenameBusy bool
+	lspRenameErr  string
+	lspGen        uint64
+
 	// Mani Tasks State
 	showManiPanel         bool
 	maniRootCollapsed     bool
@@ -303,6 +361,31 @@ type App struct {
 	gitOpsRemoteURL  string
 	gitOpsSubURL     string
 	gitOpsSubPath    string
+
+	// Reflog / reset
+	gitOpsReflog    []gitops.ReflogEntry
+	gitOpsResetMode string
+
+	// Merge strategy and force push
+	gitOpsMergeBranch   string
+	gitOpsMergeStrategy string
+	gitOpsMergeMessage  string
+
+	// Arbitrary ref comparison
+	gitOpsCompareOld     string
+	gitOpsCompareNew     string
+	gitOpsCompareThree   bool
+	gitOpsCompareDiff    string
+	gitOpsCompareLoading bool
+	gitOpsCompareErr     string
+
+	// Interactive rebase plan
+	gitOpsRebaseCommits  []gitops.RebaseCommit
+	gitOpsRebaseActions  map[string]string
+	gitOpsRebaseRewordAt string
+	gitOpsRebaseMessage  string
+	gitOpsRebaseLoading  bool
+	gitOpsRebaseErr      string
 
 	// Conflict resolver
 	showConflict         bool
@@ -563,6 +646,15 @@ func NewApp(cfg config.Config) *App {
 		pluginScrollText:       make(map[string]string),
 		pluginIconCache:        make(map[string]*ui.SVG),
 		pluginPanelPct:         72,
+		workspaceTab:           "repos",
+		wsSigningFormat:        "openpgp",
+		gitOpsResetMode:        "mixed",
+		gitOpsMergeStrategy:    "no-ff",
+		gitOpsCompareThree:     true,
+		gitOpsRebaseActions:    make(map[string]string),
+		lspClients:             make(map[string]*lsp.Client),
+		lspStarting:            make(map[string]bool),
+		lspFailed:              make(map[string]string),
 		changesSplit:           320,
 		codeSplit:              290,
 		codeTabIdx:             -1,
@@ -732,7 +824,7 @@ func (a *App) overlayOpen() bool {
 		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil ||
 		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket ||
 		a.showGitOps || a.showConflict || a.showLocalHistory || a.showStructure || a.showTodos ||
-		a.showBookmarks || a.showChangeListModal || a.showGitHub || a.showRunConfig
+		a.showBookmarks || a.showChangeListModal || a.showGitHub || a.showRunConfig || a.showWorkspaceManager
 }
 
 // commitAvailability explains why the commit buttons can or cannot run.
@@ -812,11 +904,18 @@ func (a *App) confirmUndoLastCommit() {
 	}()
 }
 
+// discoverRepos applies the workspace's hidden repository list.
+func (a *App) discoverRepos(wsPath string) ([]mani.DiscoveredRepo, *mani.Config) {
+	repos, cfg := mani.DiscoverRepos(wsPath, a.cfg.IncludeRootRepo)
+	return mani.FilterRepos(repos, a.cfg.HiddenRepos), cfg
+}
+
 // LoadWorkspaceSync synchronously discovers repos and inspects status.
 func (a *App) LoadWorkspaceSync(wsPath string) {
+	a.closeLSPClients()
 	wsPath = filepath.Clean(wsPath)
 	a.cfg.AddRecentWorkspace(wsPath)
-	repos, maniCfg := mani.DiscoverRepos(wsPath, a.cfg.IncludeRootRepo)
+	repos, maniCfg := a.discoverRepos(wsPath)
 	ctx := context.Background()
 	statuses := gitops.InspectRepos(ctx, repos, a.cfg.Concurrency)
 	wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
@@ -854,12 +953,11 @@ func (a *App) RefreshWorkspaceAsync() {
 	}
 	a.isRefreshing = true
 	wsPath := a.cfg.WorkspacePath
-	incRoot := a.cfg.IncludeRootRepo
 	conc := a.cfg.Concurrency
 	epoch := a.commandID
 	go func() {
 		ctx := context.Background()
-		repos, maniCfg := mani.DiscoverRepos(wsPath, incRoot)
+		repos, maniCfg := a.discoverRepos(wsPath)
 		statuses := gitops.InspectRepos(ctx, repos, conc)
 		wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
 		a.runUI(func() {
@@ -1061,11 +1159,10 @@ func (a *App) LoadWorkspaceAsync(wsPath string) {
 	a.logRuntimeDetail("INFO", "开始载入工作区", wsPath)
 	a.mergeTargets = nil
 	a.mergeScanAt = time.Time{}
-	incRoot := a.cfg.IncludeRootRepo
 	conc := a.cfg.Concurrency
 	go func() {
 		ctx := context.Background()
-		repos, maniCfg := mani.DiscoverRepos(wsPath, incRoot)
+		repos, maniCfg := a.discoverRepos(wsPath)
 		statuses := gitops.InspectRepos(ctx, repos, conc)
 		wsFiles := gitops.ListWorkspaceFiles(ctx, repos, 2500)
 		a.runUI(func() {
@@ -1106,14 +1203,13 @@ func (a *App) refreshInternal(showBusy bool) {
 		a.busyLabel = refreshLabel
 	}
 	wsPath := a.cfg.WorkspacePath
-	incRoot := a.cfg.IncludeRootRepo
 	conc := a.cfg.Concurrency
 	cachedFiles := a.workspaceFiles
 	epoch := a.commandID
 
 	go func() {
 		ctx := context.Background()
-		repos, maniCfg := mani.DiscoverRepos(wsPath, incRoot)
+		repos, maniCfg := a.discoverRepos(wsPath)
 		statuses := gitops.InspectRepos(ctx, repos, conc)
 		wsFiles := cachedFiles
 		if full {
@@ -1425,6 +1521,7 @@ func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
 	a.recordLocalHistory(wf.RepoID, wf.RepoPath, wf.RelPath, "打开")
 	a.codeTabs = append(a.codeTabs, tab)
 	a.codeTabIdx = len(a.codeTabs) - 1
+	a.prepareLSP(tab)
 	a.revealCodeFile(wf)
 	a.scheduleSessionSave()
 }
@@ -1435,6 +1532,7 @@ func (a *App) activateCodeTab(i int) {
 		return
 	}
 	a.codeTabIdx = i
+	a.prepareLSP(a.codeTabs[i])
 }
 
 // requestCloseCodeTab closes a clean tab at once and asks before discarding
@@ -1545,6 +1643,7 @@ func (a *App) saveCodeTab(tab *codeTab) bool {
 	}
 	a.recordLocalHistoryContent(tab.file.RepoID, tab.file.RepoPath, tab.file.RelPath, content, "保存")
 	tab.state.Buffer.MarkSaved()
+	a.notifyLSPDidSave(tab)
 	if a.cfg.FormatOnSave {
 		if changed, ferr := a.formatFile(tab.file.RepoPath, tab.file.RelPath); ferr != nil {
 			a.showToast("warn", "格式化失败: "+ferr.Error())

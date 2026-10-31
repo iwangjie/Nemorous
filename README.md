@@ -200,6 +200,18 @@ Plugin authoring guide: [docs/plugins.md](docs/plugins.md).
 
 ---
 
+
+---
+
+### 12. Workspace Lifecycle, Credentials & Professional Git
+- **Workspace Manager**: clone, initialize, import and hide repositories without leaving the app; hide is non-destructive and restores from the same panel. New projects are recorded in `mani.yaml`.
+- **Credentials**: HTTPS tokens go straight to the system Git credential helper (macOS Keychain); SSH keys can be listed, generated, tested and selected for SSH commit signing. Secrets never enter Nemorous config.
+- **Repository Tools**: Git LFS install/pull/track, sparse-checkout patterns, and linked worktree add/remove/prune.
+- **Precision Staging**: stage or unstage a hunk, or stage selected added/deleted/replaced lines directly from the diff toolbar.
+- **History Recovery**: interactive rebase plans (pick / squash / reword / drop / reorder), reflog browser, and soft / mixed / hard / keep reset with confirmation.
+- **Merge Control**: explicit default / no-ff / ff-only / squash merges, safe `--force-with-lease` push, and two-dot or three-dot diff between any refs.
+- **Optional LSP**: off by default to protect memory and CPU on large repositories. Once enabled, installed servers provide completion, hover, definitions, diagnostics and rename for Go, TypeScript/JavaScript, Python, Rust, C/C++ and Java. Override commands with `lsp_servers` in the config JSON.
+
 ## Safety Invariants
 
 Automation and AI must never compromise code integrity. Nemorous enforces mathematically rigorous safety invariants:

@@ -49,6 +49,7 @@ func main() {
 			app.closeTerminal()
 			app.shutdownUpdates()
 			app.closePluginManager()
+			app.closeLSPClients()
 		})
 		app.win.OnFocus(func() { app.runUI(func() { app.handleAppForeground() }) })
 		app.win.OnBlur(func() { app.runUI(func() { app.handleAppBackground() }) })
@@ -317,6 +318,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildChangeListModal(c, p)
 		a.buildGitHubModal(c, p)
 		a.buildRunConfigModal(c, p)
+		a.buildWorkspaceModal(c, p)
 	})
 }
 
@@ -668,7 +670,7 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 				wsBtn.Background(p.SurfaceHover)
 			}
 			if wsBtn.Clicked() {
-				a.showSettings = true
+				a.openWorkspaceManager()
 			}
 			wsBtn.Children(func() {
 				drawIcon(c, icoFolder, 13, p.TextControl)

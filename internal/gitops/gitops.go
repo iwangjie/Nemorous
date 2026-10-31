@@ -142,8 +142,57 @@ func RunGitRaw(ctx context.Context, repoPath string, args ...string) (string, er
 	return runGitOutput(ctx, repoPath, false, args...)
 }
 
-func runGitOutput(ctx context.Context, repoPath string, trim bool, args ...string) (string, error) {
+// runGitInput runs git with stdin and returns combined output.
+func runGitInput(ctx context.Context, repoPath, stdin string, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	fullArgs := append([]string{"-c", "core.quotepath=false"}, args...)
+	cmd := exec.CommandContext(cctx, "git", fullArgs...)
+	cmd.Dir = repoPath
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=en_US.UTF-8", "LANG=en_US.UTF-8")
+	cmd.Stdin = strings.NewReader(stdin)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		out := strings.TrimSpace(stderr.String())
+		if out == "" {
+			out = strings.TrimSpace(stdout.String())
+		}
+		return out, err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// runGitEnv runs git with extra environment variables and no implicit output trimming.
+func runGitEnv(ctx context.Context, repoPath string, extraEnv []string, args ...string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	fullArgs := append([]string{"-c", "core.quotepath=false"}, args...)
+	cmd := exec.CommandContext(cctx, "git", fullArgs...)
+	cmd.Dir = repoPath
+	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "LC_ALL=en_US.UTF-8", "LANG=en_US.UTF-8")
+	cmd.Env = append(cmd.Env, extraEnv...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	out := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
+	return out, err
+}
+
+func runGitOutput(ctx context.Context, repoPath string, trim bool, args ...string) (string, error) {
+	return runGitOutputTimeout(ctx, repoPath, trim, 30*time.Second, args...)
+}
+
+// RunGitLong runs git with a longer deadline, for clones and LFS transfers.
+func RunGitLong(ctx context.Context, repoPath string, args ...string) (string, error) {
+	return runGitOutputTimeout(ctx, repoPath, true, 15*time.Minute, args...)
+}
+
+func runGitOutputTimeout(ctx context.Context, repoPath string, trim bool, timeout time.Duration, args ...string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	fullArgs := append([]string{"-c", "core.quotepath=false"}, args...)

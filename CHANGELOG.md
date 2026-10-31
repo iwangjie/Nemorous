@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.0
+- **工作区生命周期闭环**:
+  - 新增工作区管理面板：应用内克隆、初始化、导入已有仓库，并从视图隐藏/恢复仓库；隐藏不会删除磁盘文件。
+  - 新增 `mani.yaml` 项目写入，保留已有注释与条目；克隆/初始化后自动登记。
+  - 新增 Git 凭据管理：HTTPS Token 直接交给系统 credential helper（macOS 钥匙串），SSH key 列表、ed25519 生成与 SSH 连通性测试；密钥与令牌不写入 Nemorous 配置。
+  - 新增按仓库提交签名配置（GPG / SSH），以及 Git LFS、Sparse Checkout、Worktree 的查看与管理。
+- **专业 Git 动作**:
+  - Diff 工具栏新增「暂存块 / 取消暂存块 / 暂存选中行」，支持纯增删与对称替换的行级暂存。
+  - Rebase 页新增交互式变基计划：pick / squash / reword / drop、上下调整顺序、二次确认后执行。
+  - 新增 Reflog 浏览器与 soft / mixed / hard / keep Reset（二次确认）。
+  - 新增显式合并策略（default / no-ff / ff-only / squash）与 `--force-with-lease` 安全强制推送。
+  - 新增任意两个 ref 的双点/三点差异对比。
+- **可选代码智能 (LSP)**:
+  - 新增 LSP 客户端，默认关闭，避免大型仓库的内存与 CPU 开销；可在设置中启用。
+  - 支持 gopls、typescript-language-server、pyright、rust-analyzer、clangd、jdtls，可覆盖命令。
+  - 打开文件后提供补全、悬停、跳转定义、实时诊断与重命名。
+- **验证**:
+  - 新增 Git 操作、凭据 helper、LSP JSON-RPC、mani 配置与工作区/暂存/变基/Reflog 界面端到端测试；全量测试通过。
+
 ## 0.8.1
 - **插件 UI/UX 收口**:
   - Database：移除重复的「连接管理」入口、无意义的查询刷新按钮和重复状态 badge；连接新增/管理统一到「连接」Tab。修复切换表时旧列/索引请求回写导致的错乱。

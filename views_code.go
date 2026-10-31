@@ -418,6 +418,8 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 		}
 
 		a.buildCodeTabBar(c, p)
+		a.prepareLSP(tab)
+		a.syncLSP(tab)
 		wf := tab.file
 		editorPlugin, hasEditorPlugin := a.editorPluginForFile(wf.AbsPath)
 		textMode := a.pluginEditorInTextMode(wf.RepoID, wf.RelPath)
@@ -435,6 +437,15 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 				ui.Text(c, wf.RelPath).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
 				if isModified {
 					badgeBox(c, "未保存", p.Amber, p.AmberSoft, ui.Color{}, 10.5, true)
+				}
+				if a.canUseLSP(tab) && (tab.lspDiagErrors > 0 || tab.lspDiagWarns > 0) {
+					label := fmt.Sprintf("%d 错误", tab.lspDiagErrors)
+					col, bg := p.Danger, p.DangerSoft
+					if tab.lspDiagErrors == 0 {
+						label = fmt.Sprintf("%d 警告", tab.lspDiagWarns)
+						col, bg = p.Amber, p.AmberSoft
+					}
+					badgeBox(c, label, col, bg, ui.Color{}, 10, true)
 				}
 			})
 
@@ -458,6 +469,12 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 				if !useEditorPlugin {
 					miniBtn(c, p, "结构", func() { a.openStructure() })
 					miniBtn(c, p, "书签", func() { a.openBookmarks() })
+					if a.canUseLSP(tab) {
+						miniBtn(c, p, "重命名", func() {
+							a.lspRenameOpen = true
+							a.lspRenameErr = ""
+						})
+					}
 				}
 				miniBtn(c, p, "历史", func() { a.openLocalHistory(wf.RepoID, wf.RepoPath, wf.RelPath) })
 				if !useEditorPlugin {
@@ -468,6 +485,9 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			})
 		})
 
+		if a.lspRenameOpen && !useEditorPlugin {
+			a.buildLSPRenameRow(c, p, tab)
+		}
 		if a.showCodeOptions && !useEditorPlugin {
 			ui.Row(c).Padding(6, 14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "显示选项：").FontSize(11.5).TextColor(p.TextMuted)

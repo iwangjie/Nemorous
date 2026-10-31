@@ -10,6 +10,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 	"github.com/iwangjie/nemorous/internal/gitops"
+	"github.com/iwangjie/nemorous/internal/lsp"
 )
 
 func isWordBoundaryByte(b byte) bool {
@@ -366,6 +367,9 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			})
 			addEntry("git-stash", "Git", "Stash 管理", "创建、应用、弹出、删除贮藏", p.Accent, func() {
 				a.openGitOps("stash")
+			})
+			addEntry("workspace-manager", "工作区", "工作区管理 / 凭据", "克隆、初始化、导入、隐藏仓库，管理 Keychain、LFS、Sparse、Worktree 与签名", p.Accent, func() {
+				a.openWorkspaceManager()
 			})
 			addEntry("git-advanced", "Git", "Git 高级操作", "变基、Cherry-pick、Revert、标签、Remotes、子模块", p.Accent, func() {
 				a.openGitOps("rebase")
@@ -752,6 +756,43 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 						ui.TextInput(c.Key("fmt-cmd"), &a.cfg.FormatCommand).Grow(1).Placeholder("留空按语言选择 gofmt / prettier / ruff；可用 {} 表示文件路径")
 					})
 					ui.Text(c, "编辑器已内置多光标、列选择（Alt+拖动）、代码折叠、查找替换与缩进辅助。").FontSize(10.5).TextColor(p.TextMuted)
+				})
+
+				// Optional LSP: off by default because language servers can
+				// consume significant memory and CPU on large repositories.
+				ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
+					ui.Text(c, "可选代码智能 (LSP)").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+						if ui.Checkbox(c, &a.cfg.LSPEnabled, "启用 LSP（默认关闭）").Changed() {
+							_ = a.cfg.Save()
+							if !a.cfg.LSPEnabled {
+								a.closeLSPClients()
+							} else {
+								a.lspFailed = make(map[string]string)
+								for _, tab := range a.codeTabs {
+									tab.lspKey = ""
+									tab.lspOpened = false
+									a.prepareLSP(tab)
+								}
+							}
+						}
+						ui.Text(c, "仅在打开文件时启动对应语言服务；关闭可立即释放内存与 CPU。").FontSize(10).TextColor(p.TextMuted).Grow(1)
+					})
+					for _, spec := range lsp.Available() {
+						installed := lsp.ServerInstalled(spec)
+						kc := c.Key("lsp-srv-" + spec.LanguageID)
+						ui.Row(kc).Gap(6).AlignItems(ui.Center).Children(func() {
+							drawIcon(kc, icoCode, 11, p.TextMuted)
+							ui.Text(kc, spec.LanguageID).FontSize(10.5).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(90)
+							ui.Text(kc, spec.Command).Font("monospace").FontSize(9).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+							if installed {
+								badgeBox(kc, "已安装", p.Green, p.GreenSoft, ui.Color{}, 9, false)
+							} else {
+								badgeBox(kc, "未安装", p.TextMuted, p.Surface2, p.Border, 9, false)
+							}
+						})
+					}
+					ui.Text(c, "支持覆盖命令：在配置 JSON 的 lsp_servers 中按语言 ID 设置，例如 {\"go\": \"/opt/homebrew/bin/gopls\"}。").FontSize(9.5).TextColor(p.TextMuted)
 				})
 
 				// Section 3: Merge & AI Assistant (supports omp, pi, claude, codex)

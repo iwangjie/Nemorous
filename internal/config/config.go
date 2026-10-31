@@ -26,38 +26,41 @@ type MergePreset struct {
 
 // Config holds persistent application configuration for Nemorous.
 type Config struct {
-	WorkspacePath        string           `json:"workspace_path"`
-	RecentWorkspaces     []string         `json:"recent_workspaces"`
-	Theme                string           `json:"theme"`                 // "light", "dark", "darcula", "system"
-	DefaultTargetBranch  string           `json:"default_target_branch"` // e.g. "test", "main"
-	AIAgent              string           `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
-	Concurrency          int              `json:"concurrency"`           // parallel git workers (default 8)
-	DiffSideBySide       bool             `json:"diff_side_by_side"`
-	DiffInlineMode       string           `json:"diff_inline_mode"` // "word", "char", "none"
-	EditorFontSize       float32          `json:"editor_font_size"`
-	EditorSoftWrap       bool             `json:"editor_soft_wrap"`
-	Zoom                 float32          `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
-	NavShowLabels        bool             `json:"nav_show_labels"`
-	IncludeRootRepo      bool             `json:"include_root_repo"`
-	ManiEnabled          bool             `json:"mani_enabled"`
-	AutoUpdate           bool             `json:"auto_update"`          // check GitHub Releases for signed updates
-	AutoUpdateIdle       bool             `json:"auto_update_idle"`     // install while the app is in the background
-	UpdateCheckMinutes   int              `json:"update_check_minutes"` // foreground check interval
-	UpdateMirror         string           `json:"update_mirror"`        // GitHub proxy prefix for faster downloads
-	SkippedUpdateVersion string           `json:"skipped_update_version,omitempty"`
-	ProtectedBranches    []string         `json:"protected_branches"`
-	BranchPresets        []BranchPreset   `json:"branch_presets,omitempty"`
-	MergePresets         []MergePreset    `json:"merge_presets,omitempty"`
-	ChangeLists          []ChangeList     `json:"change_lists,omitempty"`
-	ActiveChangeList     string           `json:"active_change_list,omitempty"`
-	FormatOnSave         bool             `json:"format_on_save"`
-	FormatCommand        string           `json:"format_command,omitempty"`
-	RunConfigs           []RunConfig      `json:"run_configs,omitempty"`
-	RunPanelHeight       float32          `json:"run_panel_height,omitempty"`
-	DebugAdapter         string           `json:"debug_adapter,omitempty"`
-	DebugAdapterArgs     string           `json:"debug_adapter_args,omitempty"`
-	Bookmarks            []Bookmark       `json:"bookmarks,omitempty"`
-	Breakpoints          map[string][]int `json:"breakpoints,omitempty"`
+	WorkspacePath        string            `json:"workspace_path"`
+	RecentWorkspaces     []string          `json:"recent_workspaces"`
+	Theme                string            `json:"theme"`                 // "light", "dark", "darcula", "system"
+	DefaultTargetBranch  string            `json:"default_target_branch"` // e.g. "test", "main"
+	AIAgent              string            `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
+	Concurrency          int               `json:"concurrency"`           // parallel git workers (default 8)
+	DiffSideBySide       bool              `json:"diff_side_by_side"`
+	DiffInlineMode       string            `json:"diff_inline_mode"` // "word", "char", "none"
+	EditorFontSize       float32           `json:"editor_font_size"`
+	EditorSoftWrap       bool              `json:"editor_soft_wrap"`
+	Zoom                 float32           `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
+	NavShowLabels        bool              `json:"nav_show_labels"`
+	IncludeRootRepo      bool              `json:"include_root_repo"`
+	ManiEnabled          bool              `json:"mani_enabled"`
+	AutoUpdate           bool              `json:"auto_update"`          // check GitHub Releases for signed updates
+	AutoUpdateIdle       bool              `json:"auto_update_idle"`     // install while the app is in the background
+	UpdateCheckMinutes   int               `json:"update_check_minutes"` // foreground check interval
+	UpdateMirror         string            `json:"update_mirror"`        // GitHub proxy prefix for faster downloads
+	SkippedUpdateVersion string            `json:"skipped_update_version,omitempty"`
+	ProtectedBranches    []string          `json:"protected_branches"`
+	BranchPresets        []BranchPreset    `json:"branch_presets,omitempty"`
+	MergePresets         []MergePreset     `json:"merge_presets,omitempty"`
+	ChangeLists          []ChangeList      `json:"change_lists,omitempty"`
+	ActiveChangeList     string            `json:"active_change_list,omitempty"`
+	FormatOnSave         bool              `json:"format_on_save"`
+	FormatCommand        string            `json:"format_command,omitempty"`
+	RunConfigs           []RunConfig       `json:"run_configs,omitempty"`
+	RunPanelHeight       float32           `json:"run_panel_height,omitempty"`
+	DebugAdapter         string            `json:"debug_adapter,omitempty"`
+	DebugAdapterArgs     string            `json:"debug_adapter_args,omitempty"`
+	Bookmarks            []Bookmark        `json:"bookmarks,omitempty"`
+	Breakpoints          map[string][]int  `json:"breakpoints,omitempty"`
+	HiddenRepos          []string          `json:"hidden_repos,omitempty"`
+	LSPEnabled           bool              `json:"lsp_enabled"`
+	LSPServers           map[string]string `json:"lsp_servers,omitempty"`
 }
 
 // Default returns a sensible default configuration.
@@ -319,4 +322,37 @@ func (c *Config) ResolvedAIAgent() (name string, binPath string) {
 		}
 	}
 	return "omp", ""
+}
+
+// IsRepoHidden reports whether a workspace-relative repository path or ID is
+// hidden from discovery.
+func (c *Config) IsRepoHidden(idOrPath string) bool {
+	target := filepath.Clean(idOrPath)
+	for _, h := range c.HiddenRepos {
+		if filepath.Clean(h) == target || h == idOrPath {
+			return true
+		}
+	}
+	return false
+}
+
+// HideRepo removes a repository from discovery without touching its files.
+func (c *Config) HideRepo(idOrPath string) {
+	idOrPath = filepath.Clean(idOrPath)
+	if idOrPath == "" || idOrPath == "." || c.IsRepoHidden(idOrPath) {
+		return
+	}
+	c.HiddenRepos = append(c.HiddenRepos, idOrPath)
+}
+
+// ShowRepo restores a hidden repository to discovery.
+func (c *Config) ShowRepo(idOrPath string) {
+	target := filepath.Clean(idOrPath)
+	out := c.HiddenRepos[:0]
+	for _, h := range c.HiddenRepos {
+		if filepath.Clean(h) != target && h != idOrPath {
+			out = append(out, h)
+		}
+	}
+	c.HiddenRepos = out
 }

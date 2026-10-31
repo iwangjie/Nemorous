@@ -200,6 +200,18 @@
 
 ---
 
+
+---
+
+### 12. 工作区生命周期、凭据与专业 Git 动作
+- **工作区管理**：在应用内克隆、初始化、导入和隐藏仓库；隐藏不删除磁盘文件，可随时恢复。新仓库自动登记到 `mani.yaml`。
+- **凭据管理**：HTTPS Token 直接交给系统 Git credential helper（macOS 钥匙串）；SSH key 可列出、生成、测试，并可用于 SSH 提交签名。密钥和令牌不会写入 Nemorous 配置。
+- **仓库工具**：Git LFS 启用/拉取/追踪、Sparse Checkout 模式、Worktree 添加/移除/清理。
+- **精确暂存**：Diff 工具栏支持暂存/取消暂存变更块，以及按行暂存新增、删除或等长替换。
+- **历史恢复**：交互式变基计划（pick / squash / reword / drop / 调整顺序）、Reflog 浏览器、soft / mixed / hard / keep Reset（二次确认）。
+- **合并控制**：显式 default / no-ff / ff-only / squash 合并、`--force-with-lease` 安全强推、任意 ref 的双点/三点差异。
+- **可选 LSP**：默认关闭，避免大型仓库的内存与 CPU 开销。启用后，已安装的语言服务为 Go、TypeScript/JavaScript、Python、Rust、C/C++、Java 提供补全、悬停、定义跳转、诊断与重命名；可在配置 JSON 的 `lsp_servers` 中覆盖命令。
+
 ## 安全不变量 (Safety Invariants)
 
 在工程实践中，自动化工具与 AI 最致命的问题是“毁坏代码”或“误推历史”。Nemorous 在底层架构上确立了严密的数学级安全不变量：

@@ -389,3 +389,117 @@ func classifyTaskOutput(out string, err error) string {
 	}
 	return "OK"
 }
+
+// FilterRepos drops repositories hidden from the workspace. Hidden entries
+// match either the repository ID or its workspace-relative path.
+func FilterRepos(repos []DiscoveredRepo, hidden []string) []DiscoveredRepo {
+	if len(hidden) == 0 {
+		return repos
+	}
+	drop := make(map[string]bool, len(hidden)*2)
+	for _, h := range hidden {
+		h = filepath.Clean(h)
+		if h != "" && h != "." {
+			drop[h] = true
+		}
+	}
+	out := repos[:0]
+	for _, repo := range repos {
+		if drop[filepath.Clean(repo.RelPath)] || drop[repo.ID] {
+			continue
+		}
+		out = append(out, repo)
+	}
+	return out
+}
+
+// AddProject records a repository in mani.yaml without rewriting unrelated
+// entries or comments. A new mani.yaml is created when none exists.
+func AddProject(workspaceDir, name, relPath, url string) error {
+	name = strings.TrimSpace(name)
+	relPath = filepath.ToSlash(strings.TrimSpace(relPath))
+	if name == "" || relPath == "" || relPath == "." {
+		return fmt.Errorf("项目名和相对路径不能为空")
+	}
+	path, _, err := LoadManiConfigPath(workspaceDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if path == "" {
+		path = filepath.Join(workspaceDir, "mani.yaml")
+	}
+	var doc yaml.Node
+	data, readErr := os.ReadFile(path)
+	if readErr == nil && len(bytes.TrimSpace(data)) > 0 {
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("parse %s: %w", filepath.Base(path), err)
+		}
+	}
+	if len(doc.Content) == 0 {
+		doc.Kind = yaml.DocumentNode
+		root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		doc.Content = []*yaml.Node{root}
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s 根节点不是映射", filepath.Base(path))
+	}
+	var projects *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "projects" {
+			projects = root.Content[i+1]
+			break
+		}
+	}
+	if projects == nil {
+		projects = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "projects"}, projects)
+	}
+	if projects.Kind != yaml.MappingNode {
+		return fmt.Errorf("mani.yaml projects 不是映射")
+	}
+	for i := 0; i+1 < len(projects.Content); i += 2 {
+		if projects.Content[i].Value == name {
+			return nil
+		}
+	}
+	spec := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	spec.Content = append(spec.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "path"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: relPath},
+	)
+	if url = strings.TrimSpace(url); url != "" {
+		spec.Content = append(spec.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "url"},
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: url},
+		)
+	}
+	projects.Content = append(projects.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, spec)
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// LoadManiConfigPath returns the first existing mani config path, or an empty
+// path and os.ErrNotExist.
+func LoadManiConfigPath(workspaceDir string) (string, *Config, error) {
+	for _, name := range []string{"mani.yaml", "mani.yml", ".mani.yaml", ".mani.yml"} {
+		full := filepath.Join(workspaceDir, name)
+		data, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		var cfg Config
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return full, nil, fmt.Errorf("parse %s: %w", name, err)
+		}
+		return full, &cfg, nil
+	}
+	return "", nil, os.ErrNotExist
+}

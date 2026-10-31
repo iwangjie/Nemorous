@@ -44,7 +44,17 @@ func (a *App) openGitOps(tab string) {
 	a.gitOpsErr = ""
 	a.gitOpsNotice = ""
 	a.gitOpsConfirm = ""
+	a.gitOpsRebaseCommits = nil
+	a.gitOpsRebaseActions = make(map[string]string)
+	a.gitOpsRebaseRewordAt = ""
+	a.gitOpsRebaseErr = ""
 	a.ensureGitOpsRepo()
+	if a.gitOpsCompareOld == "" {
+		a.gitOpsCompareOld = "origin/main"
+	}
+	if a.gitOpsCompareNew == "" {
+		a.gitOpsCompareNew = "HEAD"
+	}
 	if a.gitSelectedCommit != "" {
 		a.gitOpsHash = a.gitSelectedCommit
 	}
@@ -66,6 +76,7 @@ func (a *App) loadGitOpsData() {
 		tags, _ := gitops.ListTags(ctx, path)
 		remotes, _ := gitops.ListRemotes(ctx, path)
 		submodules, _ := gitops.ListSubmodules(ctx, path)
+		reflog, _ := gitops.ListReflog(ctx, path, 100)
 		state := gitops.RepoOperationState(ctx, path)
 		a.runUI(func() {
 			if a.gitOpsRepo != repoID {
@@ -75,6 +86,7 @@ func (a *App) loadGitOpsData() {
 			a.gitOpsTags = tags
 			a.gitOpsRemotes = remotes
 			a.gitOpsSubmodules = submodules
+			a.gitOpsReflog = reflog
 			a.gitOpsState = state
 			a.gitOpsLoading = false
 		})
@@ -141,6 +153,9 @@ func (a *App) buildGitOpsModal(c *ui.Context, p Palette) {
 						if m.Item(rst.Repo.Name).Radio(a.gitOpsRepo == id).Chosen() {
 							a.gitOpsRepo = id
 							a.gitOpsConfirm = ""
+							a.gitOpsRebaseCommits = nil
+							a.gitOpsRebaseActions = make(map[string]string)
+							a.gitOpsRebaseRewordAt = ""
 							a.loadGitOpsData()
 						}
 					}
@@ -164,6 +179,9 @@ func (a *App) buildGitOpsModal(c *ui.Context, p Palette) {
 				{"tags", "标签", icoTag},
 				{"remotes", "远端", icoCloud},
 				{"submodules", "子模块", icoBox},
+				{"reflog", "Reflog", icoCommit},
+				{"merge", "合并", icoMerge},
+				{"compare", "对比", icoColumns},
 			} {
 				tab := tab
 				active := a.gitOpsTab == tab.id
@@ -247,6 +265,12 @@ func (a *App) buildGitOpsModal(c *ui.Context, p Palette) {
 					a.buildGitOpsRemotes(c, p)
 				case "submodules":
 					a.buildGitOpsSubmodules(c, p)
+				case "reflog":
+					a.buildGitOpsReflog(c, p)
+				case "merge":
+					a.buildGitOpsMerge(c, p)
+				case "compare":
+					a.buildGitOpsCompare(c, p)
 				default:
 					a.buildGitOpsStash(c, p)
 				}
@@ -380,13 +404,16 @@ func (a *App) gitOpsRepoPath() string {
 
 func (a *App) buildGitOpsRebase(c *ui.Context, p Palette) {
 	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "目标分支").FontSize(10.5).TextColor(p.TextMuted).Width(64).Shrink(0)
+		ui.Text(c, "上游").FontSize(10.5).TextColor(p.TextMuted).Width(40).Shrink(0)
 		ui.TextInput(c.Key("rebase-branch"), &a.gitOpsBranch).Placeholder("main / origin/main").Grow(1)
-		label := "变基"
+		iconPill(c, p, icoRefresh, "加载提交", false, func() {
+			a.loadRebasePlan()
+		})
+		label := "普通变基"
 		if a.gitOpsConfirm == "rebase" {
 			label = "确认重写"
 		}
-		iconPill(c, p, icoBranch, label, true, func() {
+		iconPill(c, p, icoBranch, label, false, func() {
 			branch := strings.TrimSpace(a.gitOpsBranch)
 			if a.gitOpsConfirm != "rebase" {
 				a.gitOpsConfirm = "rebase"
@@ -399,8 +426,350 @@ func (a *App) buildGitOpsRebase(c *ui.Context, p Palette) {
 		})
 	})
 	if a.gitOpsConfirm == "rebase" {
-		ui.Text(c, "将重写当前分支历史").FontSize(9.5).TextColor(p.Amber)
+		ui.Text(c, "普通变基将重写当前分支历史").FontSize(9.5).TextColor(p.Amber)
 	}
+	ui.Box(c).Height(1).FillWidth().Background(p.Border).MarginY(4)
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "交互式变基计划").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+		ui.Text(c, "从旧到新；可拖序（↑/↓）、pick、squash、reword、drop").FontSize(9).TextColor(p.TextMuted).Grow(1)
+		if a.gitOpsRebaseLoading {
+			ui.Spinner(c).Size(12, 12).Label("加载").TextColor(p.TextMuted)
+		}
+	})
+	if a.gitOpsRebaseErr != "" {
+		ui.Text(c, a.gitOpsRebaseErr).FontSize(9.5).TextColor(p.Danger).MaxLines(3)
+	}
+	if len(a.gitOpsRebaseCommits) == 0 {
+		if !a.gitOpsRebaseLoading {
+			emptyState(c, p, icoCommit, "尚未加载提交", "填写上游分支后点击「加载提交」")
+		}
+		return
+	}
+	for i, commit := range a.gitOpsRebaseCommits {
+		commit := commit
+		action := a.gitOpsRebaseActions[commit.Hash]
+		if action == "" {
+			action = "pick"
+		}
+		kc := c.Key("rb-" + commit.Hash)
+		row := ui.Row(kc).FillWidth().Padding(4, 3).Gap(6).AlignItems(ui.Center).Radius(4)
+		if row.Hovered() {
+			row.Background(p.SurfaceHover)
+		}
+		row.Children(func() {
+			ui.Text(kc, fmt.Sprintf("%02d", i+1)).Font("monospace").FontSize(9).TextColor(p.TextMuted).Width(20)
+			tone, bg := "muted", p.Surface2
+			switch action {
+			case "squash":
+				tone, bg = "accent", p.AccentSoft
+			case "reword":
+				tone, bg = "warn", p.AmberSoft
+			case "drop":
+				tone, bg = "danger", p.DangerSoft
+			}
+			badgeBox(kc, action, pluginToneColor(tone, p), bg, p.Border, 9, false)
+			ui.Text(kc, commit.Hash[:min(8, len(commit.Hash))]).Font("monospace").FontSize(9).TextColor(p.TextMuted).Width(66)
+			ui.Text(kc, commit.Subject).FontSize(10.5).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
+			toolButton(kc, p, "rb-up-"+commit.Hash, icoChevronUp, "上移", false, i > 0, func() {
+				a.gitOpsRebaseCommits[i], a.gitOpsRebaseCommits[i-1] = a.gitOpsRebaseCommits[i-1], a.gitOpsRebaseCommits[i]
+			})
+			toolButton(kc, p, "rb-down-"+commit.Hash, icoChevronDown, "下移", false, i < len(a.gitOpsRebaseCommits)-1, func() {
+				a.gitOpsRebaseCommits[i], a.gitOpsRebaseCommits[i+1] = a.gitOpsRebaseCommits[i+1], a.gitOpsRebaseCommits[i]
+			})
+			menuIconAction(kc, p, "rb-menu-"+commit.Hash, icoMore, "动作", false, func(m *ui.Menu) {
+				for _, candidate := range []string{"pick", "squash", "reword", "drop"} {
+					candidate := candidate
+					if m.Item(candidate).Radio(action == candidate).Chosen() {
+						if candidate == "reword" {
+							for h := range a.gitOpsRebaseActions {
+								if a.gitOpsRebaseActions[h] == "reword" {
+									a.gitOpsRebaseActions[h] = "pick"
+								}
+							}
+							a.gitOpsRebaseRewordAt = commit.Hash
+							a.gitOpsRebaseMessage = commit.Subject
+						}
+						if action == "reword" && candidate != "reword" {
+							a.gitOpsRebaseRewordAt = ""
+						}
+						a.gitOpsRebaseActions[commit.Hash] = candidate
+					}
+				}
+			})
+		})
+		if action == "reword" && a.gitOpsRebaseRewordAt == commit.Hash {
+			ui.Row(c).FillWidth().Padding(0, 28).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "新提交信息").FontSize(9).TextColor(p.TextMuted)
+				ui.TextInput(c.Key("rb-msg"), &a.gitOpsRebaseMessage).Grow(1)
+			})
+		}
+	}
+	ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Margin(4, 0, 0, 0).Children(func() {
+		label := "执行交互式变基"
+		if a.gitOpsConfirm == "interactive-rebase" {
+			label = "确认重写历史"
+		}
+		pill(c, p, label, true, func() {
+			if a.gitOpsConfirm != "interactive-rebase" {
+				a.gitOpsConfirm = "interactive-rebase"
+				return
+			}
+			a.gitOpsConfirm = ""
+			a.executeInteractiveRebase()
+		})
+		if a.gitOpsConfirm == "interactive-rebase" {
+			ui.Text(c, "将重写当前分支历史").FontSize(9.5).TextColor(p.Amber)
+		}
+	})
+}
+
+func (a *App) loadRebasePlan() {
+	repo := a.ensureGitOpsRepo()
+	if repo == nil {
+		return
+	}
+	upstream := strings.TrimSpace(a.gitOpsBranch)
+	if upstream == "" {
+		a.gitOpsRebaseErr = "请先填写上游分支"
+		return
+	}
+	a.gitOpsRebaseLoading = true
+	a.gitOpsRebaseErr = ""
+	repoID := repo.Repo.ID
+	path := repo.Repo.AbsPath
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		commits, err := gitops.ListRebaseCommits(ctx, path, upstream)
+		a.runUI(func() {
+			if a.gitOpsRepo != repoID {
+				return
+			}
+			a.gitOpsRebaseLoading = false
+			if err != nil {
+				a.gitOpsRebaseErr = err.Error()
+				return
+			}
+			a.gitOpsRebaseCommits = commits
+			a.gitOpsRebaseActions = make(map[string]string, len(commits))
+			a.gitOpsRebaseRewordAt = ""
+			for _, commit := range commits {
+				a.gitOpsRebaseActions[commit.Hash] = "pick"
+			}
+		})
+	}()
+}
+
+func (a *App) executeInteractiveRebase() {
+	repo := a.ensureGitOpsRepo()
+	if repo == nil || len(a.gitOpsRebaseCommits) == 0 || a.gitOpsLoading {
+		return
+	}
+	steps := make([]gitops.RebaseStep, 0, len(a.gitOpsRebaseCommits))
+	for _, commit := range a.gitOpsRebaseCommits {
+		action := a.gitOpsRebaseActions[commit.Hash]
+		msg := ""
+		if action == "reword" {
+			msg = a.gitOpsRebaseMessage
+		}
+		steps = append(steps, gitops.RebaseStep{Hash: commit.Hash, Action: action, Message: msg})
+	}
+	upstream := strings.TrimSpace(a.gitOpsBranch)
+	repoID := repo.Repo.ID
+	path := repo.Repo.AbsPath
+	a.gitOpsLoading = true
+	a.gitOpsErr, a.gitOpsNotice = "", ""
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		out, err := gitops.InteractiveRebase(ctx, path, upstream, steps)
+		a.runUI(func() {
+			a.gitOpsLoading = false
+			if err != nil {
+				a.gitOpsErr = strings.TrimSpace(out)
+				if a.gitOpsErr == "" {
+					a.gitOpsErr = err.Error()
+				}
+				a.loadGitOpsData()
+				return
+			}
+			a.gitOpsNotice = "交互式变基完成"
+			a.gitOpsRebaseCommits = nil
+			a.gitOpsRebaseActions = make(map[string]string)
+			a.loadGitOpsData()
+			a.RefreshAsync()
+		})
+	}()
+	_ = repoID
+}
+
+func (a *App) buildGitOpsReflog(c *ui.Context, p Palette) {
+	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "Reset 模式").FontSize(10).TextColor(p.TextMuted)
+		menuIconPill(c, p, "reflog-mode", icoRestore, a.gitOpsResetMode, true, func(m *ui.Menu) {
+			for _, mode := range []string{"soft", "mixed", "hard", "keep"} {
+				mode := mode
+				if m.Item(mode).Radio(a.gitOpsResetMode == mode).Chosen() {
+					a.gitOpsResetMode = mode
+					a.gitOpsConfirm = ""
+				}
+			}
+		})
+		ui.Text(c, "hard 会丢弃工作区修改，操作前会二次确认").FontSize(9).TextColor(p.TextMuted).Grow(1)
+	})
+	for _, entry := range a.gitOpsReflog {
+		entry := entry
+		kc := c.Key("reflog-" + entry.Hash + entry.Ref)
+		row := ui.Row(kc).FillWidth().Padding(4, 3).Gap(6).AlignItems(ui.Center).Radius(4)
+		if row.Hovered() {
+			row.Background(p.SurfaceHover)
+		}
+		row.Children(func() {
+			ui.Text(kc, entry.Hash[:min(8, len(entry.Hash))]).Font("monospace").FontSize(9).TextColor(p.TextMuted).Width(66)
+			ui.Text(kc, entry.Ref).Font("monospace").FontSize(9).TextColor(p.Accent).Width(90).MaxLines(1)
+			ui.Text(kc, entry.Subject).FontSize(10).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
+			ui.Text(kc, shortGitDate(entry.Date)).FontSize(9).TextColor(p.TextMuted).Width(80)
+			if a.gitOpsConfirm == "reset:"+entry.Hash {
+				ui.Text(kc, "Reset？").FontSize(9).TextColor(p.Danger)
+				toolButton(kc, p, "reflog-yes-"+entry.Hash, icoCheck, "确认 reset", false, true, func() {
+					a.gitOpsConfirm = ""
+					hash := entry.Hash
+					mode := a.gitOpsResetMode
+					a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
+						out, err := gitops.ResetTo(ctx, path, hash, mode)
+						return "已 reset --" + mode + " 到 " + hash[:min(8, len(hash))] + "\n" + out, err
+					})
+				})
+				toolButton(kc, p, "reflog-no-"+entry.Hash, icoClose, "取消", false, true, func() { a.gitOpsConfirm = "" })
+			} else {
+				toolButton(kc, p, "reflog-reset-"+entry.Hash, icoRestore, "Reset 到此记录", false, true, func() {
+					a.gitOpsConfirm = "reset:" + entry.Hash
+				})
+			}
+		})
+		ui.Box(c).Height(1).FillWidth().Background(p.BorderSubtle)
+	}
+	if len(a.gitOpsReflog) == 0 {
+		emptyState(c, p, icoRestore, "没有 Reflog", "仓库还没有引用变更记录")
+	}
+}
+
+func (a *App) buildGitOpsMerge(c *ui.Context, p Palette) {
+	ui.Text(c, "将分支合并到当前分支").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("merge-branch"), &a.gitOpsMergeBranch).Placeholder("feature / origin/feature").Grow(1)
+		menuIconPill(c, p, "merge-strategy", icoMerge, a.gitOpsMergeStrategy, true, func(m *ui.Menu) {
+			for _, strategy := range []string{"default", "no-ff", "ff-only", "squash"} {
+				strategy := strategy
+				if m.Item(strategy).Radio(a.gitOpsMergeStrategy == strategy).Chosen() {
+					a.gitOpsMergeStrategy = strategy
+					a.gitOpsConfirm = ""
+				}
+			}
+		})
+		if a.gitOpsMergeStrategy == "no-ff" {
+			ui.TextInput(c.Key("merge-msg"), &a.gitOpsMergeMessage).Placeholder("合并提交信息（可选）").Width(220)
+		}
+		label := "合并"
+		if a.gitOpsConfirm == "merge" {
+			label = "确认合并"
+		}
+		pill(c, p, label, true, func() {
+			if a.gitOpsConfirm != "merge" {
+				a.gitOpsConfirm = "merge"
+				return
+			}
+			a.gitOpsConfirm = ""
+			branch := strings.TrimSpace(a.gitOpsMergeBranch)
+			strategy := gitops.MergeStrategy(a.gitOpsMergeStrategy)
+			msg := a.gitOpsMergeMessage
+			a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
+				out, err := gitops.MergeBranch(ctx, path, branch, strategy, msg)
+				if err != nil {
+					return out, err
+				}
+				if strings.TrimSpace(out) == "" {
+					out = "合并完成"
+				}
+				return out, nil
+			})
+		})
+	})
+	ui.Text(c, "squash 会创建一个压缩提交；ff-only 在不能快进时失败，不会改写历史。").FontSize(9).TextColor(p.TextMuted)
+	ui.Box(c).Height(1).FillWidth().Background(p.Border).MarginY(6)
+	ui.Text(c, "安全强制推送").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+	ui.Text(c, "只在远端仍是上次 fetch 的提交时覆盖，防止覆盖别人的工作。").FontSize(9).TextColor(p.TextMuted)
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		if a.gitOpsConfirm == "force-lease" {
+			ui.Text(c, "确认 force-with-lease？").FontSize(9.5).TextColor(p.Danger)
+			pill(c, p, "确认推送", true, func() {
+				a.gitOpsConfirm = ""
+				a.runGitOpsAction(func(ctx context.Context, path string) (string, error) {
+					return gitops.ForcePushWithLease(ctx, path)
+				})
+			})
+			miniBtn(c, p, "取消", func() { a.gitOpsConfirm = "" })
+		} else {
+			iconPill(c, p, icoPush, "Force with lease", false, func() { a.gitOpsConfirm = "force-lease" })
+		}
+	})
+}
+
+func (a *App) buildGitOpsCompare(c *ui.Context, p Palette) {
+	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.TextInput(c.Key("cmp-old"), &a.gitOpsCompareOld).Placeholder("旧 ref，如 origin/main").Grow(1)
+		ui.TextInput(c.Key("cmp-new"), &a.gitOpsCompareNew).Placeholder("新 ref，如 HEAD").Grow(1)
+		ui.Checkbox(c, &a.gitOpsCompareThree, "三点（merge-base）")
+		iconPill(c, p, icoColumns, "比较", true, func() {
+			a.loadRefCompare()
+		})
+	})
+	if a.gitOpsCompareLoading {
+		ui.Spinner(c).Size(12, 12).Label("比较中").TextColor(p.TextMuted)
+	}
+	if a.gitOpsCompareErr != "" {
+		ui.Text(c, a.gitOpsCompareErr).FontSize(9.5).TextColor(p.Danger)
+	}
+	if a.gitOpsCompareDiff != "" {
+		ui.Scroll(c).MaxHeight(380).FillWidth().Padding(8).Background(p.RailBg).Radius(4).Children(func() {
+			ui.Text(c, a.gitOpsCompareDiff).Font("monospace").FontSize(9).TextColor(p.TextSecondary)
+		})
+	} else if !a.gitOpsCompareLoading && a.gitOpsCompareErr == "" {
+		emptyState(c, p, icoColumns, "选择两个 ref", "展示任意分支、标签或提交之间的差异")
+	}
+}
+
+func (a *App) loadRefCompare() {
+	repo := a.ensureGitOpsRepo()
+	if repo == nil {
+		return
+	}
+	oldRef, newRef := strings.TrimSpace(a.gitOpsCompareOld), strings.TrimSpace(a.gitOpsCompareNew)
+	three := a.gitOpsCompareThree
+	a.gitOpsCompareLoading = true
+	a.gitOpsCompareErr = ""
+	a.gitOpsCompareDiff = ""
+	repoID := repo.Repo.ID
+	path := repo.Repo.AbsPath
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		diff, err := gitops.RefDiff(ctx, path, oldRef, newRef, three)
+		a.runUI(func() {
+			if a.gitOpsRepo != repoID {
+				return
+			}
+			a.gitOpsCompareLoading = false
+			if err != nil {
+				a.gitOpsCompareErr = err.Error()
+				return
+			}
+			if len(diff) > 400<<10 {
+				diff = diff[:400<<10] + "\n\n[差异过大，已截断]"
+			}
+			a.gitOpsCompareDiff = diff
+		})
+	}()
 }
 
 func (a *App) buildGitOpsCommitOps(c *ui.Context, p Palette) {

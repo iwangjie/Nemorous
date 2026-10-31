@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/egoist/mygo/ui/editor"
@@ -1111,6 +1113,25 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		diffToolButton(c, p, "diff-next", icoPull, "下一个差异", false, total > 0, nextHunk)
 		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
 		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
+		if a.selectedChangeFile != nil {
+			if a.diffStagedOnly {
+				miniBtn(c, p, "取消暂存块", func() { a.stageCurrentDiffHunk(true) })
+			} else {
+				miniBtn(c, p, "暂存块", func() { a.stageCurrentDiffHunk(false) })
+				if sel, ok := state.SelectedLines(); ok {
+					side := "新"
+					if sel.Side == editor.DiffOld {
+						side = "旧"
+					}
+					label := fmt.Sprintf("暂存选中行 (%s %d-%d)", side, sel.Start+1, sel.End+1)
+					miniBtn(c, p, label, func() { a.stageSelectedDiffLines(sel) })
+				}
+			}
+			if a.diffStageBusy {
+				ui.Spinner(c).Size(11, 11).Label("暂存").TextColor(p.TextMuted)
+			}
+		}
+		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		diffToolButton(c, p, "diff-edit", icoEdit, "编辑差异", a.diffEditable, true, func() {
 			a.diffEditable = !a.diffEditable
 			state.Editable = a.diffEditable
@@ -1292,4 +1313,72 @@ func (a *App) stageSelectedChange(stage bool) {
 // textFocusActive reports whether a text field owns typing in the main view.
 func (a *App) textFocusActive(c *ui.Context) bool {
 	return a.diffEditable || a.commitInputHandle.Focused(c) || a.changesFilterHandle.Focused(c) || a.codeFilterHandle.Focused(c)
+}
+
+// stageCurrentDiffHunk stages or unstages the hunk under the caret.
+func (a *App) stageCurrentDiffHunk(unstage bool) {
+	if a.diffStageBusy || a.selectedChangeFile == nil || a.diffState == nil {
+		return
+	}
+	hunks := a.diffState.Hunks()
+	if len(hunks) == 0 {
+		return
+	}
+	idx, _ := a.diffState.CurrentHunk()
+	if idx < 0 || idx >= len(hunks) {
+		idx = 0
+	}
+	cf := *a.selectedChangeFile
+	a.diffStageBusy = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var err error
+		if unstage {
+			err = gitops.UnstageHunks(ctx, cf.RepoPath, cf.Path, []int{idx})
+		} else {
+			err = gitops.StageHunks(ctx, cf.RepoPath, cf.Path, []int{idx})
+		}
+		a.runUI(func() {
+			a.diffStageBusy = false
+			if err != nil {
+				a.showToast("err", err.Error())
+				return
+			}
+			action := "已暂存变更块"
+			if unstage {
+				action = "已取消暂存变更块"
+			}
+			a.showToast("ok", action+" "+cf.Path)
+			a.RefreshAsync()
+			a.selectChangedFile(cf)
+		})
+	}()
+}
+
+// stageSelectedDiffLines stages selected added/deleted lines when the change
+// is a pure insertion or deletion. Paired replacements are rejected with an
+// actionable message by the git layer.
+func (a *App) stageSelectedDiffLines(sel editor.DiffLineRange) {
+	if a.diffStageBusy || a.selectedChangeFile == nil {
+		return
+	}
+	cf := *a.selectedChangeFile
+	oldSide := sel.Side == editor.DiffOld
+	a.diffStageBusy = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := gitops.StageLines(ctx, cf.RepoPath, cf.Path, oldSide, sel.Start+1, sel.End+1)
+		a.runUI(func() {
+			a.diffStageBusy = false
+			if err != nil {
+				a.showToast("warn", err.Error())
+				return
+			}
+			a.showToast("ok", fmt.Sprintf("已暂存 %d 行 · %s", sel.End-sel.Start+1, cf.Path))
+			a.RefreshAsync()
+			a.selectChangedFile(cf)
+		})
+	}()
 }
