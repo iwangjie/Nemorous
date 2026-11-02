@@ -808,6 +808,50 @@ func (a *App) conflictPaneSimple(c *ui.Context, p Palette, title, sub string, vi
 	})
 }
 
+// conflictArrowRail puts IDEA's accept arrow in the gutter beside the
+// change, so it reads as "copy this side into RESULT" rather than a toolbar
+// command far from the code.
+func (a *App) conflictArrowRail(c *ui.Context, p Palette, side conflict.Strategy) {
+	view := a.conflictOursView
+	tone, bg, tip, icon := p.AccentSoftText, p.AccentSoft, "采用 OURS（目标版本）", icoAcceptRight
+	if side == conflict.Theirs {
+		view = a.conflictTheirsView
+		tone, bg, tip, icon = p.Amber, p.AmberSoft, "采用 THEIRS（合入版本）", icoAcceptLeft
+	}
+	if view == nil || a.conflictDoc == nil {
+		return
+	}
+	ui.Column(c).Width(22).FillHeight().Clip().Children(func() {
+		for i, h := range a.conflictDoc.Hunks {
+			start, count := h.OursStart, h.OursCount
+			if side == conflict.Theirs {
+				start, count = h.TheirsStart, h.TheirsCount
+			}
+			if count <= 0 {
+				continue
+			}
+			idx := i
+			top := float32(30 + view.LineTop(start) - view.ScrollY())
+			sideName := "OURS"
+			if side == conflict.Theirs {
+				sideName = "THEIRS"
+			}
+			btn := ui.Box(c).Key(fmt.Sprintf("conflict-rail-%s-%d", side, idx)).
+				Absolute().Left(2).Top(top).Size(18, 20).Radius(4).Center().
+				Background(p.Surface).Border(1, p.Border).Cursor(ui.CursorPointer).
+				Tooltip(tip).Label(fmt.Sprintf("冲突块 %d 采用 %s", idx+1, sideName))
+			if btn.Hovered() {
+				btn.Background(bg).BorderColor(p.BorderSubtle)
+			}
+			if btn.Clicked() {
+				a.conflictHunkIdx = idx
+				a.conflictApplyHunk(idx, side)
+			}
+			btn.Children(func() { drawIcon(c, icon, 12, tone) })
+		}
+	})
+}
+
 func (a *App) conflictResultPane(c *ui.Context, p Palette) {
 	ui.Column(c).Grow(1).FillHeight().Background(p.Surface).Border(1, p.BorderSubtle).Radius(8).Children(func() {
 		ui.Row(c).Height(30).Padding(0, 9).Gap(5).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
@@ -1015,7 +1059,9 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 		ui.Row(c).Grow(1).FillWidth().Gap(6).Children(func() {
 			oursSub, theirsSub := a.conflictSideSubs()
 			a.conflictPaneSimple(c, p, "OURS", oursSub, a.conflictOursView, p.Accent)
+			a.conflictArrowRail(c, p, conflict.Ours)
 			a.conflictResultPane(c, p)
+			a.conflictArrowRail(c, p, conflict.Theirs)
 			a.conflictPaneSimple(c, p, "THEIRS", theirsSub, a.conflictTheirsView, p.Amber)
 		})
 

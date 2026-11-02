@@ -136,8 +136,8 @@ func TestConflictBlockArrowAppliesTheirs(t *testing.T) {
 	})
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if err := tt.Click("THEIRS →"); err != nil {
-		t.Fatalf("per-block theirs arrow: %v", err)
+	if err := tt.Click("冲突块 1 采用 THEIRS"); err != nil {
+		t.Fatalf("gutter theirs arrow: %v", err)
 	}
 	tt.Frame()
 	if app.conflictDoc != nil {
