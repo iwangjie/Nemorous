@@ -11,6 +11,14 @@ import (
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
+func waitMergeIdle(t *testing.T, app *App) {
+	t.Helper()
+	time.Sleep(300 * time.Millisecond)
+	waitApp(t, "background work settled", func() bool {
+		return !app.mergeRunning && !app.mergeScanLoading && !app.isRefreshing
+	})
+}
+
 func makeReverseMergeWorkspace(t *testing.T) string {
 	t.Helper()
 	ws := t.TempDir()
@@ -71,6 +79,7 @@ func TestBranchTreeMergesSourceIntoCurrentBranchDirectly(t *testing.T) {
 		_, err := os.Stat(filepath.Join(repo, "incoming.txt"))
 		return err == nil
 	})
+	waitMergeIdle(t, app)
 }
 
 func TestRepositoryMenuOffersMergeMainIntoCurrentBranch(t *testing.T) {
@@ -98,6 +107,7 @@ func TestRepositoryMenuOffersMergeMainIntoCurrentBranch(t *testing.T) {
 		_, err := os.Stat(filepath.Join(repo, "incoming.txt"))
 		return err == nil
 	})
+	waitMergeIdle(t, app)
 }
 
 func TestBranchPickerMergesCurrentBranchIntoTarget(t *testing.T) {
@@ -135,8 +145,5 @@ func TestBranchPickerMergesCurrentBranchIntoTarget(t *testing.T) {
 	if out != "feature/mine" {
 		t.Fatalf("checked-out branch changed to %q", out)
 	}
-	time.Sleep(300 * time.Millisecond)
-	waitApp(t, "background work settled", func() bool {
-		return !app.mergeRunning && !app.mergeScanLoading && !app.isRefreshing
-	})
+	waitMergeIdle(t, app)
 }
