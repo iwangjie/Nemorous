@@ -214,3 +214,79 @@ func TestCRLFPreserved(t *testing.T) {
 		t.Fatalf("CRLF resolution = %q", out)
 	}
 }
+
+func TestUnmergedEntriesClassifiesReasons(t *testing.T) {
+	ctx := context.Background()
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := gitops.RunGit(ctx, repo, args...)
+		if err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+		return out
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run("init", "-b", "main")
+	run("config", "user.name", "Test")
+	run("config", "user.email", "test@example.com")
+	write("both.txt", "base\n")
+	write("deleted-by-us.txt", "base\n")
+	write("deleted-by-them.txt", "base\n")
+	run("add", ".")
+	run("commit", "-m", "base")
+
+	run("checkout", "-b", "feature")
+	write("both.txt", "feature\n")
+	if err := os.Remove(filepath.Join(repo, "deleted-by-us.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write("deleted-by-them.txt", "feature\n")
+	write("added.txt", "feature\n")
+	run("add", "-A")
+	run("commit", "-m", "feature")
+
+	run("checkout", "main")
+	write("both.txt", "main\n")
+	write("deleted-by-us.txt", "main\n")
+	if err := os.Remove(filepath.Join(repo, "deleted-by-them.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write("added.txt", "main\n")
+	run("add", "-A")
+	run("commit", "-m", "main")
+
+	if _, err := gitops.RunGit(ctx, repo, "merge", "feature"); err == nil {
+		t.Fatal("expected merge conflict")
+	}
+	entries, err := UnmergedEntries(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]Kind, len(entries))
+	for _, entry := range entries {
+		got[filepath.ToSlash(entry.Path)] = entry.Kind
+	}
+	want := map[string]Kind{
+		"both.txt":            KindBothModified,
+		"deleted-by-us.txt":   KindDeletedByThem, // ours changed, theirs deleted
+		"deleted-by-them.txt": KindDeletedByUs,   // ours deleted, theirs changed
+		"added.txt":           KindBothAdded,
+	}
+	for path, kind := range want {
+		if got[path] != kind {
+			t.Errorf("%s kind = %v, want %v", path, got[path], kind)
+		}
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if !KindDeletedByUs.DeletesFile() || KindBothModified.DeletesFile() {
+		t.Fatal("delete predicate is wrong")
+	}
+}

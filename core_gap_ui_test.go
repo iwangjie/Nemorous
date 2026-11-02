@@ -202,6 +202,59 @@ func TestConflictUndoRestoresBlockForBoth(t *testing.T) {
 	}
 }
 
+func TestDeletedConflictShowsReasonAndOffersKeep(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-b", "main")
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "user.email", "test@example.com")
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	gitRun(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(path, []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "commit", "-am", "feature edit")
+	gitRun(t, dir, "checkout", "main")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "commit", "-am", "delete on main")
+	if _, err := gitops.RunGit(context.Background(), dir, "merge", "feature"); err == nil {
+		t.Fatal("expected delete/modify conflict")
+	}
+
+	app := newGapTestApp(t, dir)
+	app.openConflictResolver(app.statuses[0].Repo.ID)
+	waitApp(t, "deleted conflict", func() bool {
+		return len(app.conflictFiles) == 1 && app.conflictKind(app.conflictFiles[0]) == conflict.KindDeletedByUs && app.conflictEditor != nil
+	})
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if !tt.HasText("我方删除") || !tt.HasText("待选择") || !tt.HasText("保留 THEIRS") || !tt.HasText("确认删除") {
+		t.Fatal("deleted conflict reason or resolution choices are missing")
+	}
+	if err := tt.Click("保留 THEIRS"); err != nil {
+		t.Fatalf("keep theirs: %v", err)
+	}
+	tt.Frame()
+	if got := strings.TrimSpace(editorText(app.conflictEditor.Buffer)); got != "feature" {
+		t.Fatalf("kept content = %q", got)
+	}
+	if err := tt.Click("保存并标记解决 (⌘S)"); err != nil {
+		t.Fatalf("save kept file: %v", err)
+	}
+	waitApp(t, "deleted conflict resolved", func() bool {
+		return len(app.conflictFiles) == 0
+	})
+	if data, _ := os.ReadFile(path); strings.TrimSpace(string(data)) != "feature" {
+		t.Fatalf("worktree = %q", data)
+	}
+}
+
 func TestGitOpsStashTagsRemotesUI(t *testing.T) {
 	ws := setupUITestWorkspace(t)
 	app := newGapTestApp(t, ws)

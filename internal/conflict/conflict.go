@@ -402,15 +402,13 @@ func RemoveAndStage(ctx context.Context, repoPath, relPath string) error {
 
 // UnresolvedFiles lists files with unmerged index entries.
 func UnresolvedFiles(ctx context.Context, repoPath string) ([]string, error) {
-	out, err := gitops.RunGit(ctx, repoPath, "diff", "--name-only", "--diff-filter=U")
+	entries, err := UnmergedEntries(ctx, repoPath)
 	if err != nil {
 		return nil, err
 	}
-	var files []string
-	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) != "" {
-			files = append(files, strings.TrimSpace(line))
-		}
+	files := make([]string, len(entries))
+	for i, entry := range entries {
+		files[i] = entry.Path
 	}
 	return files, nil
 }
