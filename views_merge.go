@@ -127,7 +127,7 @@ func (a *App) buildMergeView(c *ui.Context, p Palette) {
 					})
 				})
 			}
-			ui.Text(c, "反合 main：切回「提交图」，在左侧分支树右键 main 或仓库，选择「合并 … 到当前分支」。").FontSize(10).TextColor(p.TextMuted)
+			ui.Text(c, "反合 main：在顶部分支下拉或提交图左侧分支树右键分支，选择「合并 main 到当前分支」。").FontSize(10).TextColor(p.TextMuted)
 		})
 
 		showDetail := a.mergeRunning || a.aiVerifyReport != nil || selectedTarget != nil

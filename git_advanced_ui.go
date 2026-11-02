@@ -65,14 +65,6 @@ func (a *App) openGitOps(tab string) {
 	a.loadGitOpsData()
 }
 
-// openGitOpsMergeInto prefills a reverse merge (source → current branch) for
-// one repository, so the branch tree can jump straight to the confirmation.
-func (a *App) openGitOpsMergeInto(repoID, source string) {
-	a.gitOpsRepo = repoID
-	a.gitOpsMergeBranch = source
-	a.openGitOps("merge")
-}
-
 // mergeSourceForRepo returns the repository's main ref when main is not the
 // checked-out branch. Local main wins; origin/main is the fallback.
 func (a *App) mergeSourceForRepo(repoID string) string {

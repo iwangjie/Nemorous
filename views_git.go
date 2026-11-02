@@ -488,7 +488,7 @@ func (a *App) buildGitBranchTree(c *ui.Context, p Palette) {
 					}
 					if src := a.mergeSourceForRepo(stCopy.Repo.ID); src != "" {
 						if m.Item("合并 " + src + " 到当前分支").Chosen() {
-							a.openGitOpsMergeInto(stCopy.Repo.ID, src)
+							a.mergeBranchIntoCurrent(stCopy.Repo.ID, src)
 						}
 					}
 					if m.Item("复制仓库路径").Chosen() {
@@ -607,7 +607,7 @@ func (a *App) buildGitBranchRow(c *ui.Context, p Palette, st gitops.RepoStatus, 
 				source = "origin/" + source
 			}
 			if m.Item("合并 " + source + " 到当前分支").Chosen() {
-				a.openGitOpsMergeInto(st.Repo.ID, source)
+				a.mergeBranchIntoCurrent(st.Repo.ID, source)
 			}
 		}
 		if m.Item("复制分支名").Chosen() {

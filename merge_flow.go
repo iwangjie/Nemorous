@@ -114,59 +114,78 @@ func (a *App) TriggerMergeOne(target aimerge.MergeTarget, pushRemote bool) {
 	a.executeMergeTargets([]aimerge.MergeTarget{target}, pushRemote)
 }
 
-// branchMergePrompt is the confirmation shown when merging the checked-out
-// branch into another local branch from the branch picker.
-type branchMergePrompt struct {
-	repoID string
-	source string
-	target string
-}
-
-// promptMergeCurrentIntoBranch asks before updating a branch that is not
-// checked out; the merge itself runs in an isolated worktree.
-func (a *App) promptMergeCurrentIntoBranch(repoID, target string) {
+// mergeBranchIntoCurrent merges source into the checked-out branch directly,
+// so branch-picker actions do not need the full Git operations dialog.
+func (a *App) mergeBranchIntoCurrent(repoID, source string) {
 	st := a.gitStatusByID(repoID)
 	if st == nil || st.Branch == "" {
 		a.showToast("warn", "当前仓库没有已检出的分支")
 		return
 	}
-	if st.Branch == target {
+	if st.Branch == source {
 		a.showToast("warn", "已经在该分支上")
 		return
 	}
 	a.closeBranchPicker()
-	a.branchMergePrompt = &branchMergePrompt{repoID: repoID, source: st.Branch, target: target}
-	a.showBranchMerge = true
-}
-
-// startBranchMerge runs the confirmed branch-to-branch merge.
-func (a *App) startBranchMerge(pushRemote bool) {
-	req := a.branchMergePrompt
-	if req == nil {
-		return
-	}
-	a.branchMergePrompt = nil
-	a.showBranchMerge = false
-	st := a.gitStatusByID(req.repoID)
-	if st == nil {
-		a.showToast("warn", "找不到目标仓库，先刷新状态")
-		return
-	}
-	repo := st.Repo
-	a.busyLabel = fmt.Sprintf("正在准备合并 %s → %s...", req.source, req.target)
+	repoPath, branch := st.Repo.AbsPath, st.Branch
+	a.busyLabel = fmt.Sprintf("正在合并 %s → %s...", source, branch)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		target := aimerge.InspectMergeTarget(ctx, repo, req.target)
+		out, err := gitops.MergeBranch(ctx, repoPath, source, gitops.MergeDefault, "")
+		var conflicts []string
+		if err != nil {
+			conflicts = gitops.RepoOperationState(ctx, repoPath).Conflicts
+		}
+		a.runUI(func() {
+			a.busyLabel = ""
+			if err != nil {
+				if len(conflicts) > 0 {
+					a.showToast("warn", fmt.Sprintf("合并 %s 时有 %d 个冲突，打开解决器", source, len(conflicts)))
+					a.openConflictResolver(repoID)
+					return
+				}
+				a.showToast("err", "合并失败："+err.Error())
+				return
+			}
+			msg := fmt.Sprintf("已合并 %s → %s", source, branch)
+			if strings.Contains(out, "Already up to date") {
+				msg = "已是最新，无需合并"
+			}
+			a.showToast("ok", msg)
+			a.RefreshAsync()
+		})
+	}()
+}
+
+// mergeCurrentIntoBranch updates target from the checked-out branch in a
+// temporary worktree; the current branch and worktree stay untouched.
+func (a *App) mergeCurrentIntoBranch(repoID, targetBranch string, pushRemote bool) {
+	st := a.gitStatusByID(repoID)
+	if st == nil || st.Branch == "" {
+		a.showToast("warn", "当前仓库没有已检出的分支")
+		return
+	}
+	if st.Branch == targetBranch {
+		a.showToast("warn", "已经在该分支上")
+		return
+	}
+	a.closeBranchPicker()
+	repo, source := st.Repo, st.Branch
+	a.busyLabel = fmt.Sprintf("正在准备合并 %s → %s...", source, targetBranch)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		target := aimerge.InspectMergeTarget(ctx, repo, targetBranch)
 		a.runUI(func() {
 			a.busyLabel = ""
 			switch {
 			case target.Detached:
 				a.showToast("warn", "当前仓库处于 detached HEAD，无法合并")
 			case !target.TargetExists:
-				a.showToast("err", "未找到分支 "+req.target)
-			case target.SourceBranch != req.source:
-				a.showToast("warn", "当前分支已变化，请重新确认")
+				a.showToast("err", "未找到分支 "+targetBranch)
+			case target.SourceBranch != source:
+				a.showToast("warn", "当前分支已变化，请重新操作")
 			default:
 				a.TriggerMergeOne(target, pushRemote)
 			}

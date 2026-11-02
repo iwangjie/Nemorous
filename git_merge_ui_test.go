@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/iwangjie/nemorous/internal/gitops"
@@ -32,10 +33,18 @@ func makeReverseMergeWorkspace(t *testing.T) string {
 	}
 	gitRun(t, repo, "add", "mine.txt")
 	gitRun(t, repo, "commit", "-m", "feature work")
+	gitRun(t, repo, "switch", "main")
+	if err := os.WriteFile(filepath.Join(repo, "incoming.txt"), []byte("incoming\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "incoming.txt")
+	gitRun(t, repo, "commit", "-m", "main advanced")
+	gitRun(t, repo, "branch", "incoming")
+	gitRun(t, repo, "switch", "feature/mine")
 	return ws
 }
 
-func TestBranchTreePrefillsMergeIntoCurrentBranch(t *testing.T) {
+func TestBranchTreeMergesSourceIntoCurrentBranchDirectly(t *testing.T) {
 	app := newGapTestApp(t, makeReverseMergeWorkspace(t))
 	app.showGitPanel = true
 	app.gitSubTab = "history"
@@ -44,24 +53,24 @@ func TestBranchTreePrefillsMergeIntoCurrentBranch(t *testing.T) {
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
 
-	if err := tt.RightClick("upstream"); err != nil {
-		t.Fatalf("right-click upstream: %v", err)
+	if err := tt.RightClick("incoming"); err != nil {
+		t.Fatalf("right-click incoming: %v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("合并 upstream 到当前分支") {
+	if !tt.HasText("合并 incoming 到当前分支") {
 		t.Fatalf("branch menu item missing; texts=%v", tt.Texts())
 	}
-	if err := tt.Click("合并 upstream 到当前分支"); err != nil {
+	if err := tt.Click("合并 incoming 到当前分支"); err != nil {
 		t.Fatalf("click merge item: %v", err)
 	}
-	tt.Frame()
-	if !app.showGitOps || app.gitOpsTab != "merge" || app.gitOpsRepo != "demo" || app.gitOpsMergeBranch != "upstream" {
-		t.Fatalf("merge modal not prefilled: show=%v tab=%q repo=%q source=%q",
-			app.showGitOps, app.gitOpsTab, app.gitOpsRepo, app.gitOpsMergeBranch)
+	if app.showGitOps {
+		t.Fatal("merge must not open the Git operations dialog")
 	}
-	if !tt.HasText("将分支合并到当前分支") || !tt.HasText("feature/mine") {
-		t.Fatal("merge modal should show the source input and current branch")
-	}
+	repo := filepath.Join(app.cfg.WorkspacePath, "demo")
+	waitApp(t, "incoming merged into current", func() bool {
+		_, err := os.Stat(filepath.Join(repo, "incoming.txt"))
+		return err == nil
+	})
 }
 
 func TestRepositoryMenuOffersMergeMainIntoCurrentBranch(t *testing.T) {
@@ -81,10 +90,14 @@ func TestRepositoryMenuOffersMergeMainIntoCurrentBranch(t *testing.T) {
 	if err := tt.Click("合并 main 到当前分支"); err != nil {
 		t.Fatalf("click repository merge item: %v", err)
 	}
-	tt.Frame()
-	if !app.showGitOps || app.gitOpsRepo != "demo" || app.gitOpsMergeBranch != "main" {
-		t.Fatalf("repository shortcut did not prefill merge: %+v", app.gitOpsMergeBranch)
+	if app.showGitOps {
+		t.Fatal("merge must not open the Git operations dialog")
 	}
+	repo := filepath.Join(app.cfg.WorkspacePath, "demo")
+	waitApp(t, "main merged into current", func() bool {
+		_, err := os.Stat(filepath.Join(repo, "incoming.txt"))
+		return err == nil
+	})
 }
 
 func TestBranchPickerMergesCurrentBranchIntoTarget(t *testing.T) {
@@ -103,25 +116,27 @@ func TestBranchPickerMergesCurrentBranchIntoTarget(t *testing.T) {
 		t.Fatalf("branch picker merge item missing; texts=%v", tt.Texts())
 	}
 	if err := tt.Click("合并当前分支到 main"); err != nil {
-		t.Fatalf("click branch picker merge: %v", err)
+		t.Fatalf("open merge submenu: %v", err)
 	}
 	tt.Frame()
-	if !app.showBranchMerge || app.branchMergePrompt == nil {
-		t.Fatal("merge confirmation did not open")
+	if !tt.HasText("本地合并") || !tt.HasText("合并并推送") {
+		t.Fatalf("merge direction submenu missing; texts=%v", tt.Texts())
 	}
-	if app.branchMergePrompt.source != "feature/mine" || app.branchMergePrompt.target != "main" {
-		t.Fatalf("prompt = %+v", app.branchMergePrompt)
-	}
-	if err := tt.Click("合并（本地）"); err != nil {
+	if err := tt.Click("本地合并"); err != nil {
 		t.Fatalf("confirm merge: %v", err)
 	}
+	tt.Frame()
 	repo := filepath.Join(ws, "demo")
 	waitApp(t, "main updated", func() bool {
-		out, _ := gitops.RunGit(context.Background(), repo, "log", "-1", "--format=%s", "main")
-		return out == "feature work"
+		out, _ := gitops.RunGit(context.Background(), repo, "show", "main:mine.txt")
+		return out == "mine"
 	})
 	out, _ := gitops.RunGit(context.Background(), repo, "branch", "--show-current")
 	if out != "feature/mine" {
 		t.Fatalf("checked-out branch changed to %q", out)
 	}
+	time.Sleep(300 * time.Millisecond)
+	waitApp(t, "background work settled", func() bool {
+		return !app.mergeRunning && !app.mergeScanLoading && !app.isRefreshing
+	})
 }
