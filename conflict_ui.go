@@ -59,6 +59,8 @@ func (a *App) openConflictResolver(repoID string) {
 	a.conflictOpLabel = "继续操作"
 	a.conflictErr = ""
 	a.conflictStatus = ""
+	a.conflictUndoRaw = ""
+	a.conflictUndoExpect = ""
 	a.loadConflictFiles()
 	a.refreshConflictOpLabel()
 }
@@ -137,6 +139,8 @@ func (a *App) selectConflictFile(rel string) {
 	a.conflictHunkIdx = 0
 	a.conflictErr = ""
 	a.conflictStatus = ""
+	a.conflictUndoRaw = ""
+	a.conflictUndoExpect = ""
 	a.conflictBeforeAuto = ""
 	reuse := a.conflictDrafts[rel]
 
@@ -352,6 +356,43 @@ func conflictLineCount(text string) int {
 	return n
 }
 
+// rememberConflictEdit keeps the last pre-resolution state so an accidental
+// one-sided accept can be undone and the block resolved with BOTH instead.
+func (a *App) rememberConflictEdit() {
+	if a.conflictRaw == "" || a.conflictEditor == nil {
+		a.conflictUndoRaw = ""
+		a.conflictUndoExpect = ""
+		return
+	}
+	a.conflictUndoRaw = a.conflictRaw
+	a.conflictUndoIdx = a.conflictHunkIdx
+}
+
+func (a *App) conflictUndoLast() {
+	if a.conflictUndoRaw == "" || a.conflictEditor == nil {
+		return
+	}
+	if a.conflictUndoExpect != "" && editorText(a.conflictEditor.Buffer) != a.conflictUndoExpect {
+		a.conflictSay("warn", "结果已手动编辑，无法撤销上一步")
+		return
+	}
+	doc, err := conflict.Parse(a.conflictUndoRaw)
+	if err != nil {
+		return
+	}
+	display, ranges := doc.OursPreview()
+	a.conflictEditor.Buffer.Set(display)
+	a.conflictRaw = a.conflictUndoRaw
+	a.conflictDoc = doc
+	a.conflictRanges = ranges
+	a.conflictHunkIdx = min(a.conflictUndoIdx, len(doc.Hunks)-1)
+	a.conflictHunkCount[a.conflictSelected] = len(doc.Hunks)
+	a.conflictUndoRaw = ""
+	a.conflictUndoExpect = ""
+	a.conflictSay("ok", "已撤销上一步")
+	a.updateConflictPanes()
+}
+
 func (a *App) conflictApplyHunk(index int, strategy conflict.Strategy) {
 	if a.conflictEditor == nil || a.conflictDoc == nil || index < 0 || index >= len(a.conflictDoc.Hunks) {
 		return
@@ -382,7 +423,9 @@ func (a *App) conflictApplyHunk(index int, strategy conflict.Strategy) {
 		a.conflictErr = err.Error()
 		return
 	}
+	a.rememberConflictEdit()
 	a.conflictEditor.Buffer.Set(resolved)
+	a.conflictUndoExpect = editorText(a.conflictEditor.Buffer)
 	a.conflictErr = ""
 	a.conflictStatus = ""
 	if a.conflictRaw != "" {
@@ -433,7 +476,9 @@ func (a *App) conflictApplyAll(strategy conflict.Strategy) {
 		a.conflictErr = err.Error()
 		return
 	}
+	a.rememberConflictEdit()
 	a.conflictEditor.Buffer.Set(resolved)
+	a.conflictUndoExpect = editorText(a.conflictEditor.Buffer)
 	a.conflictRaw = resolved
 	a.conflictDoc = nil
 	a.conflictRanges = nil
@@ -457,7 +502,9 @@ func (a *App) conflictUseVersion(side conflict.Strategy) {
 	} else if side == conflict.Both {
 		content = a.conflictOurs + a.conflictTheirs
 	}
+	a.rememberConflictEdit()
 	a.conflictEditor.Buffer.Set(content)
+	a.conflictUndoExpect = editorText(a.conflictEditor.Buffer)
 	a.conflictRaw = ""
 	a.conflictDoc = nil
 	a.conflictRanges = nil
@@ -500,6 +547,8 @@ func (a *App) conflictAutoResolve() {
 	if newDoc != nil {
 		display, ranges = newDoc.OursPreview()
 	}
+	a.conflictUndoRaw = ""
+	a.conflictUndoExpect = ""
 	a.conflictBeforeAuto = editorText(a.conflictEditor.Buffer)
 	a.conflictBeforeRaw = a.conflictRaw
 	a.conflictEditor.Buffer.Set(display)
@@ -524,6 +573,8 @@ func (a *App) conflictUndoAuto() {
 	a.conflictRaw = a.conflictBeforeRaw
 	a.conflictBeforeAuto = ""
 	a.conflictBeforeRaw = ""
+	a.conflictUndoRaw = ""
+	a.conflictUndoExpect = ""
 	if a.conflictRaw != "" {
 		if doc, err := conflict.Parse(a.conflictRaw); err == nil {
 			a.conflictDoc = doc
@@ -589,6 +640,8 @@ func (a *App) saveConflictFile() {
 			}
 			delete(a.conflictDrafts, rel)
 			delete(a.conflictHunkCount, rel)
+			a.conflictUndoRaw = ""
+			a.conflictUndoExpect = ""
 			a.conflictEditor = nil
 			a.loadConflictFiles()
 			a.RefreshAsync()
@@ -813,15 +866,19 @@ func (a *App) conflictPaneSimple(c *ui.Context, p Palette, title, sub string, vi
 // command far from the code.
 func (a *App) conflictArrowRail(c *ui.Context, p Palette, side conflict.Strategy) {
 	view := a.conflictOursView
-	tone, bg, tip, icon := p.AccentSoftText, p.AccentSoft, "采用 OURS（目标版本）", icoAcceptRight
+	tone, bg, tip, icon := p.AccentSoftText, p.AccentSoft, "采用 OURS（只保留本侧；两侧都要用 BOTH）", icoAcceptRight
 	if side == conflict.Theirs {
 		view = a.conflictTheirsView
-		tone, bg, tip, icon = p.Amber, p.AmberSoft, "采用 THEIRS（合入版本）", icoAcceptLeft
+		tone, bg, tip, icon = p.Amber, p.AmberSoft, "采用 THEIRS（只保留本侧；两侧都要用 BOTH）", icoAcceptLeft
 	}
 	if view == nil || a.conflictDoc == nil {
 		return
 	}
-	ui.Column(c).Width(22).FillHeight().Clip().Children(func() {
+	width := float32(22)
+	if side == conflict.Ours {
+		width = 56 // accept OURS plus BOTH, next to the block
+	}
+	ui.Column(c).Width(width).FillHeight().Clip().Children(func() {
 		for i, h := range a.conflictDoc.Hunks {
 			start, count := h.OursStart, h.OursCount
 			if side == conflict.Theirs {
@@ -832,22 +889,42 @@ func (a *App) conflictArrowRail(c *ui.Context, p Palette, side conflict.Strategy
 			}
 			idx := i
 			top := float32(30 + view.LineTop(start) - view.ScrollY())
-			sideName := "OURS"
-			if side == conflict.Theirs {
-				sideName = "THEIRS"
-			}
-			btn := ui.Box(c).Key(fmt.Sprintf("conflict-rail-%s-%d", side, idx)).
-				Absolute().Left(2).Top(top).Size(18, 20).Radius(4).Center().
-				Background(p.Surface).Border(1, p.Border).Cursor(ui.CursorPointer).
-				Tooltip(tip).Label(fmt.Sprintf("冲突块 %d 采用 %s", idx+1, sideName))
-			if btn.Hovered() {
-				btn.Background(bg).BorderColor(p.BorderSubtle)
-			}
-			if btn.Clicked() {
-				a.conflictHunkIdx = idx
-				a.conflictApplyHunk(idx, side)
-			}
-			btn.Children(func() { drawIcon(c, icon, 12, tone) })
+			ui.Row(c).Absolute().Left(2).Top(top).Height(20).Gap(2).Children(func() {
+				sideName := "OURS"
+				if side == conflict.Theirs {
+					sideName = "THEIRS"
+				}
+				btn := ui.Box(c).Key(fmt.Sprintf("conflict-rail-%s-%d", side, idx)).
+					Size(18, 20).Radius(4).Center().Background(p.Surface).Border(1, p.Border).
+					Cursor(ui.CursorPointer).Tooltip(tip).
+					Label(fmt.Sprintf("冲突块 %d 采用 %s", idx+1, sideName))
+				if btn.Hovered() {
+					btn.Background(bg).BorderColor(p.BorderSubtle)
+				}
+				if btn.Clicked() {
+					a.conflictHunkIdx = idx
+					a.conflictApplyHunk(idx, side)
+				}
+				btn.Children(func() { drawIcon(c, icon, 12, tone) })
+
+				if side == conflict.Ours {
+					both := ui.Box(c).Key(fmt.Sprintf("conflict-rail-both-%d", idx)).
+						Width(32).Height(20).Radius(4).Center().Background(p.Surface).
+						Border(1, p.Border).Cursor(ui.CursorPointer).
+						Tooltip("采用两者（OURS + THEIRS）").
+						Label(fmt.Sprintf("冲突块 %d 采用 BOTH", idx+1))
+					if both.Hovered() {
+						both.Background(p.SurfaceHover).BorderColor(p.BorderSubtle)
+					}
+					if both.Clicked() {
+						a.conflictHunkIdx = idx
+						a.conflictApplyHunk(idx, conflict.Both)
+					}
+					both.Children(func() {
+						ui.Text(c, "BOTH").FontSize(8).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+					})
+				}
+			})
 		}
 	})
 }
@@ -945,6 +1022,9 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 				}
 				ui.Box(c).Width(1).Height(16).Background(p.BorderSubtle)
 				toolButton(c, p, "conflict-auto", icoSparkles, "自动合并不重叠修改", false, true, func() { a.conflictAutoResolve() })
+				if a.conflictUndoRaw != "" {
+					toolButton(c, p, "conflict-undo-last", icoRestore, "撤销上一步冲突选择", false, true, func() { a.conflictUndoLast() })
+				}
 				if a.conflictBeforeAuto != "" {
 					toolButton(c, p, "conflict-undo", icoRestore, "撤销自动合并", false, true, func() { a.conflictUndoAuto() })
 				}

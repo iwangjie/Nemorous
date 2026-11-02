@@ -2,7 +2,7 @@
   "name": "Nemorous",
   "slug": "nemorous",
   "identifier": "dev.nemorous.app",
-  "version": "0.10.13",
+  "version": "0.10.14",
   "out": "build",
   "linux": {
     "webview": false

@@ -148,6 +148,60 @@ func TestConflictBlockArrowAppliesTheirs(t *testing.T) {
 	}
 }
 
+func TestConflictGutterBothKeepsBothSides(t *testing.T) {
+	ws := makeConflictWorkspace(t)
+	app := newGapTestApp(t, ws)
+	app.openConflictResolver(app.statuses[0].Repo.ID)
+	waitApp(t, "conflict file", func() bool {
+		return app.conflictEditor != nil && app.conflictDoc != nil
+	})
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if err := tt.Click("冲突块 1 采用 BOTH"); err != nil {
+		t.Fatalf("gutter both button: %v", err)
+	}
+	tt.Frame()
+	if app.conflictDoc != nil {
+		t.Fatal("BOTH did not resolve the block")
+	}
+	got := strings.TrimSpace(editorText(app.conflictEditor.Buffer))
+	if !strings.Contains(got, "main") || !strings.Contains(got, "feature") {
+		t.Fatalf("result = %q, want both sides", got)
+	}
+}
+
+func TestConflictUndoRestoresBlockForBoth(t *testing.T) {
+	ws := makeConflictWorkspace(t)
+	app := newGapTestApp(t, ws)
+	app.openConflictResolver(app.statuses[0].Repo.ID)
+	waitApp(t, "conflict file", func() bool {
+		return app.conflictEditor != nil && app.conflictDoc != nil
+	})
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if err := tt.Click("冲突块 1 采用 OURS"); err != nil {
+		t.Fatalf("gutter ours arrow: %v", err)
+	}
+	tt.Frame()
+	if app.conflictDoc != nil {
+		t.Fatal("ours arrow did not resolve the block")
+	}
+	if err := tt.Click("撤销上一步冲突选择"); err != nil {
+		t.Fatalf("undo last block: %v", err)
+	}
+	tt.Frame()
+	if app.conflictDoc == nil {
+		t.Fatal("undo did not restore the conflict block")
+	}
+	if err := tt.Click("冲突块 1 采用 BOTH"); err != nil {
+		t.Fatalf("gutter both after undo: %v", err)
+	}
+	got := strings.TrimSpace(editorText(app.conflictEditor.Buffer))
+	if app.conflictDoc != nil || !strings.Contains(got, "main") || !strings.Contains(got, "feature") {
+		t.Fatalf("after undo + BOTH: doc=%v result=%q", app.conflictDoc != nil, got)
+	}
+}
+
 func TestGitOpsStashTagsRemotesUI(t *testing.T) {
 	ws := setupUITestWorkspace(t)
 	app := newGapTestApp(t, ws)

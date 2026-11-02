@@ -466,6 +466,9 @@ type App struct {
 	conflictErr          string
 	conflictStatus       string
 	conflictStatusKind   string
+	conflictUndoRaw      string
+	conflictUndoExpect   string
+	conflictUndoIdx      int
 	conflictLoading      bool
 
 	// Local history
