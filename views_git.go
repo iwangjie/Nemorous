@@ -486,6 +486,11 @@ func (a *App) buildGitBranchTree(c *ui.Context, p Palette) {
 					if m.Item("显示全部仓库").Chosen() {
 						a.setGitRepoFilter("")
 					}
+					if src := a.mergeSourceForRepo(stCopy.Repo.ID); src != "" {
+						if m.Item("合并 " + src + " 到当前分支").Chosen() {
+							a.openGitOpsMergeInto(stCopy.Repo.ID, src)
+						}
+					}
 					if m.Item("复制仓库路径").Chosen() {
 						a.pendingClipboard = stCopy.Repo.AbsPath
 					}
@@ -595,6 +600,15 @@ func (a *App) buildGitBranchRow(c *ui.Context, p Palette, st gitops.RepoStatus, 
 		}
 		if m.Item("与当前分支比较").Chosen() {
 			a.compareBranchWithCurrent(st.Repo.ID, biCopy.Name)
+		}
+		if biCopy.IsRemote || st.Branch != biCopy.Name {
+			source := biCopy.Name
+			if biCopy.IsRemote {
+				source = "origin/" + source
+			}
+			if m.Item("合并 " + source + " 到当前分支").Chosen() {
+				a.openGitOpsMergeInto(st.Repo.ID, source)
+			}
 		}
 		if m.Item("复制分支名").Chosen() {
 			a.pendingClipboard = biCopy.Name

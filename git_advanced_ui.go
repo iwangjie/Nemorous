@@ -65,6 +65,55 @@ func (a *App) openGitOps(tab string) {
 	a.loadGitOpsData()
 }
 
+// openGitOpsMergeInto prefills a reverse merge (source → current branch) for
+// one repository, so the branch tree can jump straight to the confirmation.
+func (a *App) openGitOpsMergeInto(repoID, source string) {
+	a.gitOpsRepo = repoID
+	a.gitOpsMergeBranch = source
+	a.openGitOps("merge")
+}
+
+// mergeSourceForRepo returns the repository's main ref when main is not the
+// checked-out branch. Local main wins; origin/main is the fallback.
+func (a *App) mergeSourceForRepo(repoID string) string {
+	st := a.gitStatusByID(repoID)
+	if st == nil || st.Branch == "main" {
+		return ""
+	}
+	for _, bi := range st.BranchInfos {
+		if !bi.IsRemote && bi.Name == "main" {
+			return "main"
+		}
+	}
+	for _, bi := range st.BranchInfos {
+		if bi.IsRemote && bi.Name == "main" {
+			return "origin/main"
+		}
+	}
+	return ""
+}
+
+// mergeSourceCandidates lists mergeable refs for one repository, using
+// origin/-prefixed names for remote branches.
+func (a *App) mergeSourceCandidates(repoID string) []gitops.BranchInfo {
+	st := a.gitStatusByID(repoID)
+	if st == nil {
+		return nil
+	}
+	out := make([]gitops.BranchInfo, 0, len(st.BranchInfos))
+	for _, bi := range st.BranchInfos {
+		if !bi.IsRemote && bi.Name == st.Branch {
+			continue
+		}
+		if bi.IsRemote {
+			bi.Name = "origin/" + bi.Name
+			bi.IsRemote = false
+		}
+		out = append(out, bi)
+	}
+	return out
+}
+
 func (a *App) loadGitOpsData() {
 	repo := a.ensureGitOpsRepo()
 	if repo == nil {
@@ -638,9 +687,29 @@ func (a *App) buildGitOpsReflog(c *ui.Context, p Palette) {
 }
 
 func (a *App) buildGitOpsMerge(c *ui.Context, p Palette) {
-	ui.Text(c, "将分支合并到当前分支").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+	current := ""
+	if st := a.ensureGitOpsRepo(); st != nil {
+		current = st.Branch
+	}
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "将分支合并到当前分支").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+		if current != "" {
+			badgeBox(c, current, p.AccentSoftText, p.AccentSoft, ui.Color{}, 9.5, true)
+		}
+	})
 	ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.TextInput(c.Key("merge-branch"), &a.gitOpsMergeBranch).Placeholder("feature / origin/feature").Grow(1)
+		branchFuzzyInput(
+			c.Key("merge-branch"),
+			p,
+			&a.gitOpsMergeBranch,
+			a.mergeSourceCandidates(a.gitOpsRepo),
+			"main / origin/main",
+			0,
+			1,
+			false,
+			func(_ string) { a.gitOpsConfirm = "" },
+			nil,
+		)
 		menuIconPill(c, p, "merge-strategy", icoMerge, a.gitOpsMergeStrategy, true, func(m *ui.Menu) {
 			for _, strategy := range []string{"default", "no-ff", "ff-only", "squash"} {
 				strategy := strategy
@@ -678,7 +747,7 @@ func (a *App) buildGitOpsMerge(c *ui.Context, p Palette) {
 			})
 		})
 	})
-	ui.Text(c, "squash 会创建一个压缩提交；ff-only 在不能快进时失败，不会改写历史。").FontSize(9).TextColor(p.TextMuted)
+	ui.Text(c, "来源分支可直接输入或从列表选择；squash 会创建一个压缩提交，ff-only 在不能快进时失败，不会改写历史。").FontSize(9).TextColor(p.TextMuted)
 	ui.Box(c).Height(1).FillWidth().Background(p.Border).MarginY(6)
 	ui.Text(c, "安全强制推送").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary)
 	ui.Text(c, "只在远端仍是上次 fetch 的提交时覆盖，防止覆盖别人的工作。").FontSize(9).TextColor(p.TextMuted)
