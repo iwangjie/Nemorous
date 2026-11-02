@@ -175,6 +175,64 @@ func MergeIntoBranch(ctx context.Context, target MergeTarget, pushRemote bool) M
 	return finish("OK", message, "", nil, nil)
 }
 
+// RecoveredMerge describes a conflict worktree left behind by an earlier
+// session. The app uses it to make the resolver reachable after a restart.
+type RecoveredMerge struct {
+	RepoID    string
+	RepoPath  string
+	Worktree  string
+	Branch    string
+	Conflicts []string
+}
+
+// RecoverManualMerges finds unfinished conflict worktrees under a repository's
+// worktree list. Only the private nemorous-merge/* branches are considered, so
+// user-created worktrees are never adopted.
+func RecoverManualMerges(ctx context.Context, repos []mani.DiscoveredRepo) []RecoveredMerge {
+	var out []RecoveredMerge
+	for _, repo := range repos {
+		list, err := gitops.RunGit(ctx, repo.AbsPath, "worktree", "list", "--porcelain")
+		if err != nil {
+			continue
+		}
+		for _, block := range strings.Split(list, "\n\n") {
+			var worktree, branch string
+			for _, line := range strings.Split(block, "\n") {
+				switch {
+				case strings.HasPrefix(line, "worktree "):
+					worktree = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+				case strings.HasPrefix(line, "branch refs/heads/"):
+					branch = strings.TrimPrefix(strings.TrimSpace(line), "branch refs/heads/")
+				}
+			}
+			if worktree == "" || worktree == repo.AbsPath || !strings.HasPrefix(branch, "nemorous-merge/") {
+				continue
+			}
+			conflicted, err := gitops.RunGit(ctx, worktree, "diff", "--name-only", "--diff-filter=U")
+			if err != nil {
+				continue
+			}
+			var conflicts []string
+			for _, line := range strings.Split(conflicted, "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					conflicts = append(conflicts, line)
+				}
+			}
+			if len(conflicts) == 0 {
+				continue
+			}
+			out = append(out, RecoveredMerge{
+				RepoID:    repo.ID,
+				RepoPath:  repo.AbsPath,
+				Worktree:  worktree,
+				Branch:    branch,
+				Conflicts: conflicts,
+			})
+		}
+	}
+	return out
+}
+
 // FinishManualMerge commits any remaining resolution in the temporary worktree,
 // updates the local target branch and optionally pushes it.
 func FinishManualMerge(ctx context.Context, repoPath, worktree, tempBranch, targetBranch string, pushRemote bool) (gitops.OpResult, error) {

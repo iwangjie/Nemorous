@@ -704,7 +704,14 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 					drawIcon(c, icoResolve, 34, p.Green)
 					ui.Text(c, "所有冲突已解决").FontSize(16).FontWeight(weightBold).TextColor(p.TextPrimary)
 					ui.Text(c, "文件已暂存").FontSize(10.5).TextColor(p.TextMuted)
-					pill(c, p, a.conflictOperationLabel(), true, func() { a.continueAfterConflict() })
+					if a.conflictManual {
+						ui.Row(c).Gap(8).Children(func() {
+							pill(c, p, "完成（本地）", false, func() { a.finishManualMerge(a.conflictRepoID, false) })
+							pill(c, p, "完成并推送", true, func() { a.finishManualMerge(a.conflictRepoID, true) })
+						})
+					} else {
+						pill(c, p, a.conflictOperationLabel(), true, func() { a.continueAfterConflict() })
+					}
 				} else {
 					ui.Text(c, "选择要解决的冲突文件。").FontSize(11.5).TextColor(p.TextMuted)
 				}

@@ -842,7 +842,7 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 			return
 		}
 		ui.Scroll(c).Grow(1).Children(func() {
-			if a.gitDetailLoading {
+			if a.gitDetailLoading || a.gitDetail == nil {
 				ui.Row(c).Padding(14).Children(func() {
 					ui.Text(c, "正在加载提交详情...").FontSize(10.5).TextColor(p.TextMuted)
 				})

@@ -102,16 +102,21 @@ func TestMergeSelectionDefaultsAndPreservesChoices(t *testing.T) {
 		{Repo: mani.DiscoveredRepo{ID: "alpha"}, TargetExists: true, SourceBranch: "feat", TargetBranch: "test", AheadCommits: 2},
 		{Repo: mani.DiscoveredRepo{ID: "beta"}, TargetExists: true, SourceBranch: "feat", TargetBranch: "test", AheadCommits: 2},
 		{Repo: mani.DiscoveredRepo{ID: "gamma"}, TargetExists: true, SourceBranch: "feat", TargetBranch: "test", AheadCommits: 0},
+		{Repo: mani.DiscoveredRepo{ID: "main"}, TargetExists: true, SourceBranch: "main", TargetBranch: "test", AheadCommits: 2},
+		{Repo: mani.DiscoveredRepo{ID: "release"}, TargetExists: true, SourceBranch: "release/2026", TargetBranch: "test", AheadCommits: 2},
 	}
 	app.syncMergeSelection(targets)
 	if !app.mergeRepoChecked("alpha") {
-		t.Fatal("mergeable repositories should be selected by default")
+		t.Fatal("mergeable feature repositories should be selected by default")
 	}
 	if app.mergeRepoChecked("beta") {
 		t.Fatal("an explicit deselection must survive a rescan")
 	}
 	if app.mergeRepoChecked("gamma") {
 		t.Fatal("repositories with no new commits should stay unselected")
+	}
+	if app.mergeRepoChecked("main") || app.mergeRepoChecked("release") {
+		t.Fatal("mainline branches must not be auto-selected")
 	}
 
 	app.syncMergeSelection(targets[:1])

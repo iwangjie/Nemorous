@@ -45,6 +45,9 @@ func (a *App) mergeSelectionStats() (selected, mergeable, conflicts int) {
 // toggleReleaseMerge opens the inline merge bar and refreshes its scan.
 func (a *App) toggleReleaseMerge() {
 	a.mergeBarOpen = !a.mergeBarOpen
+	if !a.mergeBarOpen {
+		a.mergePickOpen = false
+	}
 	if a.mergeBarOpen {
 		a.ensureMergeScan()
 	}
@@ -61,12 +64,54 @@ func (a *App) openReleaseMerge() {
 }
 
 func (a *App) ensureMergeScan() {
+	a.ensureManualMergeRecovery()
 	if a.mergeScanLoading {
 		return
 	}
 	if len(a.mergeTargets) == 0 || time.Since(a.mergeScanAt) > 30*time.Second {
 		a.TriggerMergeScan()
 	}
+}
+
+// ensureManualMergeRecovery reconnects to conflict worktrees created before a
+// restart. They live outside the working tree, so without this scan a conflict
+// would become invisible while its temporary branch kept holding the merge.
+func (a *App) ensureManualMergeRecovery() {
+	if a.mergeRecovered {
+		return
+	}
+	repos := a.reposSnapshot()
+	if len(repos) == 0 {
+		return
+	}
+	a.mergeRecovered = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		found := aimerge.RecoverManualMerges(ctx, repos)
+		if len(found) == 0 {
+			return
+		}
+		a.runUI(func() {
+			added := 0
+			for _, mm := range found {
+				if _, exists := a.manualMerges[mm.RepoID]; exists {
+					continue
+				}
+				a.manualMerges[mm.RepoID] = ManualMerge{
+					RepoPath:  mm.RepoPath,
+					Path:      mm.Worktree,
+					Branch:    mm.Branch,
+					Conflicts: mm.Conflicts,
+				}
+				a.mergeCheckedRepos[mm.RepoID] = false
+				added++
+			}
+			if added > 0 {
+				a.showToast("warn", fmt.Sprintf("发现 %d 个未完成的合并冲突，点击「解决冲突」继续", added))
+			}
+		})
+	}()
 }
 
 func (a *App) mergeTargetOptions() []string {
@@ -109,41 +154,10 @@ func (a *App) buildReleaseMergeBar(c *ui.Context, p Palette) {
 					}
 				}
 			})
-			menuIconPill(c, p, "merge-pick", icoCheck, fmt.Sprintf("已选 %d/%d", selected, mergeable), false, func(m *ui.Menu) {
-				if m.Item("全选可合并").Chosen() {
-					for _, target := range a.mergeTargets {
-						if mergeableTarget(target) {
-							a.mergeCheckedRepos[target.Repo.ID] = true
-						}
-					}
-				}
-				if m.Item("清空").Chosen() {
-					for _, target := range a.mergeTargets {
-						a.mergeCheckedRepos[target.Repo.ID] = false
-					}
-				}
-				if len(a.mergeTargets) > 0 {
-					m.Separator()
-				}
-				for _, target := range a.mergeTargets {
-					targetCopy := target
-					_, manual := a.manualMerges[targetCopy.Repo.ID]
-					label := targetCopy.Repo.Name + " · " + targetCopy.SourceBranch + " → " + targetCopy.TargetBranch
-					switch {
-					case manual:
-						label += " · 冲突待处理"
-					case !targetCopy.TargetExists:
-						label += " · 无目标分支"
-					case targetCopy.AheadCommits == 0:
-						label += " · 无新提交"
-					}
-					item := m.Item(label).Disabled(manual || !mergeableTarget(targetCopy))
-					item.Checked(a.mergeRepoChecked(targetCopy.Repo.ID))
-					if item.Chosen() {
-						a.mergeCheckedRepos[targetCopy.Repo.ID] = !a.mergeRepoChecked(targetCopy.Repo.ID)
-					}
-				}
-			})
+			a.buildMergePicker(c, p, selected, mergeable, conflicts)
+			if conflicts > 0 {
+				a.mergeConflictPill(c, p, conflicts)
+			}
 			if a.mergeScanLoading {
 				ui.Spinner(c).Size(12, 12)
 			}
@@ -210,6 +224,183 @@ func (a *App) buildReleaseMergeBar(c *ui.Context, p Palette) {
 				})
 			}
 		}
+	})
+}
+
+// firstManualConflictID returns a stable conflict repository, following the
+// scan order so the resolver opens the same one every time.
+func (a *App) firstManualConflictID() string {
+	for _, target := range a.mergeTargets {
+		if _, ok := a.manualMerges[target.Repo.ID]; ok {
+			return target.Repo.ID
+		}
+	}
+	for id := range a.manualMerges {
+		return id
+	}
+	return ""
+}
+
+// mergeConflictPill is the always-visible way back into conflict resolution
+// after the merge toast or the selection popover has been dismissed.
+func (a *App) mergeConflictPill(c *ui.Context, p Palette, conflicts int) {
+	id := a.firstManualConflictID()
+	el := ui.Row(c).Padding(4, 9).Gap(5).Radius(5).Background(p.DangerSoft).
+		AlignItems(ui.Center).Shrink(0).Cursor(ui.CursorPointer).Tooltip("处理临时合并工作区中的冲突")
+	if el.Hovered() {
+		el.Background(p.SurfaceHover)
+	}
+	if el.Clicked() && id != "" {
+		a.openConflictResolver(id)
+	}
+	el.Children(func() {
+		drawIcon(c, icoAlert, 12, p.Danger)
+		ui.Text(c, fmt.Sprintf("解决冲突 (%d)", conflicts)).
+			FontSize(11).FontWeight(weightMedium).TextColor(p.Danger).SingleLine()
+	})
+}
+
+// buildMergePicker renders the repository selection as an in-window popover.
+// Unlike a native menu it stays open while rows are toggled, so a batch of
+// changes does not need the picker to be reopened for every click.
+func (a *App) buildMergePicker(c *ui.Context, p Palette, selected, mergeable, conflicts int) {
+	kc := c.Key("merge-pick")
+	trigger := ui.Row(kc).Padding(4, 8).Gap(5).Radius(4).AlignItems(ui.Center).Shrink(0)
+	fg := p.TextSecondary
+	if a.mergePickOpen {
+		trigger.Background(p.AccentSoft)
+		fg = p.AccentSoftText
+	}
+	if trigger.Hovered() {
+		trigger.Background(p.SurfaceHover)
+		if !a.mergePickOpen {
+			fg = p.TextPrimary
+		}
+	}
+	if trigger.Clicked() {
+		a.mergePickOpen = !a.mergePickOpen
+	}
+	trigger.Children(func() {
+		drawIcon(kc, icoCheck, 13, fg)
+		ui.Text(kc, fmt.Sprintf("已选 %d/%d", selected, mergeable)).
+			FontSize(11.5).FontWeight(weightMedium).TextColor(fg).SingleLine()
+		drawIcon(kc, icoChevronDown, 10, p.TextMuted)
+	})
+
+	ui.Popover(c, trigger, &a.mergePickOpen, func() {
+		ui.Column(c).Width(390).Padding(5).Gap(1).Children(func() {
+			action := func(label string, icon *ui.SVG, color ui.Color, onClick func()) {
+				row := ui.Row(c).FillWidth().Padding(6, 9).Gap(7).Radius(4).
+					AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				if row.Hovered() {
+					row.Background(p.SurfaceHover)
+				}
+				if row.Clicked() {
+					onClick()
+				}
+				row.Children(func() {
+					if icon != nil {
+						drawIcon(c, icon, 12, color)
+					} else {
+						ui.Box(c).Size(12, 12).Shrink(0)
+					}
+					ui.Text(c, label).FontSize(11.5).TextColor(color).SingleLine()
+				})
+			}
+			if conflicts > 0 {
+				action(fmt.Sprintf("解决冲突 (%d)", conflicts), icoAlert, p.Danger, func() {
+					if id := a.firstManualConflictID(); id != "" {
+						a.mergePickOpen = false
+						a.openConflictResolver(id)
+					}
+				})
+			}
+			action("全选可合并", nil, p.TextPrimary, func() {
+				for _, target := range a.mergeTargets {
+					if _, manual := a.manualMerges[target.Repo.ID]; manual {
+						continue
+					}
+					if mergeableTarget(target) {
+						a.mergeCheckedRepos[target.Repo.ID] = true
+					}
+				}
+			})
+			action("清空", nil, p.TextPrimary, func() {
+				for _, target := range a.mergeTargets {
+					a.mergeCheckedRepos[target.Repo.ID] = false
+				}
+			})
+			if len(a.mergeTargets) > 0 {
+				ui.Divider(c)
+			}
+			for _, target := range a.mergeTargets {
+				targetCopy := target
+				_, manual := a.manualMerges[targetCopy.Repo.ID]
+				canMerge := mergeableTarget(targetCopy)
+				actionable := manual || canMerge
+				row := ui.Row(c).FillWidth().Padding(6, 8).Gap(8).Radius(4).AlignItems(ui.Center)
+				if actionable {
+					row.Cursor(ui.CursorPointer)
+				}
+				switch {
+				case manual:
+					if row.Hovered() {
+						row.Background(p.DangerSoft)
+					}
+				case canMerge:
+					if row.Hovered() {
+						row.Background(p.SurfaceHover)
+					}
+				}
+				if row.Clicked() && actionable {
+					if manual {
+						a.mergePickOpen = false
+						a.openConflictResolver(targetCopy.Repo.ID)
+					} else {
+						a.mergeCheckedRepos[targetCopy.Repo.ID] = !a.mergeRepoChecked(targetCopy.Repo.ID)
+					}
+				}
+				row.Children(func() {
+					switch {
+					case manual:
+						drawIcon(c, icoAlert, 13, p.Danger)
+					case !canMerge:
+						ui.Box(c).Size(14, 14).Shrink(0)
+					default:
+						box := ui.Box(c).Size(14, 14).Radius(3).Center().Shrink(0)
+						if a.mergeRepoChecked(targetCopy.Repo.ID) {
+							box.Background(p.Accent)
+							box.Children(func() { drawIcon(c, icoCheck, 10, p.AccentText) })
+						} else {
+							box.BorderWidth(1).BorderColor(p.Border)
+						}
+					}
+					ui.Column(c).Grow(1).Gap(1).Children(func() {
+						label := targetCopy.Repo.Name + " · " + targetCopy.SourceBranch + " → " + targetCopy.TargetBranch
+						textColor := p.TextPrimary
+						if !actionable {
+							textColor = p.TextMuted
+						}
+						if manual {
+							textColor = p.Danger
+						}
+						ui.Text(c, label).FontSize(11.5).TextColor(textColor).SingleLine()
+						status, tone := "", p.TextMuted
+						switch {
+						case manual:
+							status, tone = "冲突待处理 · 点击解决", p.Danger
+						case !targetCopy.TargetExists:
+							status = "无目标分支"
+						case targetCopy.AheadCommits == 0:
+							status = "无新提交"
+						}
+						if status != "" {
+							ui.Text(c, status).FontSize(9.5).TextColor(tone).SingleLine()
+						}
+					})
+				})
+			}
+		})
 	})
 }
 

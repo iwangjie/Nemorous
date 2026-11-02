@@ -281,6 +281,8 @@ type App struct {
 	mergeScanLoading    bool
 	mergeScanAt         time.Time
 	mergeBarOpen        bool
+	mergePickOpen       bool
+	mergeRecovered      bool
 	mergePresetSaveOpen bool
 	manualMerges        map[string]ManualMerge
 	manualMergeRunning  bool

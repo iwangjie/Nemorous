@@ -22,7 +22,30 @@ func (a *App) mergeRepoChecked(repoID string) bool {
 	return checked
 }
 
+// isMainlineBranch reports whether a branch is shared/trunk rather than a
+// feature branch. Shared branches are kept out of the automatic merge
+// selection; the user can still tick them by hand.
+func (a *App) isMainlineBranch(branch string) bool {
+	name := strings.ToLower(strings.TrimSpace(branch))
+	name = strings.TrimPrefix(name, "origin/")
+	switch name {
+	case "main", "master", "trunk", "release", "develop", "development":
+		return true
+	}
+	if strings.HasPrefix(name, "release/") || strings.HasPrefix(name, "release-") {
+		return true
+	}
+	for _, protected := range a.cfg.ProtectedBranches {
+		if name == strings.ToLower(strings.TrimSpace(protected)) {
+			return true
+		}
+	}
+	return false
+}
+
 // syncMergeSelection keeps the merge selection aligned with a fresh scan.
+// Newly discovered feature branches are checked automatically; shared
+// branches such as main, master or release are left for an explicit choice.
 func (a *App) syncMergeSelection(targets []aimerge.MergeTarget) {
 	keep := make(map[string]bool, len(targets))
 	for _, target := range targets {
@@ -35,7 +58,7 @@ func (a *App) syncMergeSelection(targets []aimerge.MergeTarget) {
 			continue
 		}
 		if _, ok := a.mergeCheckedRepos[target.Repo.ID]; !ok {
-			a.mergeCheckedRepos[target.Repo.ID] = true
+			a.mergeCheckedRepos[target.Repo.ID] = !a.isMainlineBranch(target.SourceBranch)
 		}
 	}
 	for id := range a.mergeCheckedRepos {
@@ -227,6 +250,7 @@ func (a *App) executeMergeTargets(targets []aimerge.MergeTarget, pushRemote bool
 			a.mergeRunning = false
 			a.busyLabel = ""
 			a.setBatchResults(results)
+			firstConflict := ""
 			for _, target := range targets {
 				outcome, ok := conflicts[target.Repo.ID]
 				if !ok {
@@ -239,6 +263,9 @@ func (a *App) executeMergeTargets(targets []aimerge.MergeTarget, pushRemote bool
 					Conflicts: outcome.Conflicts,
 				}
 				a.mergeCheckedRepos[target.Repo.ID] = false
+				if firstConflict == "" {
+					firstConflict = target.Repo.ID
+				}
 			}
 			okCnt, skipCnt, failCnt, conflictCnt := mergeResultCounts(results)
 			kind := "ok"
@@ -246,6 +273,9 @@ func (a *App) executeMergeTargets(targets []aimerge.MergeTarget, pushRemote bool
 				kind = "warn"
 			}
 			a.showToast(kind, fmt.Sprintf("合并完成：%d 成功，%d 冲突，%d 跳过，%d 失败", okCnt, conflictCnt, skipCnt, failCnt))
+			if firstConflict != "" {
+				a.openConflictResolver(firstConflict)
+			}
 			a.RefreshAsync()
 			a.TriggerMergeScan()
 		})
@@ -338,6 +368,9 @@ func (a *App) finishManualMerge(repoID string, pushRemote bool) {
 				return
 			}
 			delete(a.manualMerges, repoID)
+			if a.conflictRepoID == repoID {
+				a.showConflict = false
+			}
 			a.setBatchResults([]gitops.OpResult{res})
 			a.showToast("ok", res.Message)
 			a.RefreshAsync()

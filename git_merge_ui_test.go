@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,6 +209,145 @@ func TestInlineMergeBarMergesSelectedRepository(t *testing.T) {
 	waitMergeIdle(t, app)
 }
 
+func makeMergeConflictWorkspace(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-b", "main")
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "user.email", "test@example.com")
+	path := filepath.Join(dir, "base.txt")
+	if err := os.WriteFile(path, []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	gitRun(t, dir, "branch", "test")
+	gitRun(t, dir, "switch", "-c", "feature/mine")
+	if err := os.WriteFile(path, []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "commit", "-am", "feature")
+	gitRun(t, dir, "switch", "main")
+	if err := os.WriteFile(path, []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "commit", "-am", "main")
+	gitRun(t, dir, "branch", "-f", "test", "main")
+	gitRun(t, dir, "switch", "feature/mine")
+	return dir
+}
+
+func TestInlineMergeConflictOpensResolver(t *testing.T) {
+	app := newGapTestApp(t, makeMergeConflictWorkspace(t))
+	app.showGitPanel = true
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	app.openReleaseMerge()
+	waitInlineMergeBar(t, app, tt)
+	tt.Frame()
+	if err := tt.Click("合并 (1)"); err != nil {
+		t.Fatalf("start merge: %v", err)
+	}
+	waitApp(t, "conflict resolver to open", func() bool {
+		return app.showConflict && !app.mergeRunning && len(app.manualMerges) == 1
+	})
+	if app.conflictRepoID == "" || !app.conflictManual {
+		t.Fatalf("resolver opened without a manual worktree: repo=%q manual=%v", app.conflictRepoID, app.conflictManual)
+	}
+	tt.Frame()
+	if !tt.HasText("冲突解决") {
+		t.Fatalf("conflict modal did not render; texts=%v", tt.Texts())
+	}
+	if !tt.HasText("解决冲突 (1)") {
+		t.Fatalf("conflict entry missing from merge bar; texts=%v", tt.Texts())
+	}
+	app.showConflict = false
+	tt.Frame()
+	if err := tt.Click("解决冲突 (1)"); err != nil {
+		t.Fatalf("reopen conflict from merge bar: %v", err)
+	}
+	tt.Frame()
+	if !app.showConflict {
+		t.Fatal("merge bar conflict entry did not reopen the resolver")
+	}
+}
+
+func TestManualConflictCanFinishFromResolver(t *testing.T) {
+	app := newGapTestApp(t, makeMergeConflictWorkspace(t))
+	app.showGitPanel = true
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	app.openReleaseMerge()
+	waitInlineMergeBar(t, app, tt)
+	tt.Frame()
+	if err := tt.Click("合并 (1)"); err != nil {
+		t.Fatalf("start merge: %v", err)
+	}
+	waitApp(t, "conflict file", func() bool {
+		return app.showConflict && app.conflictEditor != nil && len(app.conflictFiles) == 1
+	})
+	resolved := "resolved\n"
+	if err := os.WriteFile(filepath.Join(app.conflictRepoPath, "base.txt"), []byte(resolved), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, app.conflictRepoPath, "add", "base.txt")
+	app.loadConflictFiles()
+	waitApp(t, "all conflicts staged", func() bool {
+		return len(app.conflictFiles) == 0 && !app.conflictLoading
+	})
+	tt.Frame()
+	if !tt.HasText("完成（本地）") || !tt.HasText("完成并推送") {
+		t.Fatalf("finish actions missing from resolver; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("完成（本地）"); err != nil {
+		t.Fatalf("finish manual merge: %v", err)
+	}
+	waitApp(t, "manual merge finished", func() bool {
+		return len(app.manualMerges) == 0 && app.busyLabel == ""
+	})
+	out, _ := gitops.RunGit(context.Background(), app.repos[0].AbsPath, "show", "test:base.txt")
+	if strings.TrimSpace(out) != strings.TrimSpace(resolved) {
+		t.Fatalf("test branch was not updated: %q", out)
+	}
+}
+
+func TestMergeConflictRecoversAfterRestart(t *testing.T) {
+	ws := makeMergeConflictWorkspace(t)
+	first := newGapTestApp(t, ws)
+	first.showGitPanel = true
+	firstTT := ui.NewTester(first.BuildUI, 1440, 900)
+	firstTT.Frame()
+	first.openReleaseMerge()
+	waitInlineMergeBar(t, first, firstTT)
+	firstTT.Frame()
+	if err := firstTT.Click("合并 (1)"); err != nil {
+		t.Fatalf("start merge: %v", err)
+	}
+	waitApp(t, "first conflict", func() bool {
+		return first.showConflict && len(first.manualMerges) == 1
+	})
+
+	// A fresh app models the restart: the conflict lives only in a temporary
+	// worktree and must be discovered again when the merge bar opens.
+	second := newGapTestApp(t, ws)
+	second.showGitPanel = true
+	secondTT := ui.NewTester(second.BuildUI, 1440, 900)
+	secondTT.Frame()
+	second.openReleaseMerge()
+	waitInlineMergeBar(t, second, secondTT)
+	waitApp(t, "recovered conflict", func() bool {
+		return len(second.manualMerges) == 1
+	})
+	secondTT.Frame()
+	if !secondTT.HasText("解决冲突 (1)") {
+		t.Fatalf("recovered conflict is not reachable; texts=%v", secondTT.Texts())
+	}
+	for id := range second.manualMerges {
+		second.cleanupManualMerge(id)
+	}
+	time.Sleep(300 * time.Millisecond)
+}
+
 func TestInlineMergeBarSelectionMenu(t *testing.T) {
 	app := newGapTestApp(t, makeReverseMergeWorkspace(t))
 	app.showGitPanel = true
@@ -223,6 +363,23 @@ func TestInlineMergeBarSelectionMenu(t *testing.T) {
 	if !tt.HasText("清空") || !tt.HasText("全选可合并") {
 		t.Fatalf("selection menu missing; texts=%v", tt.Texts())
 	}
+	if err := tt.Click("demo · feature/mine → test"); err != nil {
+		t.Fatalf("toggle repository row: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("已选 0/1") {
+		t.Fatalf("repository row did not toggle; texts=%v", tt.Texts())
+	}
+	if !tt.HasText("全选可合并") {
+		t.Fatalf("selection picker closed after one row click; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("全选可合并"); err != nil {
+		t.Fatalf("select all mergeable: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("已选 1/1") {
+		t.Fatalf("select-all did not restore selection; texts=%v", tt.Texts())
+	}
 	if err := tt.Click("清空"); err != nil {
 		t.Fatalf("clear selection: %v", err)
 	}
@@ -230,15 +387,7 @@ func TestInlineMergeBarSelectionMenu(t *testing.T) {
 	if !tt.HasText("已选 0/1") || !tt.HasText("合并 (0)") {
 		t.Fatalf("selection did not clear; texts=%v", tt.Texts())
 	}
-	if err := tt.Click("已选 0/1"); err != nil {
-		t.Fatalf("reopen selection menu: %v", err)
-	}
-	tt.Frame()
-	if err := tt.Click("全选可合并"); err != nil {
-		t.Fatalf("select all mergeable: %v", err)
-	}
-	tt.Frame()
-	if !tt.HasText("已选 1/1") {
-		t.Fatalf("select-all did not restore selection; texts=%v", tt.Texts())
+	if !tt.HasText("全选可合并") {
+		t.Fatalf("selection picker closed after clear; texts=%v", tt.Texts())
 	}
 }
