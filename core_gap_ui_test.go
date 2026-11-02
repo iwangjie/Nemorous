@@ -99,10 +99,10 @@ func TestConflictResolverUIEndToEnd(t *testing.T) {
 	if strings.Contains(editorText(app.conflictEditor.Buffer), "<<<<<<<") {
 		t.Fatal("conflict markers should be hidden from the result editor")
 	}
-	if !tt.HasText("冲突块") {
+	if !tt.HasText("← OURS") || !tt.HasText("THEIRS →") {
 		t.Fatal("per-block merge controls are missing")
 	}
-	if err := tt.Click("采用 Ours (⌥1)"); err != nil {
+	if err := tt.Click("← OURS"); err != nil {
 		t.Fatalf("accept ours button: %v", err)
 	}
 	tt.Frame()
@@ -136,7 +136,7 @@ func TestConflictBlockArrowAppliesTheirs(t *testing.T) {
 	})
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if err := tt.Click("采用 THEIRS（合入版本）"); err != nil {
+	if err := tt.Click("THEIRS →"); err != nil {
 		t.Fatalf("per-block theirs arrow: %v", err)
 	}
 	tt.Frame()
@@ -419,8 +419,8 @@ func TestConflictSmartMergeAndCloseGuard(t *testing.T) {
 	if app.conflictDoc != nil || buf.String() != "a\nB\nc\nD\n" {
 		t.Fatalf("auto merge = %q doc=%v", buf.String(), app.conflictDoc)
 	}
-	if !strings.Contains(app.conflictNotice, "已自动解决 1") {
-		t.Fatalf("notice = %q", app.conflictNotice)
+	if !strings.Contains(app.conflictStatus, "自动解决 1") {
+		t.Fatalf("status = %q", app.conflictStatus)
 	}
 	// Editing must guard closing.
 	buf.Set("edited\n")
@@ -493,10 +493,10 @@ func TestBinaryConflictResolution(t *testing.T) {
 	}
 	if !resolved {
 		data, _ := os.ReadFile(path)
-		t.Fatalf("binary resolution timeout: data=%v err=%q notice=%q ours=%d theirs=%d selected=%q", data, app.conflictErr, app.conflictNotice, len(app.conflictOurs), len(app.conflictTheirs), app.conflictSelected)
+		t.Fatalf("binary resolution timeout: data=%v err=%q ours=%d theirs=%d selected=%q", data, app.conflictErr, len(app.conflictOurs), len(app.conflictTheirs), app.conflictSelected)
 	}
 	waitApp(t, "binary staged", func() bool {
-		return app.conflictNotice != "" && !app.conflictLoading && len(app.conflictFiles) == 0
+		return !app.conflictLoading && len(app.conflictFiles) == 0
 	})
 }
 

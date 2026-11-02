@@ -464,7 +464,8 @@ type App struct {
 	conflictOurs         string
 	conflictTheirs       string
 	conflictErr          string
-	conflictNotice       string
+	conflictStatus       string
+	conflictStatusKind   string
 	conflictLoading      bool
 
 	// Local history
