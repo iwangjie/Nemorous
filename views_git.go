@@ -1335,6 +1335,46 @@ func (a *App) closeGitCommitDiff() {
 	a.gitDiffErr = ""
 }
 
+// gitDiffFileIndex locates the open commit diff among the commit's changed files.
+func (a *App) gitDiffFileIndex() (int, int) {
+	if a.gitDetail == nil {
+		return -1, 0
+	}
+	for i := range a.gitDetail.Files {
+		if a.gitDetail.Files[i].Path == a.gitDiffPath {
+			return i, len(a.gitDetail.Files)
+		}
+	}
+	return -1, len(a.gitDetail.Files)
+}
+
+// stepGitDiffFile opens the previous or next changed file of the same commit.
+func (a *App) stepGitDiffFile(delta int) {
+	i, n := a.gitDiffFileIndex()
+	if i < 0 {
+		return
+	}
+	j := i + delta
+	if j < 0 || j >= n {
+		return
+	}
+	a.TriggerGitFileDiff(*a.gitDetail, a.gitDetail.Files[j])
+}
+
+// openGitDiffSource opens the commit's changed file in the working-tree code view.
+func (a *App) openGitDiffSource() {
+	if a.gitDetail == nil || a.gitDiffPath == "" {
+		return
+	}
+	for _, r := range a.repos {
+		if r.Name == a.gitDiffRepo || r.AbsPath == a.gitDetail.RepoPath {
+			a.selectCodeFile(gitops.WorkspaceFile{RepoID: r.ID, RepoName: r.Name, RepoPath: r.AbsPath, RelPath: a.gitDiffPath})
+			a.activeTab = TabCode
+			return
+		}
+	}
+}
+
 func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 	ui.Column(c).Grow(1).Fill().Background(p.AppBg).Children(func() {
 		ui.Row(c).Height(44).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
@@ -1391,6 +1431,18 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 					a.showDiffOptions = !a.showDiffOptions
 				})
 			})
+		})
+		idx, files := a.gitDiffFileIndex()
+		a.buildDiffToolbar(c, p, a.gitCommitDiff, diffToolbarOptions{
+			prefix:        "commit-diff",
+			middleIcon:    icoArrowUpRight,
+			middleTip:     "打开文件",
+			middleEnabled: a.gitDiffPath != "",
+			middle:        a.openGitDiffSource,
+			prevFile:      func() { a.stepGitDiffFile(-1) },
+			nextFile:      func() { a.stepGitDiffFile(1) },
+			canPrevFile:   idx > 0,
+			canNextFile:   idx >= 0 && idx < files-1,
 		})
 		if a.showDiffOptions {
 			ui.Row(c).Padding(6, 14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {

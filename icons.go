@@ -34,6 +34,8 @@ var (
 
 	icoArrowLeft = mustSVG(`<svg viewBox="0 0 24 24"><path d="M19 12H5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m12 19-7-7 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
 
+	icoArrowUpRight = mustSVG(`<svg viewBox="0 0 24 24"><path d="M7 17 17 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7 7h10v10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
+
 	icoArrowRight = mustSVG(`<svg viewBox="0 0 24 24"><path d="M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m12 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
 
 	icoChevronDown = mustSVG(`<svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)

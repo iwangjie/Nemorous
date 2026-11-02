@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
@@ -114,5 +115,75 @@ func TestDiffToolbar(t *testing.T) {
 	tt.Frame()
 	if app.selectedChangeKey != selected {
 		t.Fatalf("previous file should return to %q, got %q", selected, app.selectedChangeKey)
+	}
+}
+
+// TestGitCommitDiffToolbar checks the same diff actions appear when a commit
+// file diff is open from the history.
+func TestGitCommitDiffToolbar(t *testing.T) {
+	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	ws := t.TempDir()
+	repo := filepath.Join(ws, "demo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	for _, args := range [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.name", "Test"},
+		{"config", "user.email", "test@example.com"},
+	} {
+		if _, err := gitops.RunGit(ctx, repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := gitops.RunGit(ctx, repo, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitops.RunGit(ctx, repo, "commit", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := gitops.RunGit(ctx, repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := strings.TrimSpace(out)
+
+	cfg := config.Default()
+	cfg.WorkspacePath = ws
+	cfg.IncludeRootRepo = false
+	app := NewApp(cfg)
+	app.LoadWorkspaceSync(ws)
+	app.gitDetail = &gitops.CommitDetail{
+		CommitEntry: gitops.CommitEntry{RepoName: "demo", RepoPath: repo, Hash: hash},
+		Files:       []gitops.CommitFile{{Path: "a.txt"}, {Path: "b.txt"}},
+	}
+	app.gitDiffOpen = true
+	app.gitDiffRepo = "demo"
+	app.gitDiffPath = "a.txt"
+	app.gitDiffHash = hash
+	app.gitCommitDiff = &editor.DiffState{
+		Old:    editor.NewBuffer("a.txt\n"),
+		New:    editor.NewBuffer("a changed\n"),
+		Layout: editor.DiffSplit,
+	}
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	for _, label := range []string{"上一个差异", "下一个差异", "打开文件", "上一个文件", "下一个文件"} {
+		if _, ok := tt.Find(label); !ok {
+			t.Fatalf("commit diff toolbar is missing %q", label)
+		}
+	}
+	if err := tt.Click("打开文件"); err != nil {
+		t.Fatalf("open file: %v", err)
+	}
+	tt.Frame()
+	if app.activeTab != TabCode {
+		t.Fatal("open file should switch to the code tab")
 	}
 }

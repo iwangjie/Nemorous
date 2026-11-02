@@ -1100,7 +1100,23 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 			})
 		})
 
-		a.buildDiffToolbar(c, p, a.diffState)
+		fileCount := len(a.visibleChangeFileList())
+		a.buildDiffToolbar(c, p, a.diffState, diffToolbarOptions{
+			prefix:        "changes",
+			staging:       true,
+			middleIcon:    icoEdit,
+			middleTip:     "编辑差异",
+			middleActive:  a.diffEditable,
+			middleEnabled: true,
+			middle: func() {
+				a.diffEditable = !a.diffEditable
+				a.diffState.Editable = a.diffEditable
+			},
+			prevFile:    func() { a.moveChangeSelection(-1) },
+			nextFile:    func() { a.moveChangeSelection(1) },
+			canPrevFile: fileCount > 1,
+			canNextFile: fileCount > 1,
+		})
 
 		// Collapsible Diff Display Options Bar ("不常用操作折叠起来，必要时候也能用")
 		if a.showDiffOptions {
@@ -1154,9 +1170,26 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 	})
 }
 
-// buildDiffToolbar draws IDEA's file-diff actions: previous/next change,
-// edit, and previous/next file.
-func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState) {
+// diffToolbarOptions picks the middle action of the diff toolbar and how its
+// file arrows move: the changes view edits and walks the working tree, while a
+// commit diff opens the file and walks the commit's changed paths.
+type diffToolbarOptions struct {
+	prefix        string
+	staging       bool
+	middleIcon    *ui.SVG
+	middleTip     string
+	middleActive  bool
+	middleEnabled bool
+	middle        func()
+	prevFile      func()
+	nextFile      func()
+	canPrevFile   bool
+	canNextFile   bool
+}
+
+// buildDiffToolbar draws IDEA's file-diff actions: previous/next change, the
+// context's middle action, and previous/next file.
+func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState, opts diffToolbarOptions) {
 	if state == nil {
 		return
 	}
@@ -1187,14 +1220,13 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		}
 		state.GoToHunk(i)
 	}
-	fileCount := len(a.visibleChangeFileList())
 	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
 		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
-		diffToolButton(c, p, "diff-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
-		diffToolButton(c, p, "diff-next", icoPull, "下一个差异", false, total > 0, nextHunk)
+		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
+		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, total > 0, nextHunk)
 		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
 		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
-		if a.selectedChangeFile != nil {
+		if opts.staging && a.selectedChangeFile != nil {
 			if a.diffStagedOnly {
 				miniBtn(c, p, "取消暂存块", func() { a.stageCurrentDiffHunk(true) })
 			} else {
@@ -1211,18 +1243,13 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			if a.diffStageBusy {
 				ui.Spinner(c).Size(11, 11).Label("暂存").TextColor(p.TextMuted)
 			}
+			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		}
-		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
-		diffToolButton(c, p, "diff-edit", icoEdit, "编辑差异", a.diffEditable, true, func() {
-			a.diffEditable = !a.diffEditable
-			state.Editable = a.diffEditable
-		})
-		diffToolButton(c, p, "diff-prev-file", icoArrowLeft, "上一个文件", false, fileCount > 1, func() {
-			a.moveChangeSelection(-1)
-		})
-		diffToolButton(c, p, "diff-next-file", icoArrowRight, "下一个文件", false, fileCount > 1, func() {
-			a.moveChangeSelection(1)
-		})
+		if opts.middle != nil {
+			diffToolButton(c, p, opts.prefix+"-middle", opts.middleIcon, opts.middleTip, opts.middleActive, opts.middleEnabled, opts.middle)
+		}
+		diffToolButton(c, p, opts.prefix+"-prev-file", icoArrowLeft, "上一个文件", false, opts.canPrevFile, opts.prevFile)
+		diffToolButton(c, p, opts.prefix+"-next-file", icoArrowRight, "下一个文件", false, opts.canNextFile, opts.nextFile)
 	})
 }
 
