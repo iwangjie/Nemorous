@@ -116,6 +116,42 @@ func TestDiffToolbar(t *testing.T) {
 	if app.selectedChangeKey != selected {
 		t.Fatalf("previous file should return to %q, got %q", selected, app.selectedChangeKey)
 	}
+
+	// Difference arrows cross file boundaries: from the last difference of one
+	// file to the first of the next, and back to the previous file's last one.
+	for i := 0; i < 4; i++ {
+		if cur, _ := app.diffState.CurrentHunk(); cur == len(app.diffState.Hunks())-1 {
+			break
+		}
+		if err := tt.Click("下一个差异"); err != nil {
+			t.Fatalf("go to last difference: %v", err)
+		}
+		tt.Frame()
+	}
+	bigKey := app.selectedChangeKey
+	if cur, _ := app.diffState.CurrentHunk(); cur != len(app.diffState.Hunks())-1 {
+		t.Fatalf("expected to be at the last difference, got %d", cur)
+	}
+	if err := tt.Click("下一个差异"); err != nil {
+		t.Fatalf("next difference across files: %v", err)
+	}
+	tt.Frame()
+	if app.selectedChangeKey == bigKey {
+		t.Fatal("next difference at the last hunk should move to the next file")
+	}
+	if cur, _ := app.diffState.CurrentHunk(); cur != 0 {
+		t.Fatalf("next file should start at its first difference, got %d", cur)
+	}
+	if err := tt.Click("上一个差异"); err != nil {
+		t.Fatalf("previous difference across files: %v", err)
+	}
+	tt.Frame()
+	if app.selectedChangeKey != bigKey {
+		t.Fatalf("previous difference should return to %q, got %q", bigKey, app.selectedChangeKey)
+	}
+	if cur, _ := app.diffState.CurrentHunk(); cur != len(app.diffState.Hunks())-1 {
+		t.Fatalf("previous file should end at its last difference, got %d", cur)
+	}
 }
 
 // TestGitCommitDiffToolbar checks the same diff actions appear when a commit

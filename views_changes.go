@@ -1195,30 +1195,51 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	}
 	hunks := state.Hunks()
 	total := len(hunks)
+	if a.diffJumpEdge != 0 {
+		if total > 0 {
+			if a.diffJumpEdge > 0 {
+				state.GoToHunk(0)
+			} else {
+				state.GoToHunk(total - 1)
+			}
+		}
+		a.diffJumpEdge = 0
+	}
 	cur, _ := state.CurrentHunk()
 	pos := cur + 1
 	if pos < 0 {
 		pos = 0
 	}
+	// IDEA's difference arrows cross file boundaries: the last difference of a
+	// file steps into the next file's first difference, and the first into the
+	// previous file's last one.
 	prevHunk := func() {
-		if total == 0 {
+		if cur > 0 {
+			state.GoToHunk(cur - 1)
 			return
 		}
-		i := cur - 1
-		if i < 0 {
-			i = total - 1
+		if opts.canPrevFile && opts.prevFile != nil {
+			a.diffJumpEdge = -1
+			opts.prevFile()
+			return
 		}
-		state.GoToHunk(i)
+		if total > 0 {
+			state.GoToHunk(total - 1)
+		}
 	}
 	nextHunk := func() {
-		if total == 0 {
+		if total > 0 && cur < total-1 {
+			state.GoToHunk(cur + 1)
 			return
 		}
-		i := cur + 1
-		if i >= total {
-			i = 0
+		if opts.canNextFile && opts.nextFile != nil {
+			a.diffJumpEdge = 1
+			opts.nextFile()
+			return
 		}
-		state.GoToHunk(i)
+		if total > 0 {
+			state.GoToHunk(0)
+		}
 	}
 	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
 		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {

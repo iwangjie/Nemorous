@@ -195,6 +195,7 @@ type App struct {
 	selectedChangeFile       *gitops.ChangedFile
 	checkedChanges           map[string]bool // ChangeFile.Key() -> selected for batch commit
 	diffState                *editor.DiffState
+	diffJumpEdge             int // 1: first hunk after a file switch, -1: last hunk
 	diffStagedOnly           bool
 	diffEditable             bool
 	diffModified             bool

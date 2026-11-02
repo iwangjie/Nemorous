@@ -1306,6 +1306,7 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 			a.gitDiffLoading = false
 			if err != nil {
 				a.gitDiffErr = err.Error()
+				a.diffJumpEdge = 0
 				return
 			}
 			lang := editor.LanguageFor(file.Path)
@@ -1333,6 +1334,7 @@ func (a *App) closeGitCommitDiff() {
 	a.gitDiffLoading = false
 	a.gitCommitDiff = nil
 	a.gitDiffErr = ""
+	a.diffJumpEdge = 0
 }
 
 // gitDiffFileIndex locates the open commit diff among the commit's changed files.
