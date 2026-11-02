@@ -1187,6 +1187,27 @@ type diffToolbarOptions struct {
 	canNextFile   bool
 }
 
+// scrollToDiffHunk moves to hunk i and centers its first line in the viewer,
+// as IDEA does even when the hunk was already on screen, so the change being
+// inspected is always in the same place.
+func scrollToDiffHunk(state *editor.DiffState, i int) {
+	hunks := state.Hunks()
+	if i < 0 || i >= len(hunks) {
+		return
+	}
+	state.GoToHunk(i)
+	h := hunks[i]
+	side := state.ActiveSide()
+	start := h.NewStart
+	if side == editor.DiffOld {
+		start = h.OldStart
+	}
+	top := state.LineTop(side, start)
+	if vh := state.ViewportHeight(); vh > 0 {
+		state.SetScrollY(top - vh/2)
+	}
+}
+
 // buildDiffToolbar draws IDEA's file-diff actions: previous/next change, the
 // context's middle action, and previous/next file.
 func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState, opts diffToolbarOptions) {
@@ -1198,9 +1219,9 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	if a.diffJumpEdge != 0 {
 		if total > 0 {
 			if a.diffJumpEdge > 0 {
-				state.GoToHunk(0)
+				scrollToDiffHunk(state, 0)
 			} else {
-				state.GoToHunk(total - 1)
+				scrollToDiffHunk(state, total-1)
 			}
 		}
 		a.diffJumpEdge = 0
@@ -1215,7 +1236,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	// previous file's last one.
 	prevHunk := func() {
 		if cur > 0 {
-			state.GoToHunk(cur - 1)
+			scrollToDiffHunk(state, cur-1)
 			return
 		}
 		if opts.canPrevFile && opts.prevFile != nil {
@@ -1224,12 +1245,12 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			return
 		}
 		if total > 0 {
-			state.GoToHunk(total - 1)
+			scrollToDiffHunk(state, total-1)
 		}
 	}
 	nextHunk := func() {
 		if total > 0 && cur < total-1 {
-			state.GoToHunk(cur + 1)
+			scrollToDiffHunk(state, cur+1)
 			return
 		}
 		if opts.canNextFile && opts.nextFile != nil {
@@ -1238,7 +1259,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			return
 		}
 		if total > 0 {
-			state.GoToHunk(0)
+			scrollToDiffHunk(state, 0)
 		}
 	}
 	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).

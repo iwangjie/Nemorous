@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/dop251/goja v0.0.0-20261029153331-f81816846776
-	github.com/egoist/mygo v0.7.3
+	github.com/egoist/mygo v0.7.5-0.20261102074528-1f039303abe1
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/lib/pq v1.10.9
 	github.com/sijms/go-ora/v2 v2.9.0

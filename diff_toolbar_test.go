@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,7 +34,7 @@ func TestDiffToolbar(t *testing.T) {
 		}
 	}
 	var lines []string
-	for i := 1; i <= 60; i++ {
+	for i := 1; i <= 400; i++ {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	path := filepath.Join(repo, "big.txt")
@@ -46,7 +47,7 @@ func TestDiffToolbar(t *testing.T) {
 	if _, err := gitops.RunGit(ctx, repo, "commit", "-m", "init"); err != nil {
 		t.Fatal(err)
 	}
-	for _, i := range []int{4, 24, 44} {
+	for _, i := range []int{99, 199, 299} {
 		lines[i] += " changed"
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
@@ -68,6 +69,7 @@ func TestDiffToolbar(t *testing.T) {
 			}
 		}
 	}
+	app.diffState.ExpandAll()
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
 	if app.diffState == nil {
@@ -83,6 +85,22 @@ func TestDiffToolbar(t *testing.T) {
 	tt.Frame()
 	if after, _ := app.diffState.CurrentHunk(); after != before+1 {
 		t.Fatalf("next difference should advance the hunk: %d -> %d", before, after)
+	}
+
+	// The target difference is centered even though it was already visible.
+	if err := tt.Click("下一个差异"); err != nil {
+		t.Fatalf("next difference again: %v", err)
+	}
+	tt.Frame()
+	cur, _ := app.diffState.CurrentHunk()
+	hunks := app.diffState.Hunks()
+	if cur < 0 || cur >= len(hunks) {
+		t.Fatalf("no current hunk after navigation: %d", cur)
+	}
+	top := app.diffState.LineTop(editor.DiffNew, hunks[cur].NewStart)
+	center := app.diffState.ScrollY() + app.diffState.ViewportHeight()/2
+	if math.Abs(top-center) > 30 {
+		t.Fatalf("difference should be centered: line top %.0f, viewport center %.0f", top, center)
 	}
 	if app.diffEditable {
 		t.Fatal("diff should start read-only")
