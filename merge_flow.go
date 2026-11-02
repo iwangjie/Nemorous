@@ -114,6 +114,66 @@ func (a *App) TriggerMergeOne(target aimerge.MergeTarget, pushRemote bool) {
 	a.executeMergeTargets([]aimerge.MergeTarget{target}, pushRemote)
 }
 
+// branchMergePrompt is the confirmation shown when merging the checked-out
+// branch into another local branch from the branch picker.
+type branchMergePrompt struct {
+	repoID string
+	source string
+	target string
+}
+
+// promptMergeCurrentIntoBranch asks before updating a branch that is not
+// checked out; the merge itself runs in an isolated worktree.
+func (a *App) promptMergeCurrentIntoBranch(repoID, target string) {
+	st := a.gitStatusByID(repoID)
+	if st == nil || st.Branch == "" {
+		a.showToast("warn", "当前仓库没有已检出的分支")
+		return
+	}
+	if st.Branch == target {
+		a.showToast("warn", "已经在该分支上")
+		return
+	}
+	a.closeBranchPicker()
+	a.branchMergePrompt = &branchMergePrompt{repoID: repoID, source: st.Branch, target: target}
+	a.showBranchMerge = true
+}
+
+// startBranchMerge runs the confirmed branch-to-branch merge.
+func (a *App) startBranchMerge(pushRemote bool) {
+	req := a.branchMergePrompt
+	if req == nil {
+		return
+	}
+	a.branchMergePrompt = nil
+	a.showBranchMerge = false
+	st := a.gitStatusByID(req.repoID)
+	if st == nil {
+		a.showToast("warn", "找不到目标仓库，先刷新状态")
+		return
+	}
+	repo := st.Repo
+	a.busyLabel = fmt.Sprintf("正在准备合并 %s → %s...", req.source, req.target)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		target := aimerge.InspectMergeTarget(ctx, repo, req.target)
+		a.runUI(func() {
+			a.busyLabel = ""
+			switch {
+			case target.Detached:
+				a.showToast("warn", "当前仓库处于 detached HEAD，无法合并")
+			case !target.TargetExists:
+				a.showToast("err", "未找到分支 "+req.target)
+			case target.SourceBranch != req.source:
+				a.showToast("warn", "当前分支已变化，请重新确认")
+			default:
+				a.TriggerMergeOne(target, pushRemote)
+			}
+		})
+	}()
+}
+
 func (a *App) executeMergeTargets(targets []aimerge.MergeTarget, pushRemote bool) {
 	if len(targets) == 0 {
 		a.showToast("warn", "请先勾选要合并的仓库")

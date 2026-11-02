@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
 func makeReverseMergeWorkspace(t *testing.T) string {
@@ -82,5 +84,44 @@ func TestRepositoryMenuOffersMergeMainIntoCurrentBranch(t *testing.T) {
 	tt.Frame()
 	if !app.showGitOps || app.gitOpsRepo != "demo" || app.gitOpsMergeBranch != "main" {
 		t.Fatalf("repository shortcut did not prefill merge: %+v", app.gitOpsMergeBranch)
+	}
+}
+
+func TestBranchPickerMergesCurrentBranchIntoTarget(t *testing.T) {
+	ws := makeReverseMergeWorkspace(t)
+	app := newGapTestApp(t, ws)
+	app.showBranchPicker = true
+	app.branchPickerRepoID = "demo"
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+
+	if err := tt.RightClick("main"); err != nil {
+		t.Fatalf("right-click main in branch picker: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("合并当前分支到 main") {
+		t.Fatalf("branch picker merge item missing; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("合并当前分支到 main"); err != nil {
+		t.Fatalf("click branch picker merge: %v", err)
+	}
+	tt.Frame()
+	if !app.showBranchMerge || app.branchMergePrompt == nil {
+		t.Fatal("merge confirmation did not open")
+	}
+	if app.branchMergePrompt.source != "feature/mine" || app.branchMergePrompt.target != "main" {
+		t.Fatalf("prompt = %+v", app.branchMergePrompt)
+	}
+	if err := tt.Click("合并（本地）"); err != nil {
+		t.Fatalf("confirm merge: %v", err)
+	}
+	repo := filepath.Join(ws, "demo")
+	waitApp(t, "main updated", func() bool {
+		out, _ := gitops.RunGit(context.Background(), repo, "log", "-1", "--format=%s", "main")
+		return out == "feature work"
+	})
+	out, _ := gitops.RunGit(context.Background(), repo, "branch", "--show-current")
+	if out != "feature/mine" {
+		t.Fatalf("checked-out branch changed to %q", out)
 	}
 }

@@ -285,6 +285,8 @@ type App struct {
 	manualMerges        map[string]ManualMerge
 	manualMergeRunning  bool
 	selectedMergeRepoID string
+	branchMergePrompt   *branchMergePrompt
+	showBranchMerge     bool
 	mdOpts              markdown.Options
 	aiStreamRaw         strings.Builder
 	aiVerifyReport      *aimerge.VerificationReport

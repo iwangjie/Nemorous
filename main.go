@@ -299,6 +299,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildCommandPaletteModal(c, p)
 		a.buildGlobalSearchModal(c, p)
 		a.buildBranchSwitchModal(c, p)
+		a.buildBranchMergeConfirmModal(c, p)
 		a.buildSettingsModal(c, p)
 		a.buildUpdateModal(c, p)
 		a.buildDiscardConfirmModal(c, p)

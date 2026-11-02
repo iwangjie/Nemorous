@@ -259,13 +259,33 @@ func (a *App) branchPickerHeading(c *ui.Context, p Palette, label string, count 
 	})
 }
 
-func (a *App) branchPickerRow(c *ui.Context, p Palette, key, name, age string, current, mine, withMe bool) {
-	row := ui.Row(c.Key("bp-"+key+"-"+name)).Height(30).Padding(0, 8).Gap(8).Radius(5).Cursor(ui.CursorPointer).AlignItems(ui.Center).Tooltip(name)
+func (a *App) branchPickerRow(c *ui.Context, p Palette, key, name, age string, current, mine, withMe bool, repoID string) {
+	tip := name
+	if repoID != "" {
+		tip += " · 右键可合并"
+	}
+	row := ui.Row(c.Key("bp-"+key+"-"+name)).Height(30).Padding(0, 8).Gap(8).Radius(5).Cursor(ui.CursorPointer).AlignItems(ui.Center).Tooltip(tip)
 	if row.Hovered() {
 		row.Background(p.RailBg)
 	}
 	if row.Clicked() {
 		a.pickBranch(name)
+	}
+	if repoID != "" {
+		row.PopoverMenu(func(m *ui.Menu) {
+			if st := a.gitStatusByID(repoID); st != nil && st.Branch != name {
+				if m.Item("合并当前分支到 " + name).Chosen() {
+					a.promptMergeCurrentIntoBranch(repoID, name)
+				}
+				if m.Item("合并 " + name + " 到当前分支").Chosen() {
+					a.closeBranchPicker()
+					a.openGitOpsMergeInto(repoID, name)
+				}
+			}
+			if m.Item("复制分支名").Chosen() {
+				a.pendingClipboard = name
+			}
+		})
 	}
 	row.Children(func() {
 		check := ui.Box(c).Size(12, 12).Shrink(0)
@@ -371,13 +391,13 @@ func (a *App) renderBranchPickerHome(c *ui.Context, p Palette, current string) {
 	if len(mine) > 0 {
 		a.branchPickerHeading(c, p, "我的最近提交", 0)
 		for _, bi := range mine {
-			a.branchPickerRow(c, p, "mine", bi.Name, branchAge(bi.CommitUnix), current == bi.Name, true, false)
+			a.branchPickerRow(c, p, "mine", bi.Name, branchAge(bi.CommitUnix), current == bi.Name, true, false, "")
 		}
 	}
 	if len(others) > 0 {
 		a.branchPickerHeading(c, p, "其他人的最近提交", 0)
 		for _, bi := range others {
-			a.branchPickerRow(c, p, "other", bi.Name, branchAge(bi.CommitUnix), current == bi.Name, false, false)
+			a.branchPickerRow(c, p, "other", bi.Name, branchAge(bi.CommitUnix), current == bi.Name, false, false, "")
 		}
 	}
 
@@ -424,7 +444,7 @@ func (a *App) renderBranchPickerRepo(c *ui.Context, p Palette, current string) {
 		return
 	}
 	for _, bi := range branches {
-		a.branchPickerRow(c, p, "repo", bi.Name, branchAge(bi.CommitUnix), checkBranch == bi.Name, bi.Mine, true)
+		a.branchPickerRow(c, p, "repo", bi.Name, branchAge(bi.CommitUnix), checkBranch == bi.Name, bi.Mine, true, repoID)
 	}
 }
 
@@ -484,7 +504,7 @@ func (a *App) renderBranchPickerSearch(c *ui.Context, p Palette, query, current 
 		shownAny = true
 		a.branchPickerHeading(c, p, "分支", len(matches))
 		for _, bi := range matches {
-			a.branchPickerRow(c, p, "search", bi.Name, branchAge(bi.CommitUnix), checkBranch == bi.Name, bi.Mine, true)
+			a.branchPickerRow(c, p, "search", bi.Name, branchAge(bi.CommitUnix), checkBranch == bi.Name, bi.Mine, true, a.branchPickerRepoID)
 		}
 	}
 
@@ -566,4 +586,46 @@ func branchMenuPill(c *ui.Context, p Palette, label string, active bool, build f
 		ui.Text(c, label).FontSize(12).FontWeight(weightMedium).TextColor(fg).SingleLine()
 		drawIcon(c, icoChevronDown, 11, p.TextMuted)
 	})
+}
+
+// buildBranchMergeConfirmModal confirms a branch picker's merge current →
+// target. The merge updates the target ref from a temporary worktree.
+func (a *App) buildBranchMergeConfirmModal(c *ui.Context, p Palette) {
+	if !a.showBranchMerge {
+		a.branchMergePrompt = nil
+		return
+	}
+	if a.branchMergePrompt == nil {
+		a.showBranchMerge = false
+		return
+	}
+	req := a.branchMergePrompt
+	ui.DialogBase(c, &a.showBranchMerge, func(backdrop, panel ui.Element) {
+		backdrop.Background(ui.RGBA(20, 22, 30, 0.40))
+		panel.Width(560).Padding(18).Gap(14).Radius(12).Background(p.Surface).Border(1, p.Border)
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			drawIcon(c, icoMerge, 16, p.Accent)
+			ui.Text(c, "合并当前分支到此分支").FontSize(15).FontWeight(weightBold).TextColor(p.TextPrimary)
+		})
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			badgeBox(c, req.source, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
+			drawIcon(c, icoArrowRight, 14, p.TextMuted)
+			badgeBox(c, req.target, p.Green, p.GreenSoft, ui.Color{}, 11, true)
+		})
+		ui.Text(c, "在临时 worktree 中执行，不改动当前工作区和当前分支；冲突会保留临时工作区分支，方便继续解决。不会 force push。").
+			FontSize(11).TextColor(p.TextMuted)
+		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
+			miniBtn(c, p, "取消", func() {
+				a.branchMergePrompt = nil
+				a.showBranchMerge = false
+			})
+			ui.Row(c).Gap(8).Children(func() {
+				pill(c, p, "合并（本地）", false, func() { a.startBranchMerge(false) })
+				pill(c, p, "合并并推送", true, func() { a.startBranchMerge(true) })
+			})
+		})
+	})
+	if !a.showBranchMerge {
+		a.branchMergePrompt = nil
+	}
 }
