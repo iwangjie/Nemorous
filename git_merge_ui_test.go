@@ -35,6 +35,7 @@ func makeReverseMergeWorkspace(t *testing.T) string {
 	gitRun(t, repo, "add", "base.txt")
 	gitRun(t, repo, "commit", "-m", "init")
 	gitRun(t, repo, "branch", "upstream")
+	gitRun(t, repo, "branch", "test")
 	gitRun(t, repo, "switch", "-c", "feature/mine")
 	if err := os.WriteFile(filepath.Join(repo, "mine.txt"), []byte("mine\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -146,4 +147,98 @@ func TestBranchPickerMergesCurrentBranchIntoTarget(t *testing.T) {
 		t.Fatalf("checked-out branch changed to %q", out)
 	}
 	waitMergeIdle(t, app)
+}
+
+func waitInlineMergeBar(t *testing.T, app *App, tt *ui.Tester) {
+	t.Helper()
+	for i := 0; i < 300; i++ {
+		tt.Frame()
+		if !app.mergeScanLoading && len(app.mergeTargets) > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("merge scan not ready: loading=%v targets=%+v", app.mergeScanLoading, app.mergeTargets)
+}
+
+func TestInlineMergeBarShowsPendingRepositories(t *testing.T) {
+	app := newGapTestApp(t, makeReverseMergeWorkspace(t))
+	app.showGitPanel = true
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	app.openReleaseMerge()
+	waitInlineMergeBar(t, app, tt)
+	tt.Frame()
+	if !app.mergeBarOpen {
+		t.Fatal("merge bar should stay open")
+	}
+	if !tt.HasText("已选 1/1") || !tt.HasText("合并并推送 (1)") {
+		t.Fatalf("inline merge controls missing; texts=%v", tt.Texts())
+	}
+	if !tt.HasText("+1") {
+		t.Fatal("repository row should show its pending commit count")
+	}
+	if tt.HasText("合并到目标分支：") {
+		t.Fatal("old full-page merge view must not render")
+	}
+}
+
+func TestInlineMergeBarMergesSelectedRepository(t *testing.T) {
+	ws := makeReverseMergeWorkspace(t)
+	app := newGapTestApp(t, ws)
+	app.showGitPanel = true
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	app.openReleaseMerge()
+	waitInlineMergeBar(t, app, tt)
+	tt.Frame()
+	if err := tt.Click("合并 (1)"); err != nil {
+		t.Fatalf("click inline merge: %v; texts=%v", err, tt.Texts())
+	}
+	tt.Frame()
+	repo := filepath.Join(ws, "demo")
+	waitApp(t, "test updated", func() bool {
+		out, _ := gitops.RunGit(context.Background(), repo, "show", "test:mine.txt")
+		return out == "mine"
+	})
+	out, _ := gitops.RunGit(context.Background(), repo, "branch", "--show-current")
+	if out != "feature/mine" {
+		t.Fatalf("checked-out branch changed to %q", out)
+	}
+	waitMergeIdle(t, app)
+}
+
+func TestInlineMergeBarSelectionMenu(t *testing.T) {
+	app := newGapTestApp(t, makeReverseMergeWorkspace(t))
+	app.showGitPanel = true
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	app.openReleaseMerge()
+	waitInlineMergeBar(t, app, tt)
+	tt.Frame()
+	if err := tt.Click("已选 1/1"); err != nil {
+		t.Fatalf("open selection menu: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("清空") || !tt.HasText("全选可合并") {
+		t.Fatalf("selection menu missing; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("清空"); err != nil {
+		t.Fatalf("clear selection: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("已选 0/1") || !tt.HasText("合并 (0)") {
+		t.Fatalf("selection did not clear; texts=%v", tt.Texts())
+	}
+	if err := tt.Click("已选 0/1"); err != nil {
+		t.Fatalf("reopen selection menu: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("全选可合并"); err != nil {
+		t.Fatalf("select all mergeable: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("已选 1/1") {
+		t.Fatalf("select-all did not restore selection; texts=%v", tt.Texts())
+	}
 }

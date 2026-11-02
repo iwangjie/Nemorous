@@ -668,21 +668,21 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("提交图") || !tt.HasText("全部分支") {
 		t.Fatal("expected Git history tabs and filters")
 	}
-	if err := tt.Click("合并"); err != nil {
-		t.Fatalf("failed to switch to merge sub-tab: %v", err)
+	if err := tt.Click("发版合并"); err != nil {
+		t.Fatalf("failed to open inline merge bar: %v", err)
 	}
 	tt.Frame()
-	if app.gitSubTab != "merge" {
-		t.Fatalf("expected merge sub-tab, got %s", app.gitSubTab)
+	if !app.mergeBarOpen {
+		t.Fatal("expected inline merge bar to open")
 	}
-	if app.gitEditorPct > 40 {
-		t.Fatalf("expected the merge workflow to expand the Git tool window, got top split %.1f", app.gitEditorPct)
+	if app.gitEditorPct != 62 {
+		t.Fatalf("inline merge bar must not resize the Git tool window, got top split %.1f", app.gitEditorPct)
 	}
-	if !tt.HasText("合并到目标分支：") {
-		t.Fatal("expected merge target header in Merge view")
+	if !tt.HasText("已选") || !tt.HasText("合并并推送") {
+		t.Fatal("expected inline merge selection and batch merge controls")
 	}
-	if !tt.HasText("回到开发分支") || !tt.HasText("合并方案") {
-		t.Fatal("expected repository selection, merge presets and return-to-development controls")
+	if tt.HasText("合并到目标分支：") {
+		t.Fatal("the old full-page merge view must not render")
 	}
 
 	// 6. Open the Mani tool window from the right rail

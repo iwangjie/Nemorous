@@ -61,9 +61,6 @@ func (a *App) maybeRestoreSession() {
 		a.gitEditorPct = st.GitEditorPct
 	}
 	a.showGitPanel = st.ShowGitPanel
-	if a.showGitPanel {
-		a.expandGitForMerge()
-	}
 	if st.ShowManiPanel && a.maniAvailable() {
 		a.showManiPanel = true
 	}

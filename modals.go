@@ -309,9 +309,8 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			addEntry("act-main", "操作", "全部切回默认分支", "切回 main/master 并拉取最新", p.Accent, func() {
 				a.TriggerSwitchToMain()
 			})
-			addEntry("act-merge", "操作", "合并分支到 "+a.mergeTargetBranch, "检查冲突并合并", p.Purple, func() {
-				a.enterGitMerge()
-				a.TriggerMergeScan()
+			addEntry("act-merge", "操作", "发版合并到 "+a.mergeTargetBranch, "在 Git 面板内直接选择仓库合并", p.Purple, func() {
+				a.openReleaseMerge()
 			})
 			addEntry("act-refresh", "操作", "刷新仓库状态", "⌘R", p.Accent, func() {
 				a.RefreshAsync()

@@ -570,7 +570,6 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				a.showTerminalPanel = false
 				a.showRunPanel = false
 				a.showGitPanel = true
-				a.expandGitForMerge()
 			}
 		}
 		gitRow.Children(func() {

@@ -313,8 +313,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 							})
 						}
 						pill(c, p, "合并到 "+a.mergeTargetBranch, true, func() {
-							a.enterGitMerge()
-							a.TriggerMergeScan()
+							a.openReleaseMerge()
 						})
 						if len(a.lastBatchResults) > 0 {
 							miniBtn(c, p, "操作记录", func() {

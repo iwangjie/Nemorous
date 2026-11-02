@@ -47,9 +47,12 @@ func gitGraphLane(lane, limit int) int {
 	return lane
 }
 
-// buildGitView is the Git management hub: commit graph first, merge workflow
-// one click away, so the merge screen no longer has to be a separate world.
+// buildGitView is the Git management hub. Release merges open as a slim bar
+// over the same branch tree instead of a separate full-page workflow.
 func (a *App) buildGitView(c *ui.Context, p Palette) {
+	if a.gitSubTab != "history" {
+		a.gitSubTab = "history"
+	}
 	ui.Column(c).Fill().Children(func() {
 		ui.Row(c).Height(40).Padding(0, 12).Gap(4).AlignItems(ui.Center).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
 			gitTab := func(id, label string, icon *ui.SVG) {
@@ -67,11 +70,7 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 					fg = p.TextPrimary
 				}
 				if el.Clicked() {
-					if id == "merge" {
-						a.enterGitMerge()
-					} else {
-						a.gitSubTab = id
-					}
+					a.gitSubTab = id
 				}
 				el.Children(func() {
 					drawIcon(kc, icon, 12, fg)
@@ -79,8 +78,12 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 				})
 			}
 			gitTab("history", "提交图", icoBranch)
-			gitTab("merge", "合并", icoMerge)
 			ui.Spacer(c)
+			mergeLabel := "发版合并"
+			if n := a.mergeableCount(); n > 0 {
+				mergeLabel = fmt.Sprintf("发版合并 %d", n)
+			}
+			iconPill(c, p, icoMerge, mergeLabel, a.mergeBarOpen, func() { a.toggleReleaseMerge() })
 			iconPill(c, p, icoBranch, "Git 操作", false, func() { a.openGitOps("") })
 			iconAction(c, p, "git-pr", icoPR, "GitHub PR / CI", false, func() { a.openGitHub() })
 			if a.gitSubTab == "history" {
@@ -98,12 +101,9 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 				drawIcon(closeKc, icoClose, 11, p.TextMuted)
 			})
 		})
-		if a.gitSubTab == "merge" {
-			a.buildMergeView(c, p)
-			return
-		}
 		a.ensureGitLog()
 		ui.Column(c).Grow(1).Fill().Children(func() {
+			a.buildReleaseMergeBar(c, p)
 			a.buildGitFilterBar(c, p)
 			ui.Split(c, &a.gitLeftWidth,
 				func() { a.buildGitBranchTree(c, p) },
@@ -116,25 +116,6 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 			).Grow(1).Fill()
 		})
 	})
-}
-
-// enterGitMerge opens the merge workflow and gives the docked Git window enough
-// height on small screens; history keeps the normal editor/tool-window split.
-func (a *App) enterGitMerge() {
-	a.showGitPanel = true
-	a.gitSubTab = "merge"
-	a.expandGitForMerge()
-}
-
-// expandGitForMerge only grows a short Git window, preserving a taller split
-// the user chose by dragging.
-func (a *App) expandGitForMerge() {
-	if a.gitSubTab != "merge" {
-		return
-	}
-	if a.gitEditorPct > 50 {
-		a.gitEditorPct = 40
-	}
 }
 
 func (a *App) ensureGitLog() {
@@ -486,6 +467,7 @@ func (a *App) buildGitBranchTree(c *ui.Context, p Palette) {
 					if m.Item("显示全部仓库").Chosen() {
 						a.setGitRepoFilter("")
 					}
+					a.mergeRepoMenu(m, stCopy.Repo.ID)
 					if src := a.mergeSourceForRepo(stCopy.Repo.ID); src != "" {
 						if m.Item("合并 " + src + " 到当前分支").Chosen() {
 							a.mergeBranchIntoCurrent(stCopy.Repo.ID, src)
@@ -507,8 +489,9 @@ func (a *App) buildGitBranchTree(c *ui.Context, p Palette) {
 					})
 					ui.Text(rkc, stCopy.Repo.Name).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
 					if stCopy.Branch != "" {
-						ui.Text(rkc, stCopy.Branch).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1).Shrink(0)
+						ui.Text(rkc, stCopy.Branch).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1).Shrink(1)
 					}
+					a.buildMergeRepoStatus(rkc, p, stCopy)
 				})
 				if repoCollapsed {
 					continue

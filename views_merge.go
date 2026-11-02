@@ -3,143 +3,70 @@ package main
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/markdown"
 	"github.com/iwangjie/nemorous/internal/aimerge"
+	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
-func (a *App) buildMergeView(c *ui.Context, p Palette) {
-	// A scan reads refs and counts; it never simulates a merge.
-	if !a.mergeScanLoading && (len(a.mergeTargets) == 0 || time.Since(a.mergeScanAt) > 30*time.Second) {
+// mergeableCount is the number of repositories with commits to merge into the
+// current target branch.
+func (a *App) mergeableCount() int {
+	n := 0
+	for _, target := range a.mergeTargets {
+		if mergeableTarget(target) {
+			n++
+		}
+	}
+	return n
+}
+
+// mergeSelectionStats counts selected mergeable repositories and active
+// conflict worktrees for the compact merge bar.
+func (a *App) mergeSelectionStats() (selected, mergeable, conflicts int) {
+	for _, target := range a.mergeTargets {
+		if mergeableTarget(target) {
+			mergeable++
+			if a.mergeRepoChecked(target.Repo.ID) {
+				if _, hasManual := a.manualMerges[target.Repo.ID]; !hasManual {
+					selected++
+				}
+			}
+		}
+	}
+	for range a.manualMerges {
+		conflicts++
+	}
+	return selected, mergeable, conflicts
+}
+
+// toggleReleaseMerge opens the inline merge bar and refreshes its scan.
+func (a *App) toggleReleaseMerge() {
+	a.mergeBarOpen = !a.mergeBarOpen
+	if a.mergeBarOpen {
+		a.ensureMergeScan()
+	}
+}
+
+// openReleaseMerge opens the Git tool window with the inline merge bar visible.
+func (a *App) openReleaseMerge() {
+	a.showGitPanel = true
+	a.showLogPanel = false
+	a.showTerminalPanel = false
+	a.showRunPanel = false
+	a.mergeBarOpen = true
+	a.ensureMergeScan()
+}
+
+func (a *App) ensureMergeScan() {
+	if a.mergeScanLoading {
+		return
+	}
+	if len(a.mergeTargets) == 0 || time.Since(a.mergeScanAt) > 30*time.Second {
 		a.TriggerMergeScan()
 	}
-
-	selectedClean := 0
-	selectedAny := 0
-	conflictCnt := 0
-	for _, target := range a.mergeTargets {
-		checked := a.mergeRepoChecked(target.Repo.ID)
-		if checked {
-			selectedAny++
-		}
-		if _, hasManual := a.manualMerges[target.Repo.ID]; checked && mergeableTarget(target) && !hasManual {
-			selectedClean++
-		}
-		if _, ok := a.manualMerges[target.Repo.ID]; ok {
-			conflictCnt++
-		}
-	}
-	selectedTarget := a.mergeTargetByID(a.selectedMergeRepoID)
-
-	targetPreset := func(branch string) {
-		active := a.mergeTargetBranch == branch
-		pill(c.Key("preset-"+branch), p, branch, active, func() {
-			a.mergeTargetBranch = branch
-			a.mergeTargets = nil
-			a.TriggerMergeScan()
-		})
-	}
-
-	ui.Column(c).Grow(1).Fill().Padding(18, 22).Gap(12).Background(p.AppBg).Children(func() {
-		ui.Column(c).Padding(12, 16).Gap(10).Radius(10).Background(p.Surface).Border(1, p.Border).Children(func() {
-			ui.Row(c).Wrap().Justify(ui.SpaceBetween).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					drawIcon(c, icoMerge, 15, p.Accent)
-					ui.Text(c, "合并到目标分支：").FontSize(13).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-					for _, branch := range a.mergeTargetOptions() {
-						targetPreset(branch)
-					}
-					statusLabel := "刷新状态"
-					if a.mergeScanLoading {
-						statusLabel = "读取中…"
-					}
-					miniBtn(c, p, statusLabel, func() {
-						a.TriggerMergeScan()
-					})
-				})
-
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					iconPill(c, p, icoBranch, "回到开发分支", false, func() {
-						a.TriggerReturnToDevelopmentBranches()
-					})
-					if selectedClean > 0 {
-						pill(c, p, fmt.Sprintf("合并选中 (%d)", selectedClean), false, func() {
-							a.TriggerExecuteMerges(false)
-						})
-						pill(c, p, fmt.Sprintf("合并并推送 (%d)", selectedClean), true, func() {
-							a.TriggerExecuteMerges(true)
-						})
-					} else {
-						pillDisabled(c, p, "合并选中 (0)")
-						pillDisabled(c, p, "合并并推送 (0)")
-					}
-					ghostBtn(c, p, icoMore, "", a.showMergeAdvanced, func() {
-						a.showMergeAdvanced = !a.showMergeAdvanced
-					})
-				})
-			})
-
-			ui.Row(c).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, fmt.Sprintf("合并方案（已选 %d/%d 个仓库）：", selectedAny, len(a.mergeTargets))).FontSize(11).TextColor(p.TextMuted)
-				for _, preset := range a.cfg.MergePresets {
-					prCopy := preset
-					pill(c.Key("mpreset-"+prCopy.Name), p, fmt.Sprintf("%s · %s (%d)", prCopy.Name, prCopy.TargetBranch, len(prCopy.RepoIDs)), false, func() {
-						a.applyMergePreset(prCopy)
-					})
-					miniBtn(c.Key("mpreset-del-"+prCopy.Name), p, "×", func() {
-						a.cfg.DeleteMergePreset(prCopy.Name)
-						_ = a.cfg.Save()
-					})
-				}
-				ui.TextInput(c.Key("merge-preset-in"), &a.mergePresetInput).Placeholder("方案名称，如：合并到 test").Width(180)
-				miniBtn(c, p, "保存当前勾选", func() {
-					a.saveMergePreset()
-				})
-			})
-
-			if a.showMergeAdvanced {
-				ui.Column(c).Padding(8, 0, 0, 0).Gap(8).BorderWidth(1, 0, 0, 0).BorderColor(p.BorderSubtle).Children(func() {
-					ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, fmt.Sprintf("直接合并：在临时 worktree 中执行；冲突会保留工作区，绝不 force push。AI 助手：%s", a.aiAgentName)).
-							FontSize(11).TextColor(p.TextMuted)
-					})
-					ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-						ui.Text(c, "自定义目标分支：").FontSize(11.5).TextColor(p.TextMuted)
-						branchFuzzyInput(
-							c.Key("merge-target-in"),
-							p,
-							&a.mergeTargetBranch,
-							a.BranchCandidatesForRepo(""),
-							"搜索或输入其他目标分支...",
-							200,
-							0,
-							false,
-							nil,
-							func(_ string) {
-								a.mergeTargets = nil
-								a.TriggerMergeScan()
-							},
-						)
-					})
-				})
-			}
-			ui.Text(c, "反合 main：在顶部分支下拉或提交图左侧分支树右键分支，选择「合并 main 到当前分支」。").FontSize(10).TextColor(p.TextMuted)
-		})
-
-		showDetail := a.mergeRunning || a.aiVerifyReport != nil || selectedTarget != nil
-		if showDetail {
-			ui.SplitPercent(c, &a.mergeDetailPct,
-				func() { a.buildMergeTable(c, p) },
-				func() { a.buildMergeDetail(c, p, selectedTarget) },
-			).Grow(1).FillHeight()
-		} else {
-			a.buildMergeTable(c, p)
-		}
-	})
 }
 
 func (a *App) mergeTargetOptions() []string {
@@ -160,300 +87,274 @@ func (a *App) mergeTargetOptions() []string {
 	return out
 }
 
-func (a *App) buildMergeTable(c *ui.Context, p Palette) {
-	allChecked := len(a.mergeTargets) > 0
-	for _, target := range a.mergeTargets {
-		if mergeableTarget(target) && !a.mergeRepoChecked(target.Repo.ID) {
-			allChecked = false
-			break
-		}
+// buildReleaseMergeBar renders the whole release-merge workflow as a slim
+// strip over the branch tree: target, selection, batch actions and presets.
+func (a *App) buildReleaseMergeBar(c *ui.Context, p Palette) {
+	if !a.mergeBarOpen {
+		return
 	}
+	a.ensureMergeScan()
+	selected, mergeable, conflicts := a.mergeSelectionStats()
 
-	ui.Column(c).Grow(1).FillHeight().Radius(10).Background(p.Surface).Border(1, p.Border).Children(func() {
-		ui.Row(c).Padding(10, 16).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
-			ui.Box(c).Width(30).Children(func() {
-				chk := ui.Box(c.Key("merge-all")).Size(15, 15).Radius(4).Cursor(ui.CursorPointer).Center()
-				if allChecked {
-					chk.Background(p.Accent)
-				} else {
-					chk.Background(p.Surface2).Border(1, p.BorderStrong)
+	ui.Column(c).FillWidth().BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
+		ui.Row(c).Height(38).Padding(0, 10).Gap(7).AlignItems(ui.Center).Background(p.RailBg).Children(func() {
+			drawIcon(c, icoMerge, 13, p.Accent)
+			menuIconPill(c, p, "merge-target", icoBranch, "→ "+a.mergeTargetBranch, true, func(m *ui.Menu) {
+				for _, branch := range a.mergeTargetOptions() {
+					branch := branch
+					if m.Item(branch).Radio(a.mergeTargetBranch == branch).Chosen() {
+						a.mergeTargetBranch = branch
+						a.mergeTargets = nil
+						a.TriggerMergeScan()
+					}
 				}
-				if chk.Clicked() {
-					next := !allChecked
+			})
+			menuIconPill(c, p, "merge-pick", icoCheck, fmt.Sprintf("已选 %d/%d", selected, mergeable), false, func(m *ui.Menu) {
+				if m.Item("全选可合并").Chosen() {
 					for _, target := range a.mergeTargets {
 						if mergeableTarget(target) {
-							a.mergeCheckedRepos[target.Repo.ID] = next
+							a.mergeCheckedRepos[target.Repo.ID] = true
 						}
 					}
 				}
-				chk.Children(func() {
-					if allChecked {
-						drawIcon(c, icoCheck, 11, p.AccentText)
+				if m.Item("清空").Chosen() {
+					for _, target := range a.mergeTargets {
+						a.mergeCheckedRepos[target.Repo.ID] = false
 					}
-				})
+				}
+				if len(a.mergeTargets) > 0 {
+					m.Separator()
+				}
+				for _, target := range a.mergeTargets {
+					targetCopy := target
+					_, manual := a.manualMerges[targetCopy.Repo.ID]
+					label := targetCopy.Repo.Name + " · " + targetCopy.SourceBranch + " → " + targetCopy.TargetBranch
+					switch {
+					case manual:
+						label += " · 冲突待处理"
+					case !targetCopy.TargetExists:
+						label += " · 无目标分支"
+					case targetCopy.AheadCommits == 0:
+						label += " · 无新提交"
+					}
+					item := m.Item(label).Disabled(manual || !mergeableTarget(targetCopy))
+					item.Checked(a.mergeRepoChecked(targetCopy.Repo.ID))
+					if item.Chosen() {
+						a.mergeCheckedRepos[targetCopy.Repo.ID] = !a.mergeRepoChecked(targetCopy.Repo.ID)
+					}
+				}
 			})
-			ui.Box(c).Width(150).Children(func() {
-				ui.Text(c, "仓库").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
-			})
-			ui.Box(c).Width(160).Children(func() {
-				ui.Text(c, "合并方向").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
-			})
-			ui.Box(c).Grow(1).Children(func() {
-				ui.Text(c, "状态说明").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
-			})
-			ui.Box(c).Width(190).AlignItems(ui.End).Children(func() {
-				ui.Text(c, "操作").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextMuted).SingleLine()
+			if a.mergeScanLoading {
+				ui.Spinner(c).Size(12, 12)
+			}
+			ui.Spacer(c)
+			if selected > 0 {
+				pill(c, p, fmt.Sprintf("合并 (%d)", selected), false, func() { a.TriggerExecuteMerges(false) })
+				pill(c, p, fmt.Sprintf("合并并推送 (%d)", selected), true, func() { a.TriggerExecuteMerges(true) })
+			} else {
+				pillDisabled(c, p, "合并 (0)")
+				pillDisabled(c, p, "合并并推送 (0)")
+			}
+			menuIconPill(c, p, "merge-more", icoMore, "", false, func(m *ui.Menu) {
+				if m.Item("刷新状态").Chosen() {
+					a.mergeTargets = nil
+					a.TriggerMergeScan()
+				}
+				if m.Item("全部切回开发分支").Chosen() {
+					a.TriggerReturnToDevelopmentBranches()
+				}
+				if len(a.cfg.MergePresets) > 0 {
+					m.Separator()
+					for _, preset := range a.cfg.MergePresets {
+						presetCopy := preset
+						label := fmt.Sprintf("方案：%s · %s (%d)", presetCopy.Name, presetCopy.TargetBranch, len(presetCopy.RepoIDs))
+						if m.Item(label).Chosen() {
+							a.applyMergePreset(presetCopy)
+						}
+					}
+				}
+				m.Separator()
+				if m.Item("保存当前选择为方案…").Chosen() {
+					if strings.TrimSpace(a.mergePresetInput) == "" {
+						a.mergePresetInput = "合并到 " + a.mergeTargetBranch
+					}
+					a.mergePresetSaveOpen = true
+				}
+				if conflicts > 0 {
+					if m.Item("清理全部临时冲突工作区").Chosen() {
+						for id := range a.manualMerges {
+							a.cleanupManualMerge(id)
+						}
+					}
+				}
 			})
 		})
-
-		ui.Scroll(c).Grow(1).Children(func() {
-			for idx, target := range a.mergeTargets {
-				targetCopy := target
-				selected := a.selectedMergeRepoID == targetCopy.Repo.ID
-				checked := a.mergeRepoChecked(targetCopy.Repo.ID)
-				badge := repoBadgeColors(targetCopy.Repo.ColorIndex, p.IsDark)
-				rowBg := p.Surface
-				if selected {
-					rowBg = p.ActiveRowBg
-				}
-				manual, hasManual := a.manualMerges[targetCopy.Repo.ID]
-
-				kc := c.Key("mt-" + targetCopy.Repo.ID)
-				row := ui.Row(kc).Padding(11, 16).Background(rowBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-				if idx < len(a.mergeTargets)-1 {
-					row.BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
-				}
-				if row.Hovered() && !selected {
-					row.Background(p.RailBg)
-				}
-				if row.Clicked() {
-					a.selectedMergeRepoID = targetCopy.Repo.ID
-				}
-				row.Children(func() {
-					ui.Box(kc).Width(30).Shrink(0).Children(func() {
-						chk := ui.Box(kc).Size(15, 15).Radius(4).Cursor(ui.CursorPointer).Center()
-						if checked {
-							chk.Background(p.Accent)
-						} else {
-							chk.Background(p.Surface2).Border(1, p.BorderStrong)
-						}
-						if chk.Clicked() {
-							a.mergeCheckedRepos[targetCopy.Repo.ID] = !checked
-						}
-						chk.Children(func() {
-							if checked {
-								drawIcon(kc, icoCheck, 11, p.AccentText)
-							}
-						})
-					})
-
-					ui.Row(kc).Width(150).Gap(10).AlignItems(ui.Center).Shrink(0).Children(func() {
-						ui.Box(kc).Size(26, 26).Radius(6).Background(badge.Bg).Center().Shrink(0).Children(func() {
-							ui.Text(kc, targetCopy.Repo.Monogram).FontSize(10.5).FontWeight(weightBold).TextColor(badge.Text)
-						})
-						ui.Text(kc, targetCopy.Repo.Name).FontSize(13).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1)
-					})
-
-					ui.Row(kc).Width(160).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
-						source := targetCopy.SourceBranch
-						if targetCopy.Detached {
-							source = "(detached)"
-						}
-						badgeBox(kc, fmt.Sprintf("%s → %s", source, targetCopy.TargetBranch), p.TextControl, p.Surface2, ui.Color{}, 11, false)
-					})
-
-					ui.Column(kc).Grow(1).Padding(0, 10, 0, 0).Children(func() {
-						switch {
-						case hasManual:
-							ui.Text(kc, fmt.Sprintf("冲突待解决（%d 个文件），临时工作区已保留", len(manual.Conflicts))).FontSize(11.5).TextColor(p.Danger)
-						case !targetCopy.TargetExists:
-							ui.Text(kc, fmt.Sprintf("未找到目标分支 %s", targetCopy.TargetBranch)).FontSize(11.5).TextColor(p.Amber)
-						case targetCopy.Detached:
-							ui.Text(kc, "detached HEAD，无法合并").FontSize(11.5).TextColor(p.Amber)
-						case targetCopy.SourceBranch == targetCopy.TargetBranch:
-							ui.Text(kc, "已在目标分支").FontSize(11.5).TextColor(p.TextMuted)
-						case targetCopy.AheadCommits == 0:
-							ui.Text(kc, "没有需要合并的提交").FontSize(11.5).TextColor(p.TextMuted)
-						default:
-							ui.Text(kc, fmt.Sprintf("%d 个提交待合并", targetCopy.AheadCommits)).FontSize(12).TextColor(p.TextSecondary)
-						}
-						if targetCopy.Dirty {
-							ui.Text(kc, "未提交改动不会进入合并").FontSize(10.5).TextColor(p.Amber)
-						}
-					})
-
-					ui.Row(kc).Width(190).Justify(ui.End).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
-						if hasManual {
-							miniBtn(kc, p, "处理冲突", func() {
-								a.selectedMergeRepoID = targetCopy.Repo.ID
-							})
-							return
-						}
-						if mergeableTarget(targetCopy) {
-							badgeBox(kc, fmt.Sprintf("待合并 %d", targetCopy.AheadCommits), p.Green, p.GreenSoft, ui.Color{}, 10.5, true)
-							miniBtn(kc, p, "合并", func() {
-								a.TriggerMergeOne(targetCopy, false)
-							})
-							miniBtn(kc, p, "合并+推", func() {
-								a.TriggerMergeOne(targetCopy, true)
-							})
-						} else if targetCopy.TargetExists && targetCopy.AheadCommits == 0 && targetCopy.SourceBranch != targetCopy.TargetBranch {
-							ui.Text(kc, "无新提交").FontSize(11).TextColor(p.TextMuted)
-						}
-					})
+		if a.mergePresetSaveOpen {
+			ui.Row(c).Height(34).Padding(0, 10).Gap(6).AlignItems(ui.Center).Background(p.RailBg).Children(func() {
+				ui.Text(c, "方案名称").FontSize(10.5).TextColor(p.TextMuted).Shrink(0)
+				ui.TextInput(c.Key("merge-preset-in"), &a.mergePresetInput).Placeholder("如：合并到 test").Width(180)
+				miniBtn(c, p, "保存", func() {
+					a.saveMergePreset()
+					a.mergePresetSaveOpen = false
+				})
+				miniBtn(c, p, "取消", func() { a.mergePresetSaveOpen = false })
+			})
+		}
+		if a.aiVerifyReport != nil && a.aiVerifyRepo != nil {
+			a.buildInlineAIMergeReport(c, p)
+		} else if a.mergeRunning && a.aiVerifyRepo != nil {
+			if last := lastNonEmptyLine(a.aiStreamRaw.String()); last != "" {
+				ui.Row(c).Height(26).Padding(0, 10).Gap(6).AlignItems(ui.Center).Background(p.Surface).Children(func() {
+					ui.Spinner(c).Size(11, 11)
+					ui.Text(c, last).FontSize(10).TextColor(p.TextMuted).MaxLines(1).Grow(1)
 				})
 			}
-		})
+		}
 	})
 }
 
-func (a *App) buildMergeDetail(c *ui.Context, p Palette, target *aimerge.MergeTarget) {
-	ui.Column(c).FillWidth().FillHeight().Radius(10).Background(p.Surface).Border(1, p.Border).Children(func() {
-		if target != nil {
-			targetCopy := *target
-			manual, hasManual := a.manualMerges[targetCopy.Repo.ID]
-			ui.Column(c).Padding(14).Gap(10).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
-				ui.Row(c).Justify(ui.SpaceBetween).Wrap().Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Row(c).Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
-						ui.Text(c, targetCopy.Repo.Name).FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-						badgeBox(c, fmt.Sprintf("%s → %s", targetCopy.SourceBranch, targetCopy.TargetBranch), p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
-					})
-					ui.Row(c).Gap(6).Children(func() {
-						if mergeableTarget(targetCopy) && !hasManual {
-							pill(c, p, "合并", false, func() { a.TriggerMergeOne(targetCopy, false) })
-							pill(c, p, "合并并推送", true, func() { a.TriggerMergeOne(targetCopy, true) })
-							miniBtn(c, p, "AI 合并", func() { a.triggerAIForTarget(targetCopy) })
-						}
-					})
-				})
-
-				ui.Row(c).Wrap().Gap(6).Children(func() {
-					if targetCopy.AheadCommits > 0 {
-						badgeBox(c, fmt.Sprintf("待合并 %d 个提交", targetCopy.AheadCommits), p.Green, p.GreenSoft, ui.Color{}, 10.5, true)
-					}
-					if targetCopy.BehindCommits > 0 {
-						badgeBox(c, fmt.Sprintf("目标领先 %d", targetCopy.BehindCommits), p.Amber, p.AmberSoft, ui.Color{}, 10.5, false)
-					}
-					if targetCopy.Dirty {
-						badgeBox(c, "有未提交改动", p.Amber, p.AmberSoft, ui.Color{}, 10.5, false)
-					}
-					if hasManual {
-						badgeBox(c, "冲突待解决", p.Danger, p.DangerSoft, ui.Color{}, 10.5, true)
-					}
-				})
-
-				if len(targetCopy.CommitPreview) > 0 {
-					ui.Column(c).Padding(8, 10).Gap(4).Radius(6).Background(p.RailBg).Children(func() {
-						ui.Text(c, "待合并的提交：").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextMuted)
-						ui.Text(c, strings.Join(targetCopy.CommitPreview, "\n")).FontSize(11.5).TextColor(p.TextSecondary).MaxLines(8)
-					})
-				}
-
-				if hasManual {
-					ui.Column(c).Padding(8, 10).Gap(6).Radius(6).Background(p.RailBg).Children(func() {
-						ui.Text(c, "手动合并工作区").FontSize(11).FontWeight(weightSemibold).TextColor(p.TextSecondary)
-						ui.Text(c, manual.Path).FontSize(10.5).TextColor(p.TextMuted).MaxLines(2)
-						ui.Row(c).Wrap().Gap(6).Children(func() {
-							pill(c, p, "解决冲突", true, func() { a.openConflictResolver(targetCopy.Repo.ID) })
-							pill(c, p, "完成并推送", false, func() { a.finishManualMerge(targetCopy.Repo.ID, true) })
-							miniBtn(c, p, "完成（本地）", func() { a.finishManualMerge(targetCopy.Repo.ID, false) })
-							miniBtn(c, p, "放弃", func() { a.cleanupManualMerge(targetCopy.Repo.ID) })
-							miniBtn(c, p, "打开目录", func() { _ = revealPath(manual.Path) })
-							miniBtn(c, p, "复制路径", func() { a.pendingClipboard = manual.Path })
-						})
-						for _, rel := range manual.Conflicts {
-							relCopy := rel
-							ck := c.Key("mc-" + targetCopy.Repo.ID + "-" + relCopy)
-							ui.Row(ck).Gap(6).AlignItems(ui.Center).Children(func() {
-								ui.Text(ck, relCopy).FontSize(11).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
-								miniBtn(ck, p, "打开", func() {
-									_ = openPath(filepath.Join(manual.Path, relCopy))
-								})
-							})
-						}
-						ui.Text(c, "在临时分支解决冲突后点“完成”：工具会提交、更新本地目标分支，推送需明确点击。").FontSize(10.5).TextColor(p.TextMuted)
-					})
-				}
-			})
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
 		}
+	}
+	return ""
+}
 
-		if a.aiVerifyReport != nil && a.aiVerifyRepo != nil {
-			rep := a.aiVerifyReport
-			repo := *a.aiVerifyRepo
-			headerCol := p.Green
-			headerTitle := "冲突已解决并通过安全检查"
-			if !rep.Passed {
-				headerCol = p.Danger
-				headerTitle = "安全检查未通过：" + rep.FailureReason
+// buildMergeRepoStatus adds each repository's release-merge state to its row in
+// the branch tree. It only runs while the merge bar is open.
+func (a *App) buildMergeRepoStatus(c *ui.Context, p Palette, st gitops.RepoStatus) {
+	if !a.mergeBarOpen {
+		return
+	}
+	target := a.mergeTargetByID(st.Repo.ID)
+	if target == nil {
+		return
+	}
+	if _, manual := a.manualMerges[st.Repo.ID]; manual {
+		badgeBox(c, "冲突待处理", p.Danger, p.DangerSoft, ui.Color{}, 9.5, true)
+		return
+	}
+	switch {
+	case target.Detached:
+		ui.Text(c, "detached").FontSize(9.5).TextColor(p.Amber)
+	case !target.TargetExists:
+		ui.Text(c, "无 "+a.mergeTargetBranch).FontSize(9.5).TextColor(p.Amber)
+	case target.SourceBranch == target.TargetBranch:
+		ui.Text(c, "已在目标分支").FontSize(9.5).TextColor(p.TextMuted)
+	case target.AheadCommits == 0:
+		ui.Text(c, "无新提交").FontSize(9.5).TextColor(p.TextMuted)
+	default:
+		tip := fmt.Sprintf("%d 个提交待合并", target.AheadCommits)
+		if len(target.CommitPreview) > 0 {
+			preview := target.CommitPreview[:min(5, len(target.CommitPreview))]
+			tip += "\n" + strings.Join(preview, "\n")
+		}
+		badge := ui.Row(c).Padding(2, 7).Radius(5).Background(p.GreenSoft).AlignItems(ui.Center).Shrink(0).Tooltip(tip)
+		badge.Children(func() {
+			ui.Text(c, fmt.Sprintf("+%d", target.AheadCommits)).FontSize(9.5).FontWeight(weightSemibold).TextColor(p.Green).SingleLine()
+		})
+	}
+}
+
+// mergeRepoMenu adds forward release-merge actions to a repository's context
+// menu without opening a separate workflow.
+func (a *App) mergeRepoMenu(m *ui.Menu, repoID string) {
+	target := a.mergeTargetByID(repoID)
+	if target == nil {
+		return
+	}
+	targetCopy := *target
+	if _, manual := a.manualMerges[repoID]; manual {
+		if m.Item("解决冲突").Chosen() {
+			a.openConflictResolver(repoID)
+		}
+		if m.Item("完成并推送").Chosen() {
+			a.finishManualMerge(repoID, true)
+		}
+		if m.Item("完成（本地）").Chosen() {
+			a.finishManualMerge(repoID, false)
+		}
+		if m.Item("放弃临时工作区").Chosen() {
+			a.cleanupManualMerge(repoID)
+		}
+		return
+	}
+	if !mergeableTarget(targetCopy) {
+		return
+	}
+	if m.Item("合并到 " + targetCopy.TargetBranch).Chosen() {
+		a.TriggerMergeOne(targetCopy, false)
+	}
+	if m.Item("合并并推送到 " + targetCopy.TargetBranch).Chosen() {
+		a.TriggerMergeOne(targetCopy, true)
+	}
+	if m.Item("AI 合并").Chosen() {
+		a.triggerAIForTarget(targetCopy)
+	}
+}
+
+// buildInlineAIMergeReport keeps the AI verification result visible without a
+// detail pane: one compact line and an optional check list.
+func (a *App) buildInlineAIMergeReport(c *ui.Context, p Palette) {
+	rep := a.aiVerifyReport
+	repo := *a.aiVerifyRepo
+	col := p.Green
+	title := "AI 已解决冲突并通过检查 · " + repo.Name
+	if !rep.Passed {
+		col = p.Danger
+		title = "AI 检查未通过 · " + repo.Name + "：" + rep.FailureReason
+	}
+	ui.Column(c).FillWidth().Background(p.Surface).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
+		ui.Row(c).Padding(5, 10).Gap(6).AlignItems(ui.Center).Children(func() {
+			drawIcon(c, icoCheck, 12, col)
+			ui.Text(c, title).FontSize(10.5).TextColor(col).MaxLines(1).Grow(1)
+			if rep.Passed {
+				pill(c, p, "确认并推送", true, func() {
+					if err := aimerge.ConfirmAndPushAIMerge(context.Background(), repo.AbsPath, a.mergeTargetBranch, rep.OrigBranch, true); err != nil {
+						a.showToast("err", err.Error())
+						return
+					}
+					a.showToast("ok", repo.Name+" 已推送合并结果")
+					a.aiVerifyReport = nil
+					a.RefreshAsync()
+					a.TriggerMergeScan()
+				})
 			}
-			ui.Column(c).Padding(14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Children(func() {
-				ui.Text(c, headerTitle).FontSize(13).FontWeight(weightSemibold).TextColor(headerCol)
-				ui.Row(c).Wrap().Gap(6).Children(func() {
-					if rep.Passed {
-						pill(c, p, "确认合并并推送", true, func() {
-							err := aimerge.ConfirmAndPushAIMerge(context.Background(), repo.AbsPath, a.mergeTargetBranch, rep.OrigBranch, true)
-							if err != nil {
-								a.showToast("err", err.Error())
-							} else {
-								a.showToast("ok", fmt.Sprintf("%s 已推送合并结果并切回 %s", repo.Name, rep.OrigBranch))
-								a.aiVerifyReport = nil
-								a.RefreshAsync()
-								a.TriggerMergeScan()
-							}
-						})
-					}
-					pill(c, p, "仅保留本地合并", false, func() {
-						_ = aimerge.ConfirmAndPushAIMerge(context.Background(), repo.AbsPath, a.mergeTargetBranch, rep.OrigBranch, false)
-						a.showToast("ok", fmt.Sprintf("%s 已保留本地合并并切回 %s", repo.Name, rep.OrigBranch))
-						a.aiVerifyReport = nil
-						a.RefreshAsync()
-					})
-					pill(c, p, "撤销合并", false, func() {
-						_ = aimerge.RollbackAIMerge(context.Background(), repo.AbsPath, a.mergeTargetBranch, rep.OrigBranch, rep.PreTargetSHA)
-						a.showToast("warn", fmt.Sprintf("%s 已恢复到合并前状态", repo.Name))
-						a.aiVerifyReport = nil
-						a.RefreshAsync()
-					})
-				})
-				chkToggle := ui.Row(c.Key("mchk-toggle")).Padding(4, 0).Gap(4).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-				if chkToggle.Clicked() {
-					a.showMergeCheckDetails = !a.showMergeCheckDetails
-				}
-				chkToggle.Children(func() {
-					chev := icoChevronRight
-					if a.showMergeCheckDetails {
-						chev = icoChevronDown
-					}
-					drawIcon(c, chev, 11, p.TextMuted)
-					ui.Text(c, fmt.Sprintf("查看检查明细 (%d 项)", len(rep.Checks))).FontSize(11).TextColor(p.TextMuted)
-				})
-				if a.showMergeCheckDetails {
-					for _, chk := range rep.Checks {
-						chkCopy := chk
+			miniBtn(c, p, "仅本地", func() {
+				_ = aimerge.ConfirmAndPushAIMerge(context.Background(), repo.AbsPath, a.mergeTargetBranch, rep.OrigBranch, false)
+				a.showToast("ok", repo.Name+" 已保留本地合并")
+				a.aiVerifyReport = nil
+				a.RefreshAsync()
+			})
+			miniBtn(c, p, "撤销", func() {
+				_ = aimerge.RollbackAIMerge(context.Background(), repo.AbsPath, a.mergeTargetBranch, rep.OrigBranch, rep.PreTargetSHA)
+				a.showToast("warn", repo.Name+" 已恢复到合并前")
+				a.aiVerifyReport = nil
+				a.RefreshAsync()
+			})
+			miniBtn(c, p, fmt.Sprintf("检查明细 (%d)", len(rep.Checks)), func() {
+				a.showMergeCheckDetails = !a.showMergeCheckDetails
+			})
+		})
+		if a.showMergeCheckDetails {
+			ui.Scroll(c).MaxHeight(120).Children(func() {
+				for _, chk := range rep.Checks {
+					chkCopy := chk
+					ck := c.Key("mchk-" + chkCopy.Name)
+					ui.Row(ck).Padding(3, 10).Gap(6).Background(p.RailBg).Children(func() {
 						col := p.Green
 						label := "通过"
 						if !chkCopy.Passed {
 							col = p.Danger
 							label = "失败"
 						}
-						ck := c.Key("chk-" + chkCopy.Name)
-						ui.Row(ck).Padding(4, 8).Gap(6).Radius(4).Background(p.Surface).AlignItems(ui.Center).Children(func() {
-							ui.Text(ck, label).FontSize(10.5).FontWeight(weightBold).TextColor(col).Width(32)
-							ui.Text(ck, chkCopy.Name).FontSize(11).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(140)
-							ui.Text(ck, chkCopy.Detail).FontSize(11).TextColor(p.TextMuted).Grow(1)
-						})
-					}
-				}
-			})
-		}
-
-		mdText := a.aiStreamRaw.String()
-		if mdText != "" {
-			ui.Scroll(c).Grow(1).Padding(14).Children(func() {
-				if a.mergeRunning {
-					markdown.Stream(c, mdText, &a.mdOpts).FillWidth()
-				} else {
-					markdown.View(c, mdText, &a.mdOpts).FillWidth()
+						ui.Text(ck, label).FontSize(9.5).FontWeight(weightBold).TextColor(col).Width(30)
+						ui.Text(ck, chkCopy.Name).FontSize(10).FontWeight(weightMedium).TextColor(p.TextPrimary).Width(130)
+						ui.Text(ck, chkCopy.Detail).FontSize(10).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+					})
 				}
 			})
 		}

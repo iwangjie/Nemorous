@@ -147,7 +147,6 @@ type App struct {
 	// Collapsible UI States (Progressive Disclosure)
 	showDiffOptions       bool
 	showCodeOptions       bool
-	showMergeAdvanced     bool
 	showMergeCheckDetails bool
 	expandedCodeRepos     map[string]bool // "repoID" -> expanded in file tree
 	expandedCodeDirs      map[string]bool // "repoID::dirRelPath" -> expanded in file tree
@@ -276,12 +275,13 @@ type App struct {
 	// Branches & AI Merge State
 	mergeTargetBranch   string
 	mergeTargets        []aimerge.MergeTarget
-	mergeDetailPct      float32
 	mergeCheckedRepos   map[string]bool
 	mergePresetInput    string
 	mergeRunning        bool
 	mergeScanLoading    bool
 	mergeScanAt         time.Time
+	mergeBarOpen        bool
+	mergePresetSaveOpen bool
 	manualMerges        map[string]ManualMerge
 	manualMergeRunning  bool
 	selectedMergeRepoID string
@@ -665,7 +665,6 @@ func NewApp(cfg config.Config) *App {
 		gitCenterPct:           62,
 		gitUnifiedLimit:        80,
 		maniContentPct:         72,
-		mergeDetailPct:         66,
 		statusByID:             make(map[string]gitops.RepoStatus),
 		watchPending:           make(map[string]bool),
 		checkedChanges:         make(map[string]bool),

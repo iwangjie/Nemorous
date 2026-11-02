@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/iwangjie/nemorous/internal/aimerge"
@@ -27,8 +28,8 @@ func TestMergeShots(t *testing.T) {
 	app.syncMergeSelection(app.mergeTargets)
 	app.selectedMergeRepoID = app.repos[1].ID
 	app.manualMerges[app.repos[1].ID] = ManualMerge{RepoPath: app.repos[1].AbsPath, Path: "/tmp/nemorous-manual-demo", Conflicts: []string{"main.go"}}
-	app.enterGitMerge()
-	app.mergeScanAt = app.lastRefresh
+	app.mergeScanAt = time.Now()
+	app.openReleaseMerge()
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
 	f, _ := os.Create("/tmp/merge-direct.png")
