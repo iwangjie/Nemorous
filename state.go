@@ -449,11 +449,16 @@ type App struct {
 	conflictDrafts       map[string]*editor.State
 	conflictHunkCount    map[string]int
 	conflictBeforeAuto   string
+	conflictBeforeRaw    string
+	conflictRaw          string
+	conflictScrollInit   bool
+	conflictScrollLast   [3]float64
 	conflictOpLabel      string
 	conflictBinary       bool
 	conflictConfirmAbort bool
 	conflictConfirmClose bool
 	conflictDoc          *conflict.Document
+	conflictRanges       []conflict.LineRange
 	conflictBase         string
 	conflictOurs         string
 	conflictTheirs       string

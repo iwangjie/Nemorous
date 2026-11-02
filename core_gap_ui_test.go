@@ -96,6 +96,12 @@ func TestConflictResolverUIEndToEnd(t *testing.T) {
 	if !tt.HasText("变基目标（上游）") || !tt.HasText("你的提交") {
 		t.Fatal("rebase-specific ours/theirs labels are missing")
 	}
+	if strings.Contains(editorText(app.conflictEditor.Buffer), "<<<<<<<") {
+		t.Fatal("conflict markers should be hidden from the result editor")
+	}
+	if !tt.HasText("冲突块") {
+		t.Fatal("per-block merge controls are missing")
+	}
 	if err := tt.Click("采用 Ours (⌥1)"); err != nil {
 		t.Fatalf("accept ours button: %v", err)
 	}
@@ -118,6 +124,27 @@ func TestConflictResolverUIEndToEnd(t *testing.T) {
 	})
 	if data, _ := os.ReadFile(filepath.Join(ws, "file.txt")); strings.TrimSpace(string(data)) != "main" {
 		t.Fatalf("resolved content = %q", data)
+	}
+}
+
+func TestConflictBlockArrowAppliesTheirs(t *testing.T) {
+	ws := makeConflictWorkspace(t)
+	app := newGapTestApp(t, ws)
+	app.openConflictResolver(app.statuses[0].Repo.ID)
+	waitApp(t, "conflict file", func() bool {
+		return app.conflictEditor != nil && app.conflictDoc != nil
+	})
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if err := tt.Click("采用 THEIRS（合入版本）"); err != nil {
+		t.Fatalf("per-block theirs arrow: %v", err)
+	}
+	tt.Frame()
+	if app.conflictDoc != nil {
+		t.Fatal("theirs arrow did not resolve the block")
+	}
+	if got := strings.TrimSpace(editorText(app.conflictEditor.Buffer)); got != "feature" {
+		t.Fatalf("result = %q, want feature", got)
 	}
 }
 
@@ -384,6 +411,7 @@ func TestConflictSmartMergeAndCloseGuard(t *testing.T) {
 	app.showConflict = true
 	app.conflictSelected = "smart.txt"
 	app.conflictEditor = &editor.State{Buffer: buf}
+	app.conflictRaw = content
 	app.conflictDoc = doc
 	app.conflictDrafts = make(map[string]*editor.State)
 	app.conflictHunkCount = map[string]int{"smart.txt": 1}
@@ -483,4 +511,24 @@ func TestConflictDraftSurvivesReopen(t *testing.T) {
 	waitApp(t, "draft restored", func() bool {
 		return app.conflictEditor != nil && strings.Contains(editorText(app.conflictEditor.Buffer), "draft result")
 	})
+}
+
+func TestConflictPanesScrollTogether(t *testing.T) {
+	app := newGapTestApp(t, t.TempDir())
+	mk := func() *editor.State {
+		buf := editor.NewBuffer(strings.Repeat("line\n", 200))
+		return &editor.State{Buffer: buf, NoFolding: true}
+	}
+	app.conflictOursView = mk()
+	app.conflictEditor = mk()
+	app.conflictTheirsView = mk()
+	app.conflictScrollInit = false
+	app.syncConflictScroll()
+	app.conflictOursView.SetScrollY(80)
+	app.syncConflictScroll()
+	got := app.conflictEditor.ScrollY()
+	if got != app.conflictOursView.ScrollY() || got != app.conflictTheirsView.ScrollY() || got <= 0 {
+		t.Fatalf("panes did not scroll together: ours=%v result=%v theirs=%v",
+			app.conflictOursView.ScrollY(), app.conflictEditor.ScrollY(), app.conflictTheirsView.ScrollY())
+	}
 }

@@ -175,7 +175,7 @@ func MergeIntoBranch(ctx context.Context, target MergeTarget, pushRemote bool) M
 	return finish("OK", message, "", nil, nil)
 }
 
-// RecoveredMerge describes a conflict worktree left behind by an earlier
+// RecoveredMerge describes a merge worktree left behind by an earlier
 // session. The app uses it to make the resolver reachable after a restart.
 type RecoveredMerge struct {
 	RepoID    string
@@ -185,9 +185,10 @@ type RecoveredMerge struct {
 	Conflicts []string
 }
 
-// RecoverManualMerges finds unfinished conflict worktrees under a repository's
-// worktree list. Only the private nemorous-merge/* branches are considered, so
-// user-created worktrees are never adopted.
+// RecoverManualMerges finds unfinished merge worktrees under a repository's
+// worktree list, including worktrees whose conflicts were already staged.
+// Only the private nemorous-merge/* branches are considered, so user-created
+// worktrees are never adopted.
 func RecoverManualMerges(ctx context.Context, repos []mani.DiscoveredRepo) []RecoveredMerge {
 	var out []RecoveredMerge
 	for _, repo := range repos {
@@ -217,9 +218,6 @@ func RecoverManualMerges(ctx context.Context, repos []mani.DiscoveredRepo) []Rec
 				if line = strings.TrimSpace(line); line != "" {
 					conflicts = append(conflicts, line)
 				}
-			}
-			if len(conflicts) == 0 {
-				continue
 			}
 			out = append(out, RecoveredMerge{
 				RepoID:    repo.ID,

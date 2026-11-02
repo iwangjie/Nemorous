@@ -208,6 +208,52 @@ func (d *Document) renderReplaced(set []bool, values []string) string {
 	return b.String()
 }
 
+// HunkText is the text a strategy contributes for a hunk.
+func HunkText(h Hunk, strategy Strategy) (string, error) {
+	return hunkText(h, strategy)
+}
+
+type LineRange struct {
+	Start int
+	Count int
+}
+
+// OursPreview renders a result-wide view with conflict markers, base and
+// theirs sections hidden: each conflict block shows only its ours text. The
+// returned ranges address those blocks in the preview buffer.
+func (d *Document) OursPreview() (string, []LineRange) {
+	var b strings.Builder
+	ranges := make([]LineRange, len(d.Hunks))
+	lineCursor := 0
+	for _, p := range d.parts {
+		if p.hunk < 0 {
+			b.WriteString(p.text)
+			lineCursor += textLineCount(p.text)
+			continue
+		}
+		h := d.Hunks[p.hunk]
+		ranges[p.hunk] = LineRange{Start: lineCursor, Count: textLineCount(h.Ours)}
+		b.WriteString(h.Ours)
+		lineCursor += textLineCount(h.Ours)
+	}
+	return b.String(), ranges
+}
+
+// ApplyRange replaces count lines at start in content with replacement.
+func ApplyRange(content string, start, count int, replacement string) (string, error) {
+	lines := strings.SplitAfter(content, "\n")
+	if start < 0 || count < 0 || start > len(lines) || start+count > len(lines) {
+		return "", fmt.Errorf("结果行号超出范围（文件已被修改，请重新加载）")
+	}
+	out := make([]string, 0, len(lines)-count+1)
+	out = append(out, lines[:start]...)
+	if replacement != "" {
+		out = append(out, replacement)
+	}
+	out = append(out, lines[start+count:]...)
+	return strings.Join(out, ""), nil
+}
+
 func hunkText(h Hunk, strategy Strategy) (string, error) {
 	switch strategy {
 	case Ours:

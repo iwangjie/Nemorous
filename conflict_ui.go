@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -52,6 +53,9 @@ func (a *App) openConflictResolver(repoID string) {
 	a.conflictBinary = false
 	a.conflictConfirmAbort = false
 	a.conflictConfirmClose = false
+	if !sameRepo {
+		a.conflictScrollInit = false
+	}
 	a.conflictOpLabel = "继续操作"
 	a.conflictErr = ""
 	a.conflictNotice = ""
@@ -140,21 +144,19 @@ func (a *App) selectConflictFile(rel string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		base, ours, theirs := conflict.Versions(ctx, path, rel)
-		content := ""
+		raw := ""
 		fellBack := false
-		if reuse != nil {
-			content = editorText(reuse.Buffer)
-		} else if data, err := conflict.ReadFile(path, rel); err == nil {
-			content = data
+		if data, err := conflict.ReadFile(path, rel); err == nil {
+			raw = data
 		} else {
 			if ours != "" {
-				content = ours
+				raw = ours
 			} else {
-				content = theirs
+				raw = theirs
 			}
 			fellBack = true
 		}
-		doc, perr := conflict.Parse(content)
+		doc, perr := conflict.Parse(raw)
 		if perr == conflict.ErrNoMarkers {
 			doc = nil
 		}
@@ -165,10 +167,19 @@ func (a *App) selectConflictFile(rel string) {
 				conflict.EnrichWithDiff3(doc, diff3Doc)
 			}
 		}
+		display := raw
+		var ranges []conflict.LineRange
+		if doc != nil {
+			display, ranges = doc.OursPreview()
+		}
 		a.runUI(func() {
 			a.conflictBase, a.conflictOurs, a.conflictTheirs = base, ours, theirs
-			a.conflictBinary = isBinaryContent(base) || isBinaryContent(ours) || isBinaryContent(theirs) || isBinaryContent(content)
+			a.conflictRaw = raw
+			a.conflictBeforeRaw = ""
+			a.conflictBinary = isBinaryContent(base) || isBinaryContent(ours) || isBinaryContent(theirs) || isBinaryContent(raw)
 			a.conflictDoc = doc
+			a.conflictRanges = ranges
+			a.conflictScrollInit = false
 			if perr != nil && perr != conflict.ErrNoMarkers {
 				a.conflictErr = perr.Error()
 			}
@@ -192,7 +203,7 @@ func (a *App) selectConflictFile(rel string) {
 			if reuse != nil {
 				a.conflictEditor = reuse
 			} else {
-				buf := editor.NewBuffer(content)
+				buf := editor.NewBuffer(display)
 				buf.SetLanguage(lang)
 				diffBase := editor.NewBuffer(ours)
 				diffBase.SetLanguage(lang)
@@ -216,7 +227,7 @@ func (a *App) selectConflictFile(rel string) {
 func (a *App) updateConflictPanes() {
 	idx := a.conflictHunkIdx
 	if a.conflictDoc == nil || len(a.conflictDoc.Hunks) == 0 {
-		for _, view := range []*editor.State{a.conflictBaseView, a.conflictOursView, a.conflictTheirsView} {
+		for _, view := range []*editor.State{a.conflictBaseView, a.conflictOursView, a.conflictTheirsView, a.conflictEditor} {
 			if view != nil {
 				view.LineBackgrounds = nil
 			}
@@ -246,28 +257,62 @@ func (a *App) updateConflictPanes() {
 	highlight(a.conflictOursView, h.OursStart, h.OursCount, ui.RGBA(90, 120, 220, 0.20))
 	highlight(a.conflictTheirsView, h.TheirsStart, h.TheirsCount, ui.RGBA(220, 160, 60, 0.20))
 	if a.conflictEditor != nil {
-		a.conflictEditor.ScrollTo(h.StartLine)
+		bgs := make([]editor.LineBackground, 0, len(a.conflictRanges))
+		for i, r := range a.conflictRanges {
+			if r.Count <= 0 {
+				continue
+			}
+			color := ui.RGBA(220, 90, 70, 0.10)
+			if i == idx {
+				color = ui.RGBA(220, 90, 70, 0.18)
+			}
+			bgs = append(bgs, editor.LineBackground{First: r.Start, Last: r.Start + r.Count - 1, Color: color})
+		}
+		a.conflictEditor.LineBackgrounds = bgs
+		if idx < len(a.conflictRanges) {
+			a.conflictEditor.ScrollTo(a.conflictRanges[idx].Start)
+		}
 	}
+	a.conflictScrollInit = false
 }
 
-func (a *App) refreshConflictDoc() {
-	if a.conflictEditor == nil {
-		a.conflictDoc = nil
+// syncConflictScroll mirrors the pane the user just scrolled into the other
+// two. ScrollTo calls made while navigating hunks reset the baseline, so they
+// never get overwritten by this follow-up.
+func (a *App) syncConflictScroll() {
+	views := [3]*editor.State{a.conflictOursView, a.conflictEditor, a.conflictTheirsView}
+	for _, view := range views {
+		if view == nil {
+			return
+		}
+	}
+	var ys [3]float64
+	for i, view := range views {
+		ys[i] = view.ScrollY()
+	}
+	if !a.conflictScrollInit {
+		a.conflictScrollLast = ys
+		a.conflictScrollInit = true
 		return
 	}
-	doc, err := conflict.Parse(editorText(a.conflictEditor.Buffer))
-	if err == conflict.ErrNoMarkers {
-		a.conflictDoc = nil
-		a.conflictHunkCount[a.conflictSelected] = 0
+	lead := -1
+	for i := range views {
+		if math.Abs(ys[i]-a.conflictScrollLast[i]) > 0.5 {
+			lead = i
+			break
+		}
+	}
+	if lead < 0 {
 		return
 	}
-	if err != nil {
-		a.conflictErr = err.Error()
-		return
+	for i, view := range views {
+		if i != lead {
+			view.SetScrollY(ys[lead])
+		}
 	}
-	a.conflictDoc = doc
-	a.conflictHunkCount[a.conflictSelected] = len(doc.Hunks)
-	a.conflictErr = ""
+	for i, view := range views {
+		a.conflictScrollLast[i] = view.ScrollY()
+	}
 }
 
 func (a *App) conflictNav(delta int) {
@@ -283,21 +328,74 @@ func (a *App) conflictApplyCurrent(strategy conflict.Strategy) {
 	a.conflictApplyHunk(a.conflictHunkIdx, strategy)
 }
 
+func conflictLineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	n := strings.Count(text, "\n")
+	if !strings.HasSuffix(text, "\n") {
+		n++
+	}
+	return n
+}
+
 func (a *App) conflictApplyHunk(index int, strategy conflict.Strategy) {
 	if a.conflictEditor == nil || a.conflictDoc == nil || index < 0 || index >= len(a.conflictDoc.Hunks) {
 		return
 	}
+	if index >= len(a.conflictRanges) {
+		a.conflictErr = "冲突块位置已变化，请重新加载文件"
+		return
+	}
+	h := a.conflictDoc.Hunks[index]
+	r := a.conflictRanges[index]
+	replacement, err := conflict.HunkText(h, strategy)
+	if err != nil {
+		a.conflictErr = err.Error()
+		return
+	}
 	content := editorText(a.conflictEditor.Buffer)
-	resolved, err := conflict.ApplyTo(content, a.conflictDoc.Hunks[index], strategy)
+	lines := strings.SplitAfter(content, "\n")
+	if r.Start < 0 || r.Count < 0 || r.Start+r.Count > len(lines) {
+		a.conflictErr = "冲突块位置已变化，请重新加载文件"
+		return
+	}
+	if actual := strings.Join(lines[r.Start:r.Start+r.Count], ""); actual != h.Ours {
+		a.conflictErr = "结果已被手动编辑，请重新加载后再选择冲突块"
+		return
+	}
+	resolved, err := conflict.ApplyRange(content, r.Start, r.Count, replacement)
 	if err != nil {
 		a.conflictErr = err.Error()
 		return
 	}
 	a.conflictEditor.Buffer.Set(resolved)
+	if a.conflictRaw != "" {
+		if nextRaw, err := conflict.ApplyTo(a.conflictRaw, h, strategy); err == nil {
+			a.conflictRaw = nextRaw
+		} else {
+			a.conflictRaw = ""
+		}
+	}
 	a.conflictBeforeAuto = ""
-	a.refreshConflictDoc()
-	if a.conflictDoc != nil && a.conflictHunkIdx >= len(a.conflictDoc.Hunks) {
-		a.conflictHunkIdx = max(len(a.conflictDoc.Hunks)-1, 0)
+	a.conflictBeforeRaw = ""
+	a.conflictDoc.Hunks = append(a.conflictDoc.Hunks[:index], a.conflictDoc.Hunks[index+1:]...)
+	a.conflictRanges = append(a.conflictRanges[:index], a.conflictRanges[index+1:]...)
+	delta := conflictLineCount(replacement) - r.Count
+	for i := index; i < len(a.conflictRanges); i++ {
+		a.conflictRanges[i].Start += delta
+	}
+	if len(a.conflictDoc.Hunks) == 0 {
+		a.conflictDoc = nil
+		a.conflictRanges = nil
+		a.conflictRaw = ""
+		a.conflictHunkIdx = 0
+		a.conflictHunkCount[a.conflictSelected] = 0
+	} else {
+		if a.conflictHunkIdx >= len(a.conflictDoc.Hunks) {
+			a.conflictHunkIdx = len(a.conflictDoc.Hunks) - 1
+		}
+		a.conflictHunkCount[a.conflictSelected] = len(a.conflictDoc.Hunks)
 	}
 	a.updateConflictPanes()
 }
@@ -306,8 +404,11 @@ func (a *App) conflictApplyAll(strategy conflict.Strategy) {
 	if a.conflictEditor == nil {
 		return
 	}
-	content := editorText(a.conflictEditor.Buffer)
-	doc, err := conflict.Parse(content)
+	raw := a.conflictRaw
+	if raw == "" {
+		raw = editorText(a.conflictEditor.Buffer)
+	}
+	doc, err := conflict.Parse(raw)
 	if err != nil {
 		a.conflictErr = "没有可解决的冲突标记"
 		return
@@ -318,9 +419,13 @@ func (a *App) conflictApplyAll(strategy conflict.Strategy) {
 		return
 	}
 	a.conflictEditor.Buffer.Set(resolved)
+	a.conflictRaw = resolved
+	a.conflictDoc = nil
+	a.conflictRanges = nil
 	a.conflictBeforeAuto = ""
-	a.refreshConflictDoc()
+	a.conflictBeforeRaw = ""
 	a.conflictHunkIdx = 0
+	a.conflictHunkCount[a.conflictSelected] = 0
 	a.updateConflictPanes()
 }
 
@@ -337,8 +442,13 @@ func (a *App) conflictUseVersion(side conflict.Strategy) {
 		content = a.conflictOurs + a.conflictTheirs
 	}
 	a.conflictEditor.Buffer.Set(content)
-	a.refreshConflictDoc()
+	a.conflictRaw = ""
+	a.conflictDoc = nil
+	a.conflictRanges = nil
+	a.conflictBeforeAuto = ""
+	a.conflictBeforeRaw = ""
 	a.conflictHunkIdx = 0
+	a.conflictHunkCount[a.conflictSelected] = 0
 	a.conflictNotice = "已采用 " + string(side) + " 版本"
 	a.updateConflictPanes()
 }
@@ -347,16 +457,45 @@ func (a *App) conflictAutoResolve() {
 	if a.conflictEditor == nil || a.conflictDoc == nil {
 		return
 	}
-	before := editorText(a.conflictEditor.Buffer)
-	resolvedText, resolved, remaining := a.conflictDoc.SmartResolve()
+	raw := a.conflictRaw
+	if raw == "" {
+		a.conflictNotice = "当前结果已手动编辑，重新加载后才能自动合并"
+		return
+	}
+	doc, err := conflict.Parse(raw)
+	if err != nil {
+		a.conflictNotice = "没有可自动解决的冲突"
+		return
+	}
+	resolvedRaw, resolved, remaining := doc.SmartResolve()
 	if resolved == 0 {
 		a.conflictNotice = "没有可自动解决的无争议冲突"
 		return
 	}
-	a.conflictEditor.Buffer.Set(resolvedText)
-	a.conflictBeforeAuto = before
-	a.refreshConflictDoc()
+	newDoc, perr := conflict.Parse(resolvedRaw)
+	if perr == conflict.ErrNoMarkers {
+		newDoc = nil
+	} else if perr != nil {
+		a.conflictErr = perr.Error()
+		return
+	}
+	display := resolvedRaw
+	var ranges []conflict.LineRange
+	if newDoc != nil {
+		display, ranges = newDoc.OursPreview()
+	}
+	a.conflictBeforeAuto = editorText(a.conflictEditor.Buffer)
+	a.conflictBeforeRaw = a.conflictRaw
+	a.conflictEditor.Buffer.Set(display)
+	a.conflictRaw = resolvedRaw
+	a.conflictDoc = newDoc
+	a.conflictRanges = ranges
 	a.conflictHunkIdx = 0
+	if newDoc == nil {
+		a.conflictHunkCount[a.conflictSelected] = 0
+	} else {
+		a.conflictHunkCount[a.conflictSelected] = len(newDoc.Hunks)
+	}
 	a.conflictNotice = fmt.Sprintf("已自动解决 %d 个无争议冲突，剩余 %d 个", resolved, remaining)
 	a.updateConflictPanes()
 }
@@ -366,8 +505,24 @@ func (a *App) conflictUndoAuto() {
 		return
 	}
 	a.conflictEditor.Buffer.Set(a.conflictBeforeAuto)
+	a.conflictRaw = a.conflictBeforeRaw
 	a.conflictBeforeAuto = ""
-	a.refreshConflictDoc()
+	a.conflictBeforeRaw = ""
+	if a.conflictRaw != "" {
+		if doc, err := conflict.Parse(a.conflictRaw); err == nil {
+			a.conflictDoc = doc
+			_, a.conflictRanges = doc.OursPreview()
+			a.conflictHunkCount[a.conflictSelected] = len(doc.Hunks)
+		} else {
+			a.conflictDoc = nil
+			a.conflictRanges = nil
+			a.conflictHunkCount[a.conflictSelected] = 0
+		}
+	} else {
+		a.conflictDoc = nil
+		a.conflictRanges = nil
+		a.conflictHunkCount[a.conflictSelected] = 0
+	}
 	a.conflictHunkIdx = 0
 	a.conflictNotice = "已撤销自动解决"
 	a.updateConflictPanes()
@@ -389,6 +544,10 @@ func (a *App) saveConflictFile() {
 		return
 	}
 	content := editorText(a.conflictEditor.Buffer)
+	if a.conflictDoc != nil && len(a.conflictDoc.Hunks) > 0 {
+		a.conflictErr = fmt.Sprintf("还有 %d 个冲突块未选择，请用左侧箭头或「全部采用」处理", len(a.conflictDoc.Hunks))
+		return
+	}
 	if _, err := conflict.Parse(content); err == nil {
 		a.conflictErr = "文件仍有冲突标记，请先解决"
 		return
@@ -636,14 +795,65 @@ func (a *App) conflictPaneSimple(c *ui.Context, p Palette, title, sub string, vi
 	})
 }
 
+func (a *App) buildConflictHunkStrip(c *ui.Context, p Palette) {
+	if a.conflictDoc == nil || len(a.conflictDoc.Hunks) == 0 {
+		return
+	}
+	ui.Row(c).Height(30).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "冲突块").FontSize(9.5).TextColor(p.TextMuted).Shrink(0)
+		ui.ScrollHorizontal(c).Height(28).Grow(1).Children(func() {
+			ui.Row(c).Height(28).Gap(4).AlignItems(ui.Center).Children(func() {
+				for i := range a.conflictDoc.Hunks {
+					idx := i
+					active := idx == a.conflictHunkIdx
+					border := p.BorderSubtle
+					bg := ui.Transparent
+					if active {
+						border = p.Accent
+						bg = p.AccentSoft
+					}
+					chip := ui.Row(c).Height(24).Padding(0, 3).Gap(1).Radius(5).
+						Border(1, border).Background(bg).AlignItems(ui.Center).Shrink(0)
+					chip.Children(func() {
+						jump := ui.Row(c).Height(22).Padding(0, 4).Radius(3).AlignItems(ui.Center).
+							Cursor(ui.CursorPointer).Tooltip(fmt.Sprintf("跳到第 %d 个冲突块", idx+1))
+						if jump.Hovered() {
+							jump.Background(p.SurfaceHover)
+						}
+						if jump.Clicked() {
+							a.conflictHunkIdx = idx
+							a.updateConflictPanes()
+						}
+						jump.Children(func() {
+							ui.Box(c).Size(5, 5).Radius(3).Background(p.Danger).Shrink(0)
+							ui.Text(c, fmt.Sprintf("%d", idx+1)).FontSize(9.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).Shrink(0)
+						})
+						toolButton(c, p, fmt.Sprintf("conflict-block-left-%d", idx), icoAcceptLeft,
+							"采用 OURS（目标版本）", false, true, func() {
+								a.conflictHunkIdx = idx
+								a.conflictApplyHunk(idx, conflict.Ours)
+							})
+						toolButton(c, p, fmt.Sprintf("conflict-block-right-%d", idx), icoAcceptRight,
+							"采用 THEIRS（合入版本）", false, true, func() {
+								a.conflictHunkIdx = idx
+								a.conflictApplyHunk(idx, conflict.Theirs)
+							})
+					})
+				}
+			})
+		})
+	})
+}
+
 func (a *App) buildConflictModal(c *ui.Context, p Palette) {
+	a.syncConflictScroll()
 	ui.DialogBase(c, &a.showConflict, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(15, 17, 24, 0.50))
-		width, height := float32(1240), float32(820)
+		width, height := float32(1520), float32(980)
 		if a.win != nil {
 			if w, h := a.win.ContentSize(); w > 0 && h > 0 {
-				width = min(width, float32(w)-28)
-				height = min(height, float32(h)-28)
+				width = min(width, float32(w)-24)
+				height = min(height, float32(h)-24)
 			}
 		}
 		panel.Width(width).Height(height).Padding(14).Gap(8).Radius(12).Background(p.AppBg).Border(1, p.Border)
@@ -780,12 +990,19 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 					}
 				}
 				m.Separator()
+				if a.conflictDoc != nil && len(a.conflictDoc.Hunks) > 0 {
+					if m.Item("将当前结果标记为已解决").Chosen() {
+						a.conflictDoc = nil
+						a.conflictRanges = nil
+						a.conflictRaw = ""
+						a.conflictHunkIdx = 0
+						a.conflictHunkCount[a.conflictSelected] = 0
+						a.conflictNotice = "已标记为已解决，保存后暂存"
+						a.updateConflictPanes()
+					}
+				}
 				if m.Item("重新加载文件").Chosen() {
 					a.reloadConflictFile()
-				}
-				if m.Item("重新解析冲突块").Chosen() {
-					a.refreshConflictDoc()
-					a.updateConflictPanes()
 				}
 			})
 			if a.conflictEditor != nil && a.conflictEditor.Buffer != nil && a.conflictEditor.Buffer.Modified() {
@@ -793,6 +1010,8 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 			}
 			iconAction(c, p, "conflict-save", icoResolve, "保存并标记解决 (⌘S)", true, func() { a.saveConflictFile() })
 		})
+
+		a.buildConflictHunkStrip(c, p)
 
 		ui.Row(c).Grow(1).FillWidth().Gap(6).Children(func() {
 			oursSub, theirsSub := a.conflictSideSubs()
