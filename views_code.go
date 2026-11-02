@@ -78,8 +78,14 @@ type codeRepoGroup struct {
 	repoName string
 	monogram string
 	colorIdx int
+	isRoot   bool
 	files    []gitops.WorkspaceFile
 }
+
+// codeFilterGroupLimit bounds how many matches one repository contributes
+// while the tree is filtered. A broad query can otherwise expand thousands of
+// rows; Cmd+P remains the complete file search.
+const codeFilterGroupLimit = 200
 
 // codeRepoGroups filters the workspace file list by query. The result is cached
 // per query so typing does not scan every file each frame.
@@ -107,11 +113,13 @@ func (a *App) codeRepoGroups(query string) []codeRepoGroup {
 				repoName: wf.RepoName,
 				monogram: wf.Monogram,
 				colorIdx: wf.ColorIdx,
+				isRoot:   wf.IsRoot,
 			})
 		}
-		if len(groups[idx].files) < 200 {
-			groups[idx].files = append(groups[idx].files, wf)
+		if query != "" && len(groups[idx].files) >= codeFilterGroupLimit {
+			continue
 		}
+		groups[idx].files = append(groups[idx].files, wf)
 	}
 	sort.Slice(groups, func(i, j int) bool {
 		return strings.ToLower(groups[i].repoName) < strings.ToLower(groups[j].repoName)
@@ -119,6 +127,17 @@ func (a *App) codeRepoGroups(query string) []codeRepoGroup {
 	a.codeGroupsKey = key
 	a.codeGroups = groups
 	return groups
+}
+
+// codeTreeFor returns the cached directory tree for one repository group.
+func (a *App) codeTreeFor(grp codeRepoGroup, query string) *codeTreeDir {
+	treeKey := grp.repoID + "|" + query
+	treeRoot, ok := a.codeTreeCache[treeKey]
+	if !ok {
+		treeRoot = buildRepoCodeTree(grp.files)
+		a.codeTreeCache[treeKey] = treeRoot
+	}
+	return treeRoot
 }
 
 const (
@@ -196,16 +215,29 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 				if !rootExpanded {
 					return
 				}
+				// The workspace root repository's own files live directly under
+				// the workspace node, next to the child repositories, instead of
+				// hiding inside an extra "workspace" group.
+				var rootGroup *codeRepoGroup
+				for i := range groups {
+					if groups[i].isRoot {
+						grp := groups[i]
+						rootGroup = &grp
+						break
+					}
+				}
+				if rootGroup != nil {
+					treeRoot := a.codeTreeFor(*rootGroup, query)
+					a.renderCodeTreeNode(rkc, p, rootGroup.repoID, treeRoot, 1, query != "")
+				}
 				for _, grp := range groups {
+					if grp.isRoot {
+						continue
+					}
 					grpCopy := grp
 					expanded := query != "" || a.expandedCodeRepos[grpCopy.repoID]
 					badge := repoBadgeColors(grpCopy.colorIdx, p.IsDark)
-					treeKey := grpCopy.repoID + "|" + query
-					treeRoot, cached := a.codeTreeCache[treeKey]
-					if !cached {
-						treeRoot = buildRepoCodeTree(grpCopy.files)
-						a.codeTreeCache[treeKey] = treeRoot
-					}
+					treeRoot := a.codeTreeFor(grpCopy, query)
 
 					gkc := c.Key("cgrp-" + grpCopy.repoID)
 					hdr := ui.Row(gkc).Height(codeTreeRepoHeight).Padding(0, 10, 0, 10+codeTreeIndent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)

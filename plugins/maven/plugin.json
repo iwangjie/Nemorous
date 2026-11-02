@@ -1,7 +1,7 @@
 {
   "id": "maven",
   "name": "Maven",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "面向大型多仓 Maven 项目的构建与依赖分析：模块树、构建批次、内部依赖图、版本冲突、并发构建、JVM 参数与实时输出。",
   "author": "Nemorous",
   "homepage": "https://github.com/iwangjie/Nemorous",

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,4 +97,58 @@ func waitPluginSnapshotTimeout(t *testing.T, app *App, ref string, seconds int, 
 		dumpJenkinsText(t, snap.Root, 0)
 	}
 	t.Fatalf("timed out waiting for %s", ref)
+}
+
+func TestJenkinsPanelStacksDetailAtToolWindowWidth(t *testing.T) {
+	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	var base string
+	choices := "apps/alpha,apps/beta,apps/gamma,apps/delta,apps/epsilon,apps/zeta,apps/eta,apps/theta,apps/iota,apps/kappa,apps/lambda,apps/mu"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Jenkins", "2.375")
+		_, _ = w.Write([]byte(`{"jobs":[{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob","name":"demo","url":"` + base + `job/demo/","color":"blue"}]}`))
+	})
+	mux.HandleFunc("/job/demo/api/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob","name":"demo","url":"` + base + `job/demo/","color":"blue","description":"demo job","buildable":true,"inQueue":false,"property":[{"_class":"hudson.model.ParametersDefinitionProperty","parameterDefinitions":[{"_class":"com.cwctravel.hudson.plugins.extended__choice__parameter.ExtendedChoiceParameterDefinition","name":"service","type":"PT_MULTI_SELECT","description":"service dir"}]}],"builds":[]}`))
+	})
+	mux.HandleFunc("/job/demo/config.xml", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<flow-definition><properties><hudson.model.ParametersDefinitionProperty><parameterDefinitions>
+<com.cwctravel.hudson.plugins.extended__choice__parameter.ExtendedChoiceParameterDefinition plugin="extended-choice-parameter@0.82">
+  <name>service</name><description>service dir</description><type>PT_MULTI_SELECT</type>
+  <value>` + choices + `</value><defaultValue></defaultValue><multiSelectDelimiter>,</multiSelectDelimiter>
+</com.cwctravel.hudson.plugins.extended__choice__parameter.ExtendedChoiceParameterDefinition>
+</parameterDefinitions></hudson.model.ParametersDefinitionProperty></properties></flow-definition>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base = srv.URL + "/"
+
+	app := newGapTestApp(t, setupUITestWorkspace(t))
+	app.initPluginManager()
+	t.Cleanup(app.closePluginManager)
+	app.syncPluginsWorkspace(app.reposSnapshot())
+	if _, err := app.pluginMgr.InstallBuiltin(context.Background(), "jenkins"); err != nil {
+		t.Fatal(err)
+	}
+	ref := "jenkins:jenkins"
+	app.openPluginPanel(ref)
+	waitPluginSnapshot(t, app, ref, func(s *plugins.PanelSnapshot) bool { return s.Root != nil })
+	for key, value := range map[string]any{"baseUrl": base, "username": "user", "password": "token"} {
+		app.pluginMgr.Dispatch(ref, "setting", map[string]any{"key": key, "value": value})
+	}
+	app.pluginMgr.Dispatch(ref, "saveConnect", nil)
+	waitPluginSnapshotTimeout(t, app, ref, 10, func(s *plugins.PanelSnapshot) bool {
+		return nodeContainsText(s.Root, "demo") && nodeContainsText(s.Root, "构建参数") && nodeContainsText(s.Root, "apps/alpha")
+	})
+	tt := ui.NewTester(app.BuildUI, 1568, 900)
+	tt.Frame()
+	tt.Frame()
+	for _, label := range []string{"构建参数", "apps/alpha"} {
+		r, ok := tt.Find(label)
+		if !ok || r.W <= 0 || r.X <= 0 || r.Y <= 0 || r.Y >= 900 {
+			t.Fatalf("%q is not visible: %+v ok=%v", label, r, ok)
+		}
+	}
 }

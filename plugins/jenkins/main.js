@@ -34,10 +34,12 @@ var state = {
   pollTimer: 0,
   pollCount: 0,
   paramValues: {},
+  paramFilter: {},
   associations: {},
   repos: [],
   connected: false,
-  seq: 0
+  jobSeq: 0,
+  buildSeq: 0
 };
 
 function activate() {
@@ -501,13 +503,19 @@ function jobDetailTree() {
 function loadJob(url) {
   if (!url) return;
   stopPolling();
+  state.jobSeq++;
+  var seq = state.jobSeq;
+  state.buildSeq++;
   state.selected = url;
+  state.job = null;
+  state.builds = [];
   state.build = null;
   state.buildURL = "";
   state.console = "";
   state.status = "正在读取任务详情…";
   state.statusTone = "accent";
   jsonRequest(ensureSlash(url) + "api/json?tree=" + encodeURIComponent(jobDetailTree()), function (data) {
+    if (seq !== state.jobSeq) return;
     state.job = data;
     state.builds = data.builds || [];
     if (!state.builds.length && data.lastBuild) state.builds = [data.lastBuild];
@@ -516,8 +524,10 @@ function loadJob(url) {
     state.statusTone = "ok";
     initParams();
     refreshJobInList(data);
+    if (needsExtendedChoices(data)) loadExtendedChoices(state.selected, seq);
     if (state.builds.length && !state.build) loadBuild(state.builds[0].url);
   }, function (resp) {
+    if (seq !== state.jobSeq) return;
     state.error = "读取任务详情失败：" + errorText(resp);
     state.status = "读取失败";
     state.statusTone = "err";
@@ -549,11 +559,94 @@ function extractParams(detail) {
         type: type,
         description: d.description || "",
         defaultValue: dv == null ? "" : String(dv),
-        choices: d.choices || []
+        choices: d.choices || [],
+        multi: !!d.multi,
+        delimiter: d.multiDelimiter || ","
       });
     }
   }
   return params;
+}
+function xmlText(block, name) {
+  var m = String(block || "").match(new RegExp("<" + name + "(?:\\s[^>]*)?>([\\s\\S]*?)</" + name + ">"));
+  return m ? xmlUnescape(m[1]) : "";
+}
+function xmlUnescape(s) {
+  return String(s == null ? "" : s)
+    .replace(/&#xd;/g, "\r").replace(/&#10;/g, "\n").replace(/&#13;/g, "\r")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+// The Jenkins JSON API hides ExtendedChoiceParameterDefinition values; read
+// them from config.xml so multi-select parameters such as pomdir show their
+// service list instead of a blank text box.
+function parseExtendedChoices(xml) {
+  var out = {};
+  var re = /<([A-Za-z0-9_.]*ExtendedChoiceParameterDefinition)\b[^>]*>([\s\S]*?)<\/\1>/g;
+  var m;
+  while ((m = re.exec(String(xml || "")))) {
+    var block = m[2];
+    var name = xmlText(block, "name");
+    if (!name) continue;
+    var raw = xmlText(block, "value");
+    var delim = xmlText(block, "multiSelectDelimiter") || ",";
+    var choices = [];
+    var parts = raw.split(delim);
+    for (var i = 0; i < parts.length; i++) {
+      var v = parts[i].replace(/^\s+|\s+$/g, "");
+      if (v) choices.push(v);
+    }
+    if (!choices.length) continue;
+    out[name] = {
+      choices: choices,
+      multi: /PT_(MULTI_SELECT|CHECKBOX|RADIO)/.test(xmlText(block, "type")),
+      delimiter: delim,
+      defaultValue: xmlText(block, "defaultValue")
+    };
+  }
+  return out;
+}
+function applyExtendedChoices(map) {
+  if (!state.job || !map) return;
+  var props = state.job.property || [];
+  for (var i = 0; i < props.length; i++) {
+    var defs = props[i].parameterDefinitions || [];
+    for (var j = 0; j < defs.length; j++) {
+      var d = defs[j] || {};
+      var ext = map[d.name];
+      if (!ext) continue;
+      d.choices = ext.choices;
+      d.multi = ext.multi;
+      d.multiDelimiter = ext.delimiter;
+      if (!d.defaultParameterValue && ext.defaultValue) {
+        d.defaultParameterValue = { value: ext.defaultValue };
+      }
+      var key = paramKey(d.name);
+      if (ext.defaultValue && !state.paramValues[key]) {
+        state.paramValues[key] = ext.defaultValue;
+      }
+    }
+  }
+}
+function needsExtendedChoices(job) {
+  var props = (job && job.property) || [];
+  for (var i = 0; i < props.length; i++) {
+    var defs = props[i].parameterDefinitions || [];
+    for (var j = 0; j < defs.length; j++) {
+      if (String((defs[j] || {})._class || "").indexOf("ExtendedChoiceParameterDefinition") >= 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function loadExtendedChoices(url, seq) {
+  request("GET", ensureSlash(url) + "config.xml", "", null, function (resp) {
+    if (seq !== state.jobSeq || !state.job) return;
+    applyExtendedChoices(parseExtendedChoices(resp.body || ""));
+    nemorous.invalidate();
+  }, function () {}, true);
 }
 function paramKey(name) {
   return ensureSlash(state.selected) + "|" + name;
@@ -577,11 +670,14 @@ function setParam(name, value) {
 function loadBuild(url) {
   if (!url) return;
   stopPolling();
+  state.buildSeq++;
+  var seq = state.buildSeq;
   state.buildURL = url;
   state.console = "";
   state.status = "正在读取构建详情…";
   state.statusTone = "accent";
   jsonRequest(ensureSlash(url) + "api/json?tree=number,url,result,building,duration,estimatedDuration,timestamp,displayName,fullDisplayName,description,builtOn,actions[parameters[name,value]],changeSet[items[commitId,msg,author[fullName]]]", function (data) {
+    if (seq !== state.buildSeq) return;
     state.build = data;
     state.buildURL = ensureSlash(data.url || url);
     state.status = data.building ? "构建 #" + data.number + " · 运行中" : "";
@@ -589,6 +685,7 @@ function loadBuild(url) {
     loadConsole(data.building);
     if (data.building && state.settings.autoRefresh) scheduleBuildPoll(ensureSlash(data.url));
   }, function (resp) {
+    if (seq !== state.buildSeq) return;
     state.error = "读取构建失败：" + errorText(resp);
     state.status = "读取失败";
     state.statusTone = "err";
@@ -602,10 +699,13 @@ function stripANSI(text) {
 }
 function loadConsole(building) {
   if (!state.buildURL) return;
+  var seq = state.buildSeq;
   request("GET", ensureSlash(state.buildURL) + "consoleText", "", null, function (resp) {
+    if (seq !== state.buildSeq) return;
     state.console = trimConsole(stripANSI(resp.body || ""));
     if (!building) state.loading = false;
   }, function (resp) {
+    if (seq !== state.buildSeq) return;
     state.error = "读取控制台失败：" + errorText(resp);
   }, true);
 }
@@ -651,6 +751,13 @@ function triggerBuild() {
       var p = params[i];
       var v = selectedParam(p.name);
       if (v === undefined || v === null) v = p.defaultValue;
+      if (p.multi && !String(v || "").replace(/^\s+|\s+$/g, "")) {
+        state.error = "请先选择参数：" + p.name;
+        state.status = "构建参数不完整";
+        state.statusTone = "err";
+        nemorous.invalidate();
+        return;
+      }
       if (p.type === "BooleanParameterDefinition") v = String(v) === "true" ? "true" : "false";
       parts.push(encodeURIComponent(p.name) + "=" + encodeURIComponent(v));
     }
@@ -768,13 +875,13 @@ function summaryFilters() {
 function jobsView(children) {
   children.push(summaryFilters());
   var jobs = filteredJobs();
-  var left = col([
-    input("filter", state.filter, "搜索任务、类型或仓库", { action: "filter" }),
-    jobList(jobs),
-    text(jobs.length + " 个匹配", { muted: true, size: 9.5 })
-  ], { width: 300, heightPercent: 100, gap: 5 });
-  var right = col(jobDetail(), { grow: true, heightPercent: 100, gap: 6 });
-  children.push(row([left, { type: "divider", vertical: true }, right], { grow: true, gap: 6 }));
+  children.push(input("filter", state.filter, "搜索任务、类型或仓库", { action: "filter" }));
+  children.push(jobList(jobs));
+  children.push(text(jobs.length + " 个匹配", { muted: true, size: 9.5 }));
+  // A side-by-side master/detail pane collapses to zero width in the docked
+  // tool window, hiding the selected task behind a blank column. Stacking
+  // keeps the task detail (and its build button) visible at every width.
+  children.push(col(jobDetail(), { grow: true, scroll: true, gap: 6 }));
 }
 function filteredJobs() {
   var q = String(state.filter || "").toLowerCase();
@@ -809,7 +916,7 @@ function jobList(jobs) {
       mono: false
     });
   }
-  return list(items, { grow: true, scroll: true });
+  return list(items, { maxHeight: 260, scroll: true });
 }
 function jobDetail() {
   if (!state.connected) {
@@ -819,7 +926,7 @@ function jobDetail() {
       btn("打开连接设置", "settings", null, { primary: true })
     ];
   }
-  if (!state.job) return [hint("从左侧选择一个任务。")];
+  if (!state.job) return [hint("从上方列表选择一个任务。")];
   var j = state.job;
   var st = jobStatus(j);
   var repo = repoForJob(j.url);
@@ -830,18 +937,21 @@ function jobDetail() {
       badge(st.text, st.tone),
       badge(jobType(j._class), "muted"),
       healthBadge(j),
-      spacer(),
-      btn("打开", "openJob", null, { small: true })
+      spacer()
     ], { gap: 5 }),
     text(j.url, { muted: true, size: 9, mono: true }),
     j.description ? text(j.description, { size: 10.5, muted: true }) : null,
     row([
       j.lastBuild ? text("最近构建 #" + j.lastBuild.number + " · " + resultLabel(j.lastBuild.result, j.lastBuild.building), { size: 9.5, muted: true, mono: true }) : text("尚无构建历史", { size: 9.5, muted: true }),
       j.inQueue ? badge("队列中", "accent") : null,
-      spacer(),
-      btn("刷新", "loadJob", null, { small: true, disabled: state.loading }),
+      spacer()
+    ], { gap: 4 }),
+    row([
+      btn("构建", "build", null, { primary: true, small: true, disabled: state.loading || j.buildable === false }),
       btn("查看构建", "openBuilds", null, { small: true }),
-      btn("构建", "build", null, { primary: true, small: true, disabled: state.loading || j.buildable === false })
+      btn("刷新", "loadJob", null, { small: true, disabled: state.loading }),
+      spacer(),
+      btn("在浏览器打开", "openJob", null, { small: true })
     ], { gap: 4 })
   ], { padding: 10, gap: 6 }));
 
@@ -891,12 +1001,16 @@ function paramsForm(params) {
           payload: { name: p.name }
         })
       ], { gap: 4 }));
+    } else if (p.choices && p.choices.length > 8) {
+      children.push(choicePicker(p, val));
     } else if (p.choices && p.choices.length) {
       var choices = [text(p.name, { muted: true, size: 9.5, width: 150 })];
       for (var c = 0; c < p.choices.length && c < 8; c++) {
-        choices.push(btn(String(p.choices[c]), "paramChoice", { name: p.name, value: String(p.choices[c]) }, {
+        choices.push(btn(String(p.choices[c]), "paramChoice", { name: p.name, value: String(p.choices[c]), multi: p.multi, delimiter: p.delimiter }, {
           small: true,
-          active: String(val) === String(p.choices[c])
+          active: p.multi
+            ? choiceSelected(String(p.choices[c]), String(val || ""), true, p.delimiter)
+            : String(val) === String(p.choices[c])
         }));
       }
       children.push(row(choices, { gap: 3 }));
@@ -913,6 +1027,63 @@ function paramsForm(params) {
   }
   if (params.length > 10) children.push(hint("仅展示前 10 个参数，其余使用默认值。"));
   return col(children, { gap: 4, maxHeight: params.length > 6 ? 210 : 0, scroll: params.length > 6 });
+}
+function paramFilterKey(name) {
+  return ensureSlash(state.selected) + "|" + name;
+}
+function paramFilterValue(name) {
+  return state.paramFilter[paramFilterKey(name)] || "";
+}
+function choiceSelected(value, current, multi, delimiter) {
+  if (!multi) return value === current;
+  var parts = String(current || "").split(delimiter || ",");
+  return parts.indexOf(value) >= 0;
+}
+function choicePicker(p, val) {
+  var query = paramFilterValue(p.name).toLowerCase();
+  var matches = [];
+  for (var i = 0; i < p.choices.length; i++) {
+    var choice = String(p.choices[i]);
+    if (query && choice.toLowerCase().indexOf(query) < 0) continue;
+    matches.push(choice);
+    if (matches.length >= 300) break;
+  }
+  var delimiter = p.delimiter || ",";
+  var selectedCount = 0;
+  if (p.multi) {
+    var parts = String(val || "").split(delimiter);
+    for (var s = 0; s < parts.length; s++) if (parts[s]) selectedCount++;
+  } else {
+    selectedCount = val ? 1 : 0;
+  }
+  var children = [];
+  children.push(row([
+    text(p.name, { muted: true, size: 9.5 }),
+    badge((p.multi ? selectedCount + " / " + p.choices.length : (val || "未选择")), selectedCount ? "accent" : "muted"),
+    spacer(),
+    p.multi ? hint("可多选") : null
+  ], { gap: 4 }));
+  children.push(input("paramfilter:" + p.name + "@" + state.selected, paramFilterValue(p.name), "搜索 " + p.choices.length + " 个选项，共匹配 " + matches.length, {
+    action: "paramFilter"
+  }));
+  if (!matches.length) {
+    children.push(hint("没有匹配的选项，换个关键词试试。"));
+  } else {
+    var items = [];
+    for (var m = 0; m < matches.length; m++) {
+      items.push({
+        text: matches[m],
+        detail: choiceSelected(matches[m], val, p.multi, delimiter) ? "已选择" : "",
+        tone: choiceSelected(matches[m], val, p.multi, delimiter) ? "accent" : "",
+        action: "paramChoice",
+        payload: { name: p.name, value: matches[m], multi: p.multi, delimiter: delimiter },
+        selected: choiceSelected(matches[m], val, p.multi, delimiter),
+        mono: true
+      });
+    }
+    children.push(list(items, { maxHeight: 150, scroll: true }));
+  }
+  return col(children, { gap: 3 });
 }
 function buildView(children) {
   var j = state.job;
@@ -931,12 +1102,9 @@ function buildView(children) {
     return;
   }
   var historyItems = buildHistory();
-  var left = col([
-    row([text("构建历史", { bold: true, size: 10.5 }), badge(state.builds.length + " 次", "muted"), spacer()], { gap: 4 }),
-    historyItems.length ? list(historyItems, { grow: true, scroll: true }) : hint("这个任务还没有构建。")
-  ], { width: 270, heightPercent: 100, gap: 5 });
-  var right = col(buildPane(), { grow: true, heightPercent: 100, gap: 6 });
-  children.push(row([left, { type: "divider", vertical: true }, right], { grow: true, gap: 6 }));
+  children.push(row([text("构建历史", { bold: true, size: 10.5 }), badge(state.builds.length + " 次", "muted"), spacer()], { gap: 4 }));
+  children.push(historyItems.length ? list(historyItems, { maxHeight: 180, scroll: true }) : hint("这个任务还没有构建。"));
+  children.push(col(buildPane(), { grow: true, scroll: true, gap: 6 }));
 }
 function buildParams(b) {
   var out = [];
@@ -958,7 +1126,7 @@ function buildPane() {
   var b = state.build;
   if (!b) {
     if (state.queue) return [card([row([text("构建队列", { bold: true, size: 11 }), badge("等待中", "accent")]), hint(state.status || "正在等待可执行节点…")], { padding: 10, gap: 5 })];
-    return [card([text("选择一个构建", { bold: true, size: 11 }), hint("左侧构建历史中的构建会在这里显示状态、参数与控制台输出。")], { padding: 10, gap: 5 })];
+    return [card([text("选择一个构建", { bold: true, size: 11 }), hint("上方构建历史中的构建会在这里显示状态、参数与控制台输出。")], { padding: 10, gap: 5 })];
   }
   var children = [];
   children.push(card([
@@ -1096,7 +1264,23 @@ function handleAction(action, payload, panelID) {
       setParam(pn, p.value);
       break;
     case "paramChoice":
-      setParam(p.name, p.value);
+      if (p.multi) {
+        var delimiter = p.delimiter || ",";
+        var current = String(selectedParam(p.name) || "");
+        var values = current ? current.split(delimiter) : [];
+        var idx = values.indexOf(String(p.value));
+        if (idx >= 0) values.splice(idx, 1);
+        else values.push(String(p.value));
+        setParam(p.name, values.join(delimiter));
+      } else {
+        setParam(p.name, p.value);
+      }
+      break;
+    case "paramFilter":
+      var fkey = String(p.key || "").replace(/^paramfilter:/, "");
+      var fat = fkey.indexOf("@");
+      if (fat >= 0) fkey = fkey.substring(0, fat);
+      state.paramFilter[paramFilterKey(fkey)] = String(p.value || "");
       break;
     case "paramBool":
       setParam(p.name, String(p.selected) === "true" || String(p.checked) === "true" ? "true" : "false");

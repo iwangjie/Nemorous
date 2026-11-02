@@ -18,6 +18,21 @@ import (
 	"time"
 )
 
+func builtinVersion(t *testing.T, m *Manager, id string) string {
+	t.Helper()
+	reg := m.builtinRegistry()
+	if reg == nil {
+		t.Fatal("builtin registry missing")
+	}
+	for _, p := range reg.Plugins {
+		if p.ID == id {
+			return p.Version
+		}
+	}
+	t.Fatalf("builtin plugin %s missing", id)
+	return ""
+}
+
 func testPluginJSON(id string) string {
 	return fmt.Sprintf(`{
   "id": %q,
@@ -266,8 +281,8 @@ func TestBuiltinMavenPackageInstalls(t *testing.T) {
 	if !ok {
 		t.Fatal("maven not installed")
 	}
-	if p.Manifest.Version != "1.1.0" {
-		t.Fatalf("version = %s", p.Manifest.Version)
+	if want := builtinVersion(t, m, "maven"); p.Manifest.Version != want {
+		t.Fatalf("version = %s, want %s", p.Manifest.Version, want)
 	}
 	if p.Manifest.Contributes.Panels[0].ID != "maven" {
 		t.Fatalf("panels = %+v", p.Manifest.Contributes.Panels)
@@ -566,8 +581,8 @@ func TestBundledPluginsUpdateWithApp(t *testing.T) {
 	if !ok {
 		t.Fatal("maven missing after update")
 	}
-	if p.Manifest.Version != "1.1.0" {
-		t.Fatalf("bundled plugin stayed at %s", p.Manifest.Version)
+	if want := builtinVersion(t, m, "maven"); p.Manifest.Version != want {
+		t.Fatalf("bundled plugin stayed at %s, want %s", p.Manifest.Version, want)
 	}
 }
 

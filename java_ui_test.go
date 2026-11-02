@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -89,5 +90,53 @@ public class Hello { public static void main(String[] args) { System.out.println
 	app.pluginMgr.Dispatch(ref, "runMain", nil)
 	waitPluginSnapshot(t, app, ref, func(s *plugins.PanelSnapshot) bool {
 		return nodeContainsText(s.Root, "java-plugin-ok")
+	})
+}
+
+// A Finder-launched app has no shell PATH; the Java plugin must still find
+// the Maven install configured for the login shell.
+func TestJavaPluginRunsMavenFromLoginPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX login shell")
+	}
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh"
+	}
+	if err := exec.Command(shell, "-lc", "command -v mvn").Run(); err != nil {
+		t.Skip("mvn is not on the login shell PATH")
+	}
+	t.Setenv("NEMOROUS_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("PATH", "/usr/bin:/bin")
+	ws := t.TempDir()
+	write := func(name, body string) {
+		p := filepath.Join(ws, filepath.FromSlash(name))
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("demo/pom.xml", `<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId><artifactId>demo</artifactId><version>1.0.0</version>
+  <properties><maven.compiler.source>1.8</maven.compiler.source><maven.compiler.target>1.8</maven.compiler.target></properties>
+</project>`)
+	write("demo/src/main/java/com/acme/Hello.java", `package com.acme;
+public class Hello { public static void main(String[] args) { System.out.println("java-maven-login-path-ok"); } }`)
+	app := newGapTestApp(t, ws)
+	app.initPluginManager()
+	t.Cleanup(app.closePluginManager)
+	app.syncPluginsWorkspace(app.reposSnapshot())
+	if _, err := app.pluginMgr.InstallBuiltin(context.Background(), "java"); err != nil {
+		t.Fatal(err)
+	}
+	ref := "java:java"
+	app.openPluginPanel(ref)
+	waitPluginSnapshot(t, app, ref, func(s *plugins.PanelSnapshot) bool {
+		return nodeContainsText(s.Root, "Hello") && nodeContainsText(s.Root, "Maven") && nodeContainsText(s.Root, "JDK ")
+	})
+	app.pluginMgr.Dispatch(ref, "runMain", nil)
+	waitPluginSnapshotTimeout(t, app, ref, 120, func(s *plugins.PanelSnapshot) bool {
+		return nodeContainsText(s.Root, "java-maven-login-path-ok")
 	})
 }

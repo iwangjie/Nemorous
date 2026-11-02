@@ -23,6 +23,9 @@ var state = {
   threads: "1C",
   jvmArgs: "",
   graph: null,
+  modulePage: 0,
+  edgePage: 0,
+  conflictPage: 0,
   output: "",
   status: "",
   statusTone: "",
@@ -71,6 +74,9 @@ function onWorkspaceChanged() {
   state.roots = [];
   state.selected = "";
   state.graph = null;
+  state.modulePage = 0;
+  state.edgePage = 0;
+  state.conflictPage = 0;
   state.deps = [];
   state.depsFor = "";
   state.effPom = "";
@@ -589,6 +595,9 @@ function buildDependencyGraph() {
     waves: waves,
     conflicts: conflicts
   };
+  state.modulePage = 0;
+  state.edgePage = 0;
+  state.conflictPage = 0;
 }
 
 function selectedProject() {
@@ -947,6 +956,39 @@ function moduleItems() {
   return out;
 }
 
+// pagedSlice keeps every plugin list below the host's per-list item cap:
+// large graphs are common in multi-repo workspaces, and a single oversized
+// list makes the whole panel fail to render.
+function pagedSlice(items, page, perPage) {
+  var total = items.length;
+  var pages = Math.max(1, Math.ceil(total / perPage));
+  var current = Math.min(Math.max(0, page || 0), pages - 1);
+  var from = current * perPage;
+  return {
+    items: items.slice(from, Math.min(total, from + perPage)),
+    page: current,
+    pages: pages,
+    total: total
+  };
+}
+
+function pagerRow(page, action, key) {
+  if (!page || page.pages <= 1) return null;
+  return row([
+    text("第 " + (page.page + 1) + " / " + page.pages + " 页", { muted: true, size: 9 }),
+    spacer(),
+    btn("上一页", action, { key: key, delta: -1 }, { small: true, disabled: page.page <= 0 }),
+    btn("下一页", action, { key: key, delta: 1 }, { small: true, disabled: page.page >= page.pages - 1 })
+  ], { gap: 3 });
+}
+
+function cappedItems(items, limit, moreText) {
+  if (items.length <= limit) return items;
+  var out = items.slice(0, Math.max(0, limit - 1));
+  out.push({ text: moreText, tone: "muted" });
+  return out;
+}
+
 function projectsView(children) {
   if (!state.roots.length) {
     children.push(text("未找到 pom.xml", { bold: true, size: 12.5 }));
@@ -955,10 +997,12 @@ function projectsView(children) {
     return;
   }
   var items = moduleItems();
+  var page = pagedSlice(items, state.modulePage, 400);
   var left = col([
     input("filter", state.filter, "搜索模块 / 路径", { action: "filter" }),
-    { type: "list", items: items, grow: true, scroll: true, maxHeight: 520 },
-    text(items.length + " 个模块", { muted: true, size: 9.5 })
+    { type: "list", items: page.items, grow: true, scroll: true, maxHeight: 520 },
+    pagerRow(page, "modulePage", "modules"),
+    text(items.length + " 个模块" + (page.pages > 1 ? " · 第 " + (page.page + 1) + " / " + page.pages + " 页" : ""), { muted: true, size: 9.5 })
   ], { width: 280, heightPercent: 100, gap: 5 });
   var right = col(buildPanel(), { grow: true, heightPercent: 100, gap: 6 });
   children.push(row([
@@ -1081,33 +1125,45 @@ function graphView(children) {
     }
     waveChildren.push(col([
       badge("批次 " + (i + 1), i === 0 ? "ok" : "accent"),
-      { type: "list", items: items, maxHeight: 190, scroll: true }
+      { type: "list", items: cappedItems(items, 590, "… 本批次还有更多模块"), maxHeight: 190, scroll: true }
     ], { width: 180, gap: 4 }));
   }
   children.push({ type: "row", children: waveChildren, gap: 8, scroll: true, padding: 2 });
 
   children.push(divider());
-  children.push(text("依赖边", { muted: true, size: 9.5 }));
+  var edgePage = pagedSlice(g.edges, state.edgePage, 200);
+  children.push(row([
+    text("依赖边", { muted: true, size: 9.5 }),
+    text("共 " + g.edges.length + " 条", { muted: true, size: 9 }),
+    spacer(),
+    pagerRow(edgePage, "edgePage", "edges")
+  ], { gap: 4 }));
   if (!g.edges.length) {
     children.push(hint("没有跨模块内部依赖；这些模块彼此独立，可以并行构建。"));
   } else {
     var edgeItems = [];
-    for (var k = 0; k < g.edges.length; k++) {
+    for (var k = 0; k < edgePage.items.length; k++) {
       edgeItems.push({
-        text: g.edges[k].text,
-        detail: g.edges[k].detail,
+        text: edgePage.items[k].text,
+        detail: edgePage.items[k].detail,
         mono: true,
-        tone: g.edges[k].mismatch ? "err" : ""
+        tone: edgePage.items[k].mismatch ? "err" : ""
       });
     }
     children.push({ type: "list", items: edgeItems, maxHeight: 150, scroll: true });
   }
   if (conflictCount) {
     children.push(divider());
-    children.push(text("版本关联冲突", { tone: "err", size: 10, bold: true }));
+    var conflictPage = pagedSlice(g.conflicts, state.conflictPage, 150);
+    children.push(row([
+      text("版本关联冲突", { tone: "err", size: 10, bold: true }),
+      text("共 " + conflictCount + " 条", { muted: true, size: 9 }),
+      spacer(),
+      pagerRow(conflictPage, "conflictPage", "conflicts")
+    ], { gap: 4 }));
     var conflictItems = [];
-    for (var c = 0; c < g.conflicts.length; c++) {
-      conflictItems.push({ text: g.conflicts[c].text, detail: "版本 " + g.conflicts[c].detail, tone: "err", mono: true });
+    for (var c = 0; c < conflictPage.items.length; c++) {
+      conflictItems.push({ text: conflictPage.items[c].text, detail: "版本 " + conflictPage.items[c].detail, tone: "err", mono: true });
     }
     children.push({ type: "list", items: conflictItems, maxHeight: 110, scroll: true });
   }
@@ -1238,6 +1294,16 @@ function handleAction(action, payload, panelID) {
       break;
     case "filter":
       state.filter = payload.value || "";
+      state.modulePage = 0;
+      break;
+    case "modulePage":
+      state.modulePage = Math.max(0, state.modulePage + (payload.delta || 0));
+      break;
+    case "edgePage":
+      state.edgePage = Math.max(0, state.edgePage + (payload.delta || 0));
+      break;
+    case "conflictPage":
+      state.conflictPage = Math.max(0, state.conflictPage + (payload.delta || 0));
       break;
     case "profile":
       state.profile = payload.value || "";

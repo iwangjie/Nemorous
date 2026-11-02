@@ -1515,6 +1515,9 @@ func (a *App) normalizeWorkspaceFile(wf gitops.WorkspaceFile) gitops.WorkspaceFi
 
 // revealCodeFile expands the repository and every ancestor directory of wf.
 func (a *App) revealCodeFile(wf gitops.WorkspaceFile) {
+	if wf.IsRoot {
+		a.codeRootCollapsed = false
+	}
 	a.expandedCodeRepos[wf.RepoID] = true
 	dir := filepath.ToSlash(filepath.Dir(wf.RelPath))
 	if dir == "." || dir == "" {

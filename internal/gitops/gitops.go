@@ -124,6 +124,7 @@ type WorkspaceFile struct {
 	RepoID   string
 	RepoName string
 	RepoPath string
+	IsRoot   bool
 	Monogram string
 	ColorIdx int
 	RelPath  string
@@ -1057,6 +1058,7 @@ func ListWorkspaceFiles(ctx context.Context, repos []mani.DiscoveredRepo, maxPer
 					RepoID:   r.ID,
 					RepoName: r.Name,
 					RepoPath: r.AbsPath,
+					IsRoot:   r.IsRoot,
 					Monogram: r.Monogram,
 					ColorIdx: r.ColorIndex,
 					RelPath:  l,

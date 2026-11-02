@@ -13,6 +13,39 @@ import (
 
 const maxOutputLine = 1 << 20
 
+// jobEnv starts from the app's environment (with the login shell's PATH) and
+// applies the plugin's overrides, replacing duplicates instead of relying on
+// platform-specific last-wins behaviour.
+func jobEnv(extra map[string]string) []string {
+	env := defaultEnv()
+	if len(extra) == 0 {
+		return env
+	}
+	merged := make(map[string]string, len(env)+len(extra))
+	order := make([]string, 0, len(env)+len(extra))
+	for _, entry := range env {
+		k, v, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, seen := merged[k]; !seen {
+			order = append(order, k)
+		}
+		merged[k] = v
+	}
+	for k, v := range extra {
+		if _, seen := merged[k]; !seen {
+			order = append(order, k)
+		}
+		merged[k] = v
+	}
+	out := make([]string, 0, len(order))
+	for _, k := range order {
+		out = append(out, k+"="+merged[k])
+	}
+	return out
+}
+
 type jobSpec struct {
 	Command string
 	Args    []string
@@ -29,13 +62,7 @@ func runJob(ctx context.Context, spec jobSpec, onOutput func(string), onExit fun
 	command, args := prepareCommand(spec.Command, spec.Args)
 	cmd := exec.CommandContext(runCtx, command, args...)
 	cmd.Dir = spec.Cwd
-	if len(spec.Env) > 0 {
-		env := make([]string, 0, len(spec.Env))
-		for k, v := range spec.Env {
-			env = append(env, k+"="+v)
-		}
-		cmd.Env = append(cmd.Environ(), env...)
-	}
+	cmd.Env = jobEnv(spec.Env)
 	configureProcessGroup(cmd)
 	cmd.Cancel = func() error {
 		killProcessGroup(cmd)

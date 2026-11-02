@@ -3,6 +3,7 @@
 package plugins
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,10 @@ func prepareCommand(command string, args []string) (string, []string) {
 
 func configureProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup}
+}
+
+func defaultEnv() []string {
+	return os.Environ()
 }
 
 func killProcessGroup(cmd *exec.Cmd) {

@@ -389,12 +389,16 @@ func (a *App) buildGitFilterBar(c *ui.Context, p Palette) {
 				})
 			}
 		})
-		author := ui.Autocomplete(c.Key("git-filter-author"), &a.gitFilterAuthor, a.gitAuthorChoices()).Placeholder("作者 / 我").Width(150)
+		// Compact autocompletes keep the filter row's pill rhythm instead of
+		// towering over the branch/since pills beside them.
+		author := ui.Autocomplete(c.Key("git-filter-author"), &a.gitFilterAuthor, a.gitAuthorChoices()).
+			Placeholder("作者 / 我").Width(132).Padding(4, 8).FontSize(11).Radius(6)
 		if author.Changed() {
 			a.gitAuthorMe = strings.TrimSpace(a.gitFilterAuthor) == "我"
 			a.reloadGitLog()
 		}
-		pathIn := ui.Autocomplete(c.Key("git-filter-path"), &a.gitFilterPath, a.gitPathChoices()).Placeholder("路径 / 目录 / glob").Width(170)
+		pathIn := ui.Autocomplete(c.Key("git-filter-path"), &a.gitFilterPath, a.gitPathChoices()).
+			Placeholder("路径 / 目录 / glob").Width(156).Padding(4, 8).FontSize(11).Radius(6)
 		if pathIn.Changed() {
 			if a.gitFilterRepoID == "" {
 				chosen := strings.TrimSuffix(strings.TrimSpace(a.gitFilterPath), "/")
