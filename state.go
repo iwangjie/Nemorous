@@ -1747,6 +1747,20 @@ func (a *App) saveAndCloseCodeTabs(tabs []*codeTab) {
 	a.pendingCodeTabsClose = failed
 }
 
+// openDiffSourceAtCaret opens wf in the editor and puts the caret on the same
+// line/column as the diff's active side, matching Jump to Source (F4).
+func (a *App) openDiffSourceAtCaret(wf gitops.WorkspaceFile, diff *editor.DiffState) {
+	pos := editor.Pos{}
+	if diff != nil {
+		pos = diff.CursorPos()
+	}
+	a.selectCodeFile(wf)
+	if tab := a.activeCodeTab(); tab != nil && tab.state != nil {
+		tab.state.GoTo(pos)
+		tab.state.ScrollTo(pos.Line)
+	}
+}
+
 // closeCodeTab removes a tab and keeps the neighbour active.
 func (a *App) closeCodeTab(tab *codeTab) {
 	for i, t := range a.codeTabs {

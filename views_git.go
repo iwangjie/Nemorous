@@ -1517,7 +1517,7 @@ func (a *App) openGitDiffSource() {
 	}
 	for _, r := range a.repos {
 		if r.Name == a.gitDiffRepo || r.AbsPath == a.gitDetail.RepoPath {
-			a.selectCodeFile(gitops.WorkspaceFile{RepoID: r.ID, RepoName: r.Name, RepoPath: r.AbsPath, RelPath: a.gitDiffPath})
+			a.openDiffSourceAtCaret(gitops.WorkspaceFile{RepoID: r.ID, RepoName: r.Name, RepoPath: r.AbsPath, RelPath: a.gitDiffPath}, a.gitCommitDiff)
 			a.activeTab = TabCode
 			return
 		}

@@ -1138,12 +1138,12 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 				}
 
 				miniBtn(c, p, "打开源文件", func() {
-					a.selectCodeFile(gitops.WorkspaceFile{
+					a.openDiffSourceAtCaret(gitops.WorkspaceFile{
 						RepoID:   cf.RepoID,
 						RepoName: cf.RepoName,
 						RepoPath: cf.RepoPath,
 						RelPath:  cf.Path,
-					})
+					}, a.diffState)
 					a.activeTab = TabCode
 				})
 
