@@ -1137,7 +1137,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					})
 				}
 
-				miniBtn(c, p, "打开源文件", func() {
+				miniBtn(c, p, "修改", func() {
 					a.openDiffSourceAtCaret(gitops.WorkspaceFile{
 						RepoID:   cf.RepoID,
 						RepoName: cf.RepoName,

@@ -1533,26 +1533,15 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 	ui.Column(c).Grow(1).Fill().Background(p.AppBg).Children(func() {
 		ui.Row(c).Height(44).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
-				miniBtn(c, p, "← 返回提交图", func() {
-					a.closeGitCommitDiff()
-				})
 				badgeBox(c, a.gitDiffRepo, p.AccentSoftText, p.AccentSoft, ui.Color{}, 10.5, true)
 				pathLabel := a.gitDiffPath
 				if a.gitDiffOldPath != "" && a.gitDiffOldPath != a.gitDiffPath {
 					pathLabel = a.gitDiffOldPath + " → " + a.gitDiffPath
 				}
 				ui.Text(c, pathLabel).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
-				badgeBox(c, "只读", p.TextMuted, p.Surface2, ui.Color{}, 9.5, false)
-				short := a.gitDiffHash
-				if len(short) > 8 {
-					short = short[:8]
-				}
-				ui.Text(c, short).Font("SF Mono, Menlo, monospace").FontSize(10.5).TextColor(p.TextMuted).Shrink(0)
-				gitIconButton(c, p, "git-copy-diff", icoCopy, "复制提交哈希", func() {
-					a.pendingClipboard = a.gitDiffHash
-				})
 			})
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
+				miniBtn(c, p, "修改", a.openGitDiffSource)
 				ui.Row(c).Padding(2).Gap(2).Radius(6).Background(p.Surface3).Children(func() {
 					layoutBtn := func(sideBySide bool, label string) {
 						active := a.cfg.DiffSideBySide == sideBySide
@@ -1589,15 +1578,11 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 		})
 		idx, files := a.gitDiffFileIndex()
 		a.buildDiffToolbar(c, p, a.gitCommitDiff, diffToolbarOptions{
-			prefix:        "commit-diff",
-			middleIcon:    icoArrowUpRight,
-			middleTip:     "打开文件",
-			middleEnabled: a.gitDiffPath != "",
-			middle:        a.openGitDiffSource,
-			prevFile:      func() { a.stepGitDiffFile(-1) },
-			nextFile:      func() { a.stepGitDiffFile(1) },
-			canPrevFile:   idx > 0,
-			canNextFile:   idx >= 0 && idx < files-1,
+			prefix:      "commit-diff",
+			prevFile:    func() { a.stepGitDiffFile(-1) },
+			nextFile:    func() { a.stepGitDiffFile(1) },
+			canPrevFile: idx > 0,
+			canNextFile: idx >= 0 && idx < files-1,
 		})
 		if a.showDiffOptions {
 			ui.Row(c).Padding(6, 14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {

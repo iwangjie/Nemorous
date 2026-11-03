@@ -218,12 +218,12 @@ func TestGitCommitDiffToolbar(t *testing.T) {
 	}
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	for _, label := range []string{"上一个差异", "下一个差异", "打开文件", "上一个文件", "下一个文件"} {
+	for _, label := range []string{"上一个差异", "下一个差异", "修改", "上一个文件", "下一个文件"} {
 		if _, ok := tt.Find(label); !ok {
 			t.Fatalf("commit diff toolbar is missing %q", label)
 		}
 	}
-	if err := tt.Click("打开文件"); err != nil {
+	if err := tt.Click("修改"); err != nil {
 		t.Fatalf("open file: %v", err)
 	}
 	tt.Frame()

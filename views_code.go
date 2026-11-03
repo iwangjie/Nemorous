@@ -531,11 +531,7 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				} else if row.Hovered() {
 					row.Background(p.Surface2)
 				}
-				short := a.gitDiffHash
-				if len(short) > 6 {
-					short = short[:6]
-				}
-				row.Tooltip(a.gitDiffRepo + "/" + a.gitDiffPath + " · 提交 " + short)
+				row.Tooltip(a.gitDiffRepo + "/" + a.gitDiffPath)
 				row.PopoverMenu(func(m *ui.Menu) {
 					if m.Item("关闭差异").Chosen() {
 						a.closeGitCommitDiff()
@@ -545,9 +541,6 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				row.Children(func() {
 					drawIcon(kc, icoColumns, 11, statusTextColor("M", p))
 					label := "Diff: " + filepath.Base(a.gitDiffPath)
-					if short != "" {
-						label += " · " + short
-					}
 					ui.Text(kc, label).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxWidth(200).SingleLine()
 					xb := ui.Box(kc.Key("x")).Size(16, 16).Radius(3).Center().Shrink(0)
 					if active || row.Hovered() {
@@ -588,11 +581,7 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 					}
 				}
 				if a.gitCommitDiff != nil {
-					short := a.gitDiffHash
-					if len(short) > 6 {
-						short = short[:6]
-					}
-					if m.Item("Diff: " + filepath.Base(a.gitDiffPath) + " · " + short).Radio(a.editorTab == "commit").Chosen() {
+					if m.Item("Diff: " + filepath.Base(a.gitDiffPath)).Radio(a.editorTab == "commit").Chosen() {
 						a.editorTab = "commit"
 					}
 				}
