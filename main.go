@@ -362,6 +362,9 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if a.overlayOpen() {
 		return
 	}
+	if c.Shortcut(0, ui.KeyF4) && (a.editorTab == "changes" || a.editorTab == "commit") {
+		a.openCurrentDiffSource()
+	}
 	if !a.textFocusActive(c) {
 		diff := a.diffState
 		if a.editorTab == "commit" {

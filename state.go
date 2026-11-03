@@ -1820,6 +1820,26 @@ func (a *App) saveAndCloseCodeTabs(tabs []*codeTab) {
 	a.pendingCodeTabsClose = failed
 }
 
+// openCurrentDiffSource is the shared Modify / Jump to Source action for the
+// active diff tab: it opens the working file at the caret's line and column.
+func (a *App) openCurrentDiffSource() {
+	switch a.editorTab {
+	case "changes":
+		if a.selectedChangeFile != nil {
+			cf := *a.selectedChangeFile
+			a.openDiffSourceAtCaret(gitops.WorkspaceFile{
+				RepoID:   cf.RepoID,
+				RepoName: cf.RepoName,
+				RepoPath: cf.RepoPath,
+				RelPath:  cf.Path,
+			}, a.diffState)
+			a.activeTab = TabCode
+		}
+	case "commit":
+		a.openGitDiffSource()
+	}
+}
+
 // openDiffSourceAtCaret opens wf in the editor and puts the caret on the same
 // line/column as the diff's active side, matching Jump to Source (F4).
 func (a *App) openDiffSourceAtCaret(wf gitops.WorkspaceFile, diff *editor.DiffState) {

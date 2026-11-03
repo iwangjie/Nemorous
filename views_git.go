@@ -1541,7 +1541,6 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 				ui.Text(c, pathLabel).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
 			})
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
-				miniBtn(c, p, "修改", a.openGitDiffSource)
 				ui.Row(c).Padding(2).Gap(2).Radius(6).Background(p.Surface3).Children(func() {
 					layoutBtn := func(sideBySide bool, label string) {
 						active := a.cfg.DiffSideBySide == sideBySide
@@ -1578,11 +1577,13 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 		})
 		idx, files := a.gitDiffFileIndex()
 		a.buildDiffToolbar(c, p, a.gitCommitDiff, diffToolbarOptions{
-			prefix:      "commit-diff",
-			prevFile:    func() { a.stepGitDiffFile(-1) },
-			nextFile:    func() { a.stepGitDiffFile(1) },
-			canPrevFile: idx > 0,
-			canNextFile: idx >= 0 && idx < files-1,
+			prefix:        "commit-diff",
+			source:        a.openGitDiffSource,
+			sourceEnabled: a.gitDiffPath != "",
+			prevFile:      func() { a.stepGitDiffFile(-1) },
+			nextFile:      func() { a.stepGitDiffFile(1) },
+			canPrevFile:   idx > 0,
+			canNextFile:   idx >= 0 && idx < files-1,
 		})
 		if a.showDiffOptions {
 			ui.Row(c).Padding(6, 14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {

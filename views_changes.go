@@ -1137,16 +1137,6 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					})
 				}
 
-				miniBtn(c, p, "修改", func() {
-					a.openDiffSourceAtCaret(gitops.WorkspaceFile{
-						RepoID:   cf.RepoID,
-						RepoName: cf.RepoName,
-						RepoPath: cf.RepoPath,
-						RelPath:  cf.Path,
-					}, a.diffState)
-					a.activeTab = TabCode
-				})
-
 				ghostBtn(c, p, icoMore, "", a.showDiffOptions, func() {
 					a.showDiffOptions = !a.showDiffOptions
 				})
@@ -1155,12 +1145,14 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 
 		fileCount := len(a.visibleChangeFileList())
 		a.buildDiffToolbar(c, p, a.diffState, diffToolbarOptions{
-			prefix:      "changes",
-			staging:     true,
-			prevFile:    func() { a.moveChangeSelection(-1) },
-			nextFile:    func() { a.moveChangeSelection(1) },
-			canPrevFile: fileCount > 1,
-			canNextFile: fileCount > 1,
+			prefix:        "changes",
+			staging:       true,
+			source:        a.openCurrentDiffSource,
+			sourceEnabled: true,
+			prevFile:      func() { a.moveChangeSelection(-1) },
+			nextFile:      func() { a.moveChangeSelection(1) },
+			canPrevFile:   fileCount > 1,
+			canNextFile:   fileCount > 1,
 		})
 
 		// Collapsible Diff Display Options Bar ("不常用操作折叠起来，必要时候也能用")
@@ -1221,11 +1213,8 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 type diffToolbarOptions struct {
 	prefix        string
 	staging       bool
-	middleIcon    *ui.SVG
-	middleTip     string
-	middleActive  bool
-	middleEnabled bool
-	middle        func()
+	source        func()
+	sourceEnabled bool
 	prevFile      func()
 	nextFile      func()
 	canPrevFile   bool
@@ -1366,11 +1355,12 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			}
 			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		}
-		if opts.middle != nil {
-			diffToolButton(c, p, opts.prefix+"-middle", opts.middleIcon, opts.middleTip, opts.middleActive, opts.middleEnabled, opts.middle)
-		}
 		diffToolButton(c, p, opts.prefix+"-prev-file", icoArrowLeft, "上一个文件", false, opts.canPrevFile, opts.prevFile)
 		diffToolButton(c, p, opts.prefix+"-next-file", icoArrowRight, "下一个文件", false, opts.canNextFile, opts.nextFile)
+		if opts.source != nil {
+			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
+			diffToolButton(c, p, opts.prefix+"-source", icoEdit, "修改 (F4)", false, opts.sourceEnabled, opts.source)
+		}
 	})
 }
 
