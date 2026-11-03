@@ -1322,6 +1322,10 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
 		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, total > 0, nextHunk)
 		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+		if opts.source != nil {
+			diffToolButton(c, p, opts.prefix+"-source", icoEdit, "修改 (F4)", false, opts.sourceEnabled, opts.source)
+			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
+		}
 		foldLabel := "折叠未更改"
 		if state.ExpandUnchanged {
 			foldLabel = "展开全部"
@@ -1357,10 +1361,6 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		}
 		diffToolButton(c, p, opts.prefix+"-prev-file", icoArrowLeft, "上一个文件", false, opts.canPrevFile, opts.prevFile)
 		diffToolButton(c, p, opts.prefix+"-next-file", icoArrowRight, "下一个文件", false, opts.canNextFile, opts.nextFile)
-		if opts.source != nil {
-			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
-			diffToolButton(c, p, opts.prefix+"-source", icoEdit, "修改 (F4)", false, opts.sourceEnabled, opts.source)
-		}
 	})
 }
 
