@@ -123,22 +123,21 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 	for _, file := range node.files {
 		fileCopy := file
 		kc := c.Key("git-detail-file-" + detail.Hash + "::" + fileCopy.Path)
+		selected := a.gitDetailSelectedPath == fileCopy.Path
 		row := ui.Row(kc).Height(gitCommitTreeRowHeight).Padding(0, 6, 0, indent+8).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-		if row.Hovered() {
+		if selected {
+			row.Background(p.AccentSoft)
+		} else if row.Hovered() {
 			row.Background(p.SurfaceHover)
 		}
 		if row.Clicked() {
+			a.gitDetailSelectedPath = fileCopy.Path
 			a.TriggerGitFileDiff(detail, fileCopy)
 		}
 		row.Children(func() {
-			col, bg := p.Green, p.GreenSoft
-			if fileCopy.Status == "D" {
-				col, bg = p.Danger, p.DangerSoft
-			} else if fileCopy.Status != "A" {
-				col, bg = p.Amber, p.AmberSoft
-			}
+			col, bg := statusTextColor(fileCopy.Status, p), statusChipBg(fileCopy.Status, p)
 			badgeBox(kc, fileCopy.Status, col, bg, ui.Color{}, 9, true)
-			ui.Text(kc, filepath.Base(fileCopy.Path)).FontSize(10.5).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
+			ui.Text(kc, filepath.Base(fileCopy.Path)).FontSize(10.5).TextColor(col).MaxLines(1).Grow(1)
 			if fileCopy.Added > 0 || fileCopy.Deleted > 0 {
 				ui.Text(kc, fmt.Sprintf("+%d -%d", fileCopy.Added, fileCopy.Deleted)).FontSize(9).TextColor(p.TextMuted).Shrink(0)
 			}

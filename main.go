@@ -369,10 +369,31 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if a.overlayOpen() {
 		return
 	}
+	if !a.textFocusActive(c) {
+		diff := a.gitCommitDiff
+		if !a.gitDiffOpen {
+			diff = a.diffState
+		}
+		if diff != nil {
+			if c.Shortcut(ui.Cmd, ui.KeyF) {
+				diff.Find("")
+			}
+			if c.Shortcut(0, ui.KeyF7) {
+				stepDiffHunk(diff, 1)
+			}
+			if c.Shortcut(ui.Shift, ui.KeyF7) {
+				stepDiffHunk(diff, -1)
+			}
+		}
+	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyB) {
 		a.toggleBookmarkAtCursor()
 	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyO) {
+		a.activeTab = TabCode
+		a.codeFilterHandle.Focus()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyF12) {
 		a.openStructure()
 	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyT) {
@@ -381,11 +402,21 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
 		a.openGlobalSearch()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd, ui.KeyP) {
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd, ui.KeyP) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyA) {
 		a.showCmdPalette = !a.showCmdPalette
 		a.cmdPaletteQuery = ""
 		if a.showCmdPalette {
 			a.cmdInputHandle.Focus()
+		}
+	}
+	if len(a.codeTabs) > 0 {
+		if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyBracketLeft) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyBracketRight) {
+			delta := 1
+			if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyBracketLeft) {
+				delta = -1
+			}
+			a.activeTab = TabCode
+			a.activateCodeTab((a.codeTabIdx + delta + len(a.codeTabs)) % len(a.codeTabs))
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyComma) {
@@ -425,6 +456,9 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyL) {
 			a.triggerLSPFormat()
 		}
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyW) && a.activeTab == TabCode && a.activeCodeTab() != nil {
+		a.requestCloseCodeTab(a.activeCodeTab())
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		if a.activeTab == TabChanges {

@@ -415,6 +415,24 @@ func (a *App) buildGitFilterBar(c *ui.Context, p Palette) {
 				}
 			}
 		})
+		groupLabel := "提交图"
+		switch a.gitGroupMode {
+		case "date":
+			groupLabel = "按日期"
+		case "repo":
+			groupLabel = "按仓库"
+		}
+		gitFilterPill(c, p, "git-group-filter", groupLabel, a.gitGroupMode != "", func(m *ui.Menu) {
+			if m.Item("连续提交图").Radio(a.gitGroupMode == "").Chosen() {
+				a.gitGroupMode = ""
+			}
+			if m.Item("按日期分组").Radio(a.gitGroupMode == "date").Chosen() {
+				a.gitGroupMode = "date"
+			}
+			if m.Item("按仓库分组").Radio(a.gitGroupMode == "repo").Chosen() {
+				a.gitGroupMode = "repo"
+			}
+		})
 		gitIconButton(c, p, "git-refresh", icoRefresh, "刷新提交记录", func() {
 			a.reloadGitLog()
 		})
@@ -630,13 +648,20 @@ func (a *App) buildGitCommitList(c *ui.Context, p Palette) {
 			return
 		}
 		ui.Scroll(c).Grow(1).Children(func() {
-			laneLimit := min(a.gitUnifiedMaxLanes, gitGraphLaneLimit)
-			if laneLimit < 1 {
-				laneLimit = 1
-			}
-			gutterW := float32(laneLimit*12 + 8)
-			for _, row := range a.gitUnifiedRows {
-				a.buildGitCommitRow(c, p, row, gutterW, laneLimit)
+			switch a.gitGroupMode {
+			case "date":
+				a.buildGitDateList(c, p)
+			case "repo":
+				a.buildGitRepoList(c, p)
+			default:
+				laneLimit := min(a.gitUnifiedMaxLanes, gitGraphLaneLimit)
+				if laneLimit < 1 {
+					laneLimit = 1
+				}
+				gutterW := float32(laneLimit*12 + 8)
+				for _, row := range a.gitUnifiedRows {
+					a.buildGitCommitRow(c, p, row, gutterW, laneLimit)
+				}
 			}
 			if len(a.gitGroupLoading) > 0 {
 				ui.Row(c.Key("git-unified-loading")).Height(28).Padding(0, 16).AlignItems(ui.Center).Children(func() {
@@ -667,7 +692,104 @@ func (a *App) buildGitCommitList(c *ui.Context, p Palette) {
 	})
 }
 
+// gitDayKey returns the local calendar day used by the optional date grouping.
+func gitDayKey(unix int64) string {
+	if unix <= 0 {
+		return ""
+	}
+	return time.Unix(unix, 0).Format("2006-01-02")
+}
+
+// gitDayLabel renders today/yesterday/date with a stable weekday suffix.
+func gitDayLabel(unix int64) string {
+	t := time.Unix(unix, 0)
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, now.Location())
+	switch {
+	case day.Equal(today):
+		return "今天 · " + t.Format("01-02")
+	case day.Equal(today.AddDate(0, 0, -1)):
+		return "昨天 · " + t.Format("01-02")
+	default:
+		return t.Format("2006-01-02") + " " + []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[int(t.Weekday())]
+	}
+}
+
+func (a *App) buildGitDayHeader(c *ui.Context, p Palette, label string, count int) {
+	ui.Row(c).Height(24).FillWidth().Padding(0, 10).Gap(6).Background(p.RailBg).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, label).FontSize(10).FontWeight(weightSemibold).TextColor(p.TextMuted)
+		ui.Text(c, fmt.Sprintf("%d", count)).FontSize(9).TextColor(p.TextMuted)
+		ui.Box(c).Height(1).Grow(1).Background(p.BorderSubtle)
+	})
+}
+
+// buildGitDateList keeps the flat, scannable log: date headers and one row per
+// commit with repo, author and time. The graph lives in the default mode.
+func (a *App) buildGitDateList(c *ui.Context, p Palette) {
+	counts := make(map[string]int, 8)
+	for _, row := range a.gitUnifiedRows {
+		counts[gitDayKey(gitCommitTime(row.Entry))]++
+	}
+	last := ""
+	for _, row := range a.gitUnifiedRows {
+		key := gitDayKey(gitCommitTime(row.Entry))
+		if key != last {
+			last = key
+			a.buildGitDayHeader(c, p, gitDayLabel(gitCommitTime(row.Entry)), counts[key])
+		}
+		a.buildGitCommitRowMode(c, p, row, 0, 0, false)
+	}
+}
+
+func (a *App) buildGitRepoHeader(c *ui.Context, p Palette, repoID, repoName string, count int) {
+	mono := strings.ToUpper(repoName)
+	if len(mono) > 2 {
+		mono = mono[:2]
+	}
+	badge := repoBadgeColors(0, p.IsDark)
+	if st, ok := a.statusByID[repoID]; ok {
+		badge = repoBadgeColors(st.Repo.ColorIndex, p.IsDark)
+		mono = st.Repo.Monogram
+	}
+	ui.Row(c).Height(26).FillWidth().Padding(0, 10).Gap(6).Background(p.Surface).AlignItems(ui.Center).Children(func() {
+		ui.Box(c).Size(16, 16).Radius(3).Background(badge.Bg).Center().Children(func() {
+			ui.Text(c, mono).FontSize(8.5).FontWeight(weightBold).TextColor(badge.Text)
+		})
+		ui.Text(c, repoName).FontSize(11).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1)
+		ui.Text(c, fmt.Sprintf("%d", count)).FontSize(9).TextColor(p.TextMuted)
+		ui.Box(c).Height(1).Grow(1).Background(p.BorderSubtle)
+	})
+}
+
+// buildGitRepoList groups the unified rows by repository while keeping each
+// repository's commits in time order, giving a multi-root log one clear
+// section per repository.
+func (a *App) buildGitRepoList(c *ui.Context, p Palette) {
+	order := make([]string, 0, 8)
+	names := make(map[string]string, 8)
+	grouped := make(map[string][]gitCommitRow, 8)
+	for _, row := range a.gitUnifiedRows {
+		id := row.Entry.RepoID
+		if _, ok := grouped[id]; !ok {
+			order = append(order, id)
+			names[id] = row.Entry.RepoName
+		}
+		grouped[id] = append(grouped[id], row)
+	}
+	for _, id := range order {
+		a.buildGitRepoHeader(c, p, id, names[id], len(grouped[id]))
+		for _, row := range grouped[id] {
+			a.buildGitCommitRowMode(c, p, row, 0, 0, false)
+		}
+	}
+}
+
 func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutterW float32, laneLimit int) {
+	a.buildGitCommitRowMode(c, p, row, gutterW, laneLimit, true)
+}
+
+func (a *App) buildGitCommitRowMode(c *ui.Context, p Palette, row gitCommitRow, gutterW float32, laneLimit int, showGraph bool) {
 	entry := row.Entry
 	key := entry.RepoID + "|" + entry.Hash
 	selected := a.gitSelectedCommit == key
@@ -731,7 +853,9 @@ func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutt
 		}
 	})
 	rowEl.Children(func() {
-		a.drawGitGraphCell(c, p, key, row, gutterW, laneLimit)
+		if showGraph {
+			a.drawGitGraphCell(c, p, key, row, gutterW, laneLimit)
+		}
 		if st, ok := a.statusByID[entry.RepoID]; ok {
 			badge := repoBadgeColors(st.Repo.ColorIndex, p.IsDark)
 			ui.Box(kc).Size(15, 15).Radius(3).Background(badge.Bg).Center().Shrink(0).Children(func() {
@@ -739,13 +863,20 @@ func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutt
 			})
 		}
 		ui.Text(kc, entry.Subject).FontSize(11.3).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
+		if strings.TrimSpace(entry.Author) != "" {
+			ui.Text(kc, entry.Author).FontSize(9.3).TextColor(p.TextMuted).MaxWidth(86).SingleLine().Shrink(0)
+		}
 		if label, fg, bg := gitPrimaryRef(entry.Refs, p); label != "" {
 			badgeBox(kc, label, fg, bg, ui.Color{}, 9, false)
 			if len(entry.Refs) > 1 {
 				ui.Text(kc, fmt.Sprintf("+%d", len(entry.Refs)-1)).FontSize(8.5).TextColor(p.TextMuted)
 			}
 		}
-		ui.Text(kc, gitRelTime(entry.AuthorUnix)).FontSize(9.3).TextColor(p.TextMuted).Width(62).MaxLines(1)
+		timeText := gitRelTime(entry.AuthorUnix)
+		if !showGraph && entry.AuthorUnix > 0 {
+			timeText = time.Unix(entry.AuthorUnix, 0).Format("15:04")
+		}
+		ui.Text(kc, timeText).FontSize(9.3).TextColor(p.TextMuted).Width(62).MaxLines(1)
 	})
 }
 
@@ -859,7 +990,20 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 				})
 				ui.Text(c, d.Subject).FontSize(13).FontWeight(weightBold).TextColor(p.TextPrimary)
 				if d.Body != "" {
-					ui.Text(c, d.Body).FontSize(10.5).TextColor(p.TextSecondary).MaxLines(8)
+					lines := 8
+					if a.gitDetailBodyExpanded {
+						lines = 1000
+					}
+					ui.Text(c, d.Body).FontSize(10.5).TextColor(p.TextSecondary).MaxLines(lines)
+					if len(d.Body) > 220 || strings.Count(d.Body, "\n") >= 7 {
+						label := "展开正文"
+						if a.gitDetailBodyExpanded {
+							label = "收起正文"
+						}
+						miniBtn(c, p, label, func() {
+							a.gitDetailBodyExpanded = !a.gitDetailBodyExpanded
+						})
+					}
 				}
 				ui.Row(c).Gap(6).Wrap().Children(func() {
 					ui.Text(c, d.Author).FontSize(10.5).TextColor(p.TextSecondary)
@@ -1267,6 +1411,8 @@ func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 	seq := a.gitDetailSeq
 	a.gitDetailLoading = true
 	a.gitDetail = nil
+	a.gitDetailBodyExpanded = false
+	a.gitDetailSelectedPath = ""
 	go func() {
 		files, err := gitops.CommitFiles(context.Background(), entry.RepoPath, entry.Hash)
 		if err != nil {
@@ -1293,6 +1439,7 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 	a.gitDiffHash = detail.Hash
 	a.gitDiffErr = ""
 	a.gitCommitDiff = nil
+	a.gitDetailSelectedPath = file.Path
 	layout := diffLayout(a.cfg.DiffSideBySide)
 	inline := parseInlineMode(a.cfg.DiffInlineMode)
 	wrap := a.cfg.EditorSoftWrap
@@ -1390,6 +1537,7 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 					pathLabel = a.gitDiffOldPath + " → " + a.gitDiffPath
 				}
 				ui.Text(c, pathLabel).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
+				badgeBox(c, "只读", p.TextMuted, p.Surface2, ui.Color{}, 9.5, false)
 				short := a.gitDiffHash
 				if len(short) > 8 {
 					short = short[:8]

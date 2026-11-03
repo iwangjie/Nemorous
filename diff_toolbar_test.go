@@ -102,22 +102,11 @@ func TestDiffToolbar(t *testing.T) {
 	if math.Abs(top-center) > 30 {
 		t.Fatalf("difference should be centered: line top %.0f, viewport center %.0f", top, center)
 	}
-	if app.diffEditable {
-		t.Fatal("diff should start read-only")
-	}
-	if err := tt.Click("编辑差异"); err != nil {
-		t.Fatalf("edit: %v", err)
-	}
-	tt.Frame()
 	if !app.diffEditable || !app.diffState.Editable {
-		t.Fatal("edit should make the new side editable")
+		t.Fatal("working-tree diff should be directly editable")
 	}
-	if err := tt.Click("编辑差异"); err != nil {
-		t.Fatalf("leave edit: %v", err)
-	}
-	tt.Frame()
-	if app.diffEditable {
-		t.Fatal("second click should leave edit mode")
+	if _, ok := tt.Find("编辑差异"); ok {
+		t.Fatal("working-tree diff should not have an edit toggle")
 	}
 	selected := app.selectedChangeKey
 	if err := tt.Click("下一个文件"); err != nil {

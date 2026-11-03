@@ -161,6 +161,23 @@ func codeFileIconColor(name string, p Palette) ui.Color {
 	}
 }
 
+// codeFileStatus returns the VCS kind for a workspace file, or "" when clean.
+func (a *App) codeFileStatus(repoID, relPath string) string {
+	if a.codeStatus == nil {
+		return ""
+	}
+	return a.codeStatus[repoID+"::"+filepath.ToSlash(relPath)]
+}
+
+// codeDirDirty reports whether a directory contains changed files, so the
+// explorer can tint folders that contain changed files.
+func (a *App) codeDirDirty(repoID, dirRelPath string) bool {
+	if a.codeDirtyDirs == nil {
+		return false
+	}
+	return a.codeDirtyDirs[repoID+"::"+filepath.ToSlash(dirRelPath)]
+}
+
 // drawCodeTreeGuides paints one vertical rail per ancestor level, aligned under
 // the parent chevrons so deep trees keep a readable spine.
 func drawCodeTreeGuides(c *ui.Context, p Palette, depth int) {
@@ -297,7 +314,11 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 				chev = icoChevronDown
 			}
 			drawIcon(dkc, chev, 10, p.TextMuted)
-			drawIcon(dkc, icoFolder, 12, p.TextControl)
+			folderCol := p.TextControl
+			if a.codeDirDirty(repoID, subCopy.relPath) {
+				folderCol = p.Blue
+			}
+			drawIcon(dkc, icoFolder, 12, folderCol)
 			ui.Text(dkc, subCopy.name).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
 		})
 
@@ -317,6 +338,9 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 			rowBg = p.ActiveRowBg
 			textCol = p.TextPrimary
 		}
+		if kind := a.codeFileStatus(wf.RepoID, wf.RelPath); kind != "" {
+			textCol = statusTextColor(kind, p)
+		}
 		base := filepath.Base(wf.RelPath)
 
 		fkc := c.Key("wf-" + wf.RepoID + "::" + wf.RelPath)
@@ -324,8 +348,10 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		if fRow.Hovered() && !selected {
 			fRow.Background(p.SurfaceHover)
 		}
-		if fRow.Clicked() {
+		if fRow.DoubleClicked() {
 			a.selectCodeFile(wfCopy)
+		} else if fRow.Clicked() {
+			a.selectCodeFilePreview(wfCopy)
 		}
 		fRow.Children(func() {
 			drawCodeTreeGuides(fkc, p, depth)
@@ -407,10 +433,15 @@ func (a *App) buildCodeTabBar(c *ui.Context, p Palette) {
 					ui.Box(c).Size(6, 6).Radius(3).Background(badge.Text)
 					name := filepath.Base(tabCopy.file.RelPath)
 					textCol := p.TextSecondary
-					if active {
+					if kind := a.codeFileStatus(tabCopy.file.RepoID, tabCopy.file.RelPath); kind != "" {
+						textCol = statusTextColor(kind, p)
+					} else if active {
 						textCol = p.TextPrimary
 					}
-					ui.Text(c, name).FontSize(11.5).FontWeight(weightMedium).TextColor(textCol).MaxWidth(180).SingleLine()
+					nameEl := ui.Text(c, name).FontSize(11.5).FontWeight(weightMedium).TextColor(textCol).MaxWidth(180).SingleLine()
+					if tabCopy.preview {
+						nameEl.Italic().Tooltip("预览标签：双击文件钉住")
+					}
 					if tabCopy.dirty() {
 						ui.Box(c).Size(6, 6).Radius(3).Background(p.Amber)
 					}

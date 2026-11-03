@@ -83,8 +83,9 @@ type lspProblem struct {
 }
 
 type codeTab struct {
-	file  gitops.WorkspaceFile
-	state *editor.State
+	file    gitops.WorkspaceFile
+	state   *editor.State
+	preview bool // preview tab: reused until pinned by a double click
 
 	blameEnabled  bool
 	blameAll      bool
@@ -187,6 +188,8 @@ type App struct {
 	repoBranchTrees     map[string]*branchNode
 	changeTreeCache     map[string]*changeTreeNode
 	codeTreeCache       map[string]*codeTreeDir
+	codeStatus          map[string]string // repoID::path -> VCS kind, for the explorer
+	codeDirtyDirs       map[string]bool   // repoID::dir -> has a changed descendant
 	codeGroupsKey       string
 	codeGroups          []codeRepoGroup
 
@@ -217,6 +220,7 @@ type App struct {
 	collapsedChangeDirs      map[string]bool // "repoID::dirRelPath" -> collapsed
 	collapsedStagedSection   bool
 	collapsedUnstagedSection bool
+	changesFlat              bool
 	stagedSectionInit        bool
 
 	// Multi-Project Branch Switch & Presets State
@@ -240,6 +244,7 @@ type App struct {
 	gitFilterRepoID        string
 	gitFilterBranch        string
 	gitSinceDays           int
+	gitGroupMode           string // "", "date" or "repo"
 	gitFilterHandle        ui.Handle
 	gitLogLoaded           bool
 	gitLogSeq              uint64
@@ -256,6 +261,8 @@ type App struct {
 	gitPinnedCommit        *gitops.CommitEntry // blame jump: keep the target visible outside the first log page
 	gitDetail              *gitops.CommitDetail
 	gitDetailLoading       bool
+	gitDetailBodyExpanded  bool
+	gitDetailSelectedPath  string
 	gitDetailSeq           uint64
 	gitDetailCollapsedDirs map[string]bool
 	gitCollapsedRepos      map[string]bool
@@ -973,6 +980,7 @@ func (a *App) discoverRepos(wsPath string) ([]mani.DiscoveredRepo, *mani.Config)
 // LoadWorkspaceSync synchronously discovers repos and inspects status.
 func (a *App) LoadWorkspaceSync(wsPath string) {
 	a.closeLSPClients()
+	a.resetDiffTabs()
 	wsPath = filepath.Clean(wsPath)
 	a.cfg.AddRecentWorkspace(wsPath)
 	repos, maniCfg := a.discoverRepos(wsPath)
@@ -1418,18 +1426,12 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 	a.maybeRestoreSession()
 }
 
-func (a *App) selectChangedFile(cf gitops.ChangedFile) {
-	a.gitDiffOpen = false
-	a.selectedChangeKey = cf.Key()
-	cfCopy := cf
-	a.selectedChangeFile = &cfCopy
-	a.diffModified = false
-	if a.diffStagedOnly && !cf.Staged {
-		a.diffStagedOnly = false
-	}
-
+// newChangeDiffState builds the single diff shown for one working-tree file.
+// Working-tree diffs are editable directly; the staged (Index) snapshot is
+// read-only because there is no working file behind it.
+func (a *App) newChangeDiffState(cf gitops.ChangedFile, staged bool) *editor.DiffState {
 	ctx := context.Background()
-	oldTxt, newTxt, _, err := gitops.GetFileDiff(ctx, cf.RepoPath, cf.Path, a.diffStagedOnly)
+	oldTxt, newTxt, _, err := gitops.GetFileDiff(ctx, cf.RepoPath, cf.Path, staged)
 	if err != nil {
 		oldTxt = ""
 		newTxt = "// 无法读取文件差异: " + err.Error()
@@ -1439,7 +1441,7 @@ func (a *App) selectChangedFile(cf gitops.ChangedFile) {
 	newBuf := editor.NewBuffer(newTxt)
 	oldBuf.SetLanguage(lang)
 	newBuf.SetLanguage(lang)
-	a.diffState = &editor.DiffState{
+	return &editor.DiffState{
 		Old: oldBuf,
 		New: newBuf,
 		RenderHunkActions: func(ctx *ui.Context, bar ui.Element, acts *editor.DiffHunkActions) {
@@ -1455,15 +1457,53 @@ func (a *App) selectChangedFile(cf gitops.ChangedFile) {
 		Layout:        diffLayout(a.cfg.DiffSideBySide),
 		Inline:        parseInlineMode(a.cfg.DiffInlineMode),
 		Wrap:          a.cfg.EditorSoftWrap,
-		Editable:      a.diffEditable,
+		Editable:      !staged,
 		HunkActions:   true,
 		LineSelection: true,
 		Font:          ui.Font{Size: a.cfg.EditorFontSize},
 	}
 }
 
+// resetDiffTabs drops the current diff when the workspace changes.
+func (a *App) resetDiffTabs() {
+	a.selectedChangeKey = ""
+	a.selectedChangeFile = nil
+	a.diffState = nil
+	a.diffEditable = false
+	a.gitDiffOpen = false
+	a.gitDiffLoading = false
+	a.gitCommitDiff = nil
+	a.gitDiffErr = ""
+}
+
+// selectChangedFile replaces the single diff view with cf. There is
+// deliberately only one working-tree diff tab, mirroring the target product:
+// switching files updates the same view instead of stacking tabs.
+func (a *App) selectChangedFile(cf gitops.ChangedFile) {
+	staged := a.diffStagedOnly
+	if staged && !cf.Staged {
+		staged = false
+		a.diffStagedOnly = false
+	}
+	if a.diffState != nil && a.diffState.New != nil && a.diffState.New.Modified() &&
+		a.selectedChangeFile != nil &&
+		(a.selectedChangeFile.Key() != cf.Key() || a.diffStagedOnly != staged || a.diffEditable != !staged) {
+		a.saveDiffMicroEdit()
+		if a.diffState != nil && a.diffState.New != nil && a.diffState.New.Modified() {
+			return
+		}
+	}
+	a.gitDiffOpen = false
+	a.selectedChangeKey = cf.Key()
+	cfCopy := cf
+	a.selectedChangeFile = &cfCopy
+	a.diffModified = false
+	a.diffEditable = !staged
+	a.diffState = a.newChangeDiffState(cf, staged)
+}
+
 func (a *App) saveDiffMicroEdit() {
-	if a.selectedChangeFile == nil || a.diffState == nil || a.diffState.New == nil {
+	if !a.diffEditable || a.selectedChangeFile == nil || a.diffState == nil || a.diffState.New == nil {
 		return
 	}
 	newContent := a.diffState.New.String()
@@ -1549,16 +1589,41 @@ func (a *App) revealCodeFile(wf gitops.WorkspaceFile) {
 	}
 }
 
-// selectCodeFile opens wf in a tab, or activates its existing tab without
-// reloading, so unsaved edits survive switching.
+// selectCodeFile opens wf in a pinned tab (search, source jump, history).
 func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
+	a.selectCodeFileMode(wf, false)
+}
+
+// selectCodeFilePreview opens/reuses the single italic preview tab used by a
+// single click in the explorer; a double click pins it.
+func (a *App) selectCodeFilePreview(wf gitops.WorkspaceFile) {
+	a.selectCodeFileMode(wf, true)
+}
+
+func (a *App) selectCodeFileMode(wf gitops.WorkspaceFile, preview bool) {
 	a.gitDiffOpen = false
 	wf = a.normalizeWorkspaceFile(wf)
 	for i, tab := range a.codeTabs {
 		if tab.file.RepoID == wf.RepoID && tab.file.RelPath == wf.RelPath {
+			if !preview {
+				tab.preview = false
+			}
 			a.codeTabIdx = i
 			a.revealCodeFile(wf)
 			return
+		}
+	}
+	if preview {
+		for i := len(a.codeTabs) - 1; i >= 0; i-- {
+			tab := a.codeTabs[i]
+			if !tab.preview {
+				continue
+			}
+			if tab.dirty() {
+				tab.preview = false
+				continue
+			}
+			a.closeCodeTab(tab)
 		}
 	}
 
@@ -1581,7 +1646,8 @@ func (a *App) selectCodeFile(wf gitops.WorkspaceFile) {
 		baseBuf.SetLanguage(lang)
 	}
 	tab := &codeTab{
-		file: wf,
+		file:    wf,
+		preview: preview,
 		state: &editor.State{
 			Buffer:   buf,
 			DiffBase: baseBuf,
@@ -1817,6 +1883,18 @@ func (a *App) rebuildBranchCaches() {
 	}
 	a.changeTreeCache = make(map[string]*changeTreeNode)
 	a.codeTreeCache = make(map[string]*codeTreeDir)
+	a.codeStatus = make(map[string]string, len(a.workspaceFiles))
+	a.codeDirtyDirs = make(map[string]bool)
+	for _, st := range a.statuses {
+		for _, f := range st.Files {
+			a.codeStatus[f.Key()] = f.Kind
+			dir := filepath.ToSlash(filepath.Dir(f.Path))
+			for dir != "." && dir != "" && dir != "/" {
+				a.codeDirtyDirs[f.RepoID+"::"+dir] = true
+				dir = filepath.ToSlash(filepath.Dir(dir))
+			}
+		}
+	}
 	a.codeGroupsKey = "\x00"
 	a.codeGroups = nil
 }

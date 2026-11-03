@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -97,34 +98,55 @@ func collectChangeFiles(node *changeTreeNode) []gitops.ChangedFile {
 	return out
 }
 
-func kindTextColor(kind string, p Palette) ui.Color {
+// statusTextColor is the single VCS file-status palette shared by the
+// changes list, commit file trees, the code explorer and editor tabs. Keeping
+// one mapping is what makes a file look the same in every view.
+func statusTextColor(kind string, p Palette) ui.Color {
 	switch kind {
-	case "A", "?":
+	case "A", "C":
 		return p.Green
-	case "D", "U":
-		return p.Danger
-	case "R":
-		return p.Purple
 	case "M":
 		return p.Blue
+	case "D":
+		return p.TextMuted
+	case "R":
+		return p.Purple
+	case "U", "?":
+		return p.Danger
+	case "T":
+		return p.Amber
 	default:
 		return p.Amber
 	}
 }
 
-func kindChipBg(kind string, p Palette) ui.Color {
+// statusChipBg is the soft background paired with statusTextColor for the
+// letter badges used in trees.
+func statusChipBg(kind string, p Palette) ui.Color {
 	switch kind {
-	case "A", "?":
+	case "A", "C":
 		return p.GreenSoft
-	case "D", "U":
-		return p.DangerSoft
-	case "R":
-		return p.PurpleSoft
 	case "M":
 		return p.BlueSoft
+	case "D":
+		return p.Surface2
+	case "R":
+		return p.PurpleSoft
+	case "U", "?":
+		return p.DangerSoft
+	case "T":
+		return p.AmberSoft
 	default:
 		return p.AmberSoft
 	}
+}
+
+func kindTextColor(kind string, p Palette) ui.Color {
+	return statusTextColor(kind, p)
+}
+
+func kindChipBg(kind string, p Palette) ui.Color {
+	return statusChipBg(kind, p)
 }
 
 // buildChangesLeftPane renders repositories as IDEA-style file trees: directories
@@ -199,6 +221,13 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 				}
 			})
 			if allTotal > 0 {
+				layoutLabel := "平铺"
+				if a.changesFlat {
+					layoutLabel = "树形"
+				}
+				miniBtn(c.Key("changes-layout-toggle"), p, layoutLabel, func() {
+					a.changesFlat = !a.changesFlat
+				})
 				menuIconPill(c, p, "changes-list-menu", icoList, "变更列表", false, func(m *ui.Menu) {
 					if m.Item("全部变更").Radio(a.changeListFilter == "__all__").Chosen() {
 						a.changeListFilter = "__all__"
@@ -501,7 +530,7 @@ func (a *App) buildChangesSection(
 				ui.Text(skc.Key("txt"), title).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary)
 				ui.Text(skc.Key("cnt"), fmt.Sprintf("%d", len(files))).FontSize(10.5).TextColor(p.TextMuted)
 				ui.Spacer(skc.Key("spc"))
-				if hdr.Hovered() && len(files) > 0 {
+				if len(files) > 0 {
 					actionText := "取消暂存"
 					if !isStaged {
 						actionText = "全部暂存"
@@ -646,6 +675,12 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, section string, st 
 			})
 			ui.Text(gkc.Key("rname"), stCopy.Repo.Name).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
 			badgeBox(gkc.Key("branch"), stCopy.Branch, p.TextControl, p.Surface2, ui.Color{}, 9.5, false)
+			if stCopy.Ahead > 0 {
+				ui.Text(gkc.Key("ahead"), fmt.Sprintf("↑%d", stCopy.Ahead)).FontSize(9.5).TextColor(p.Blue).Shrink(0)
+			}
+			if stCopy.Behind > 0 {
+				ui.Text(gkc.Key("behind"), fmt.Sprintf("↓%d", stCopy.Behind)).FontSize(9.5).TextColor(p.Amber).Shrink(0)
+			}
 			ui.Spacer(gkc.Key("spc"))
 			ui.Text(gkc.Key("rcnt"), fmt.Sprintf("%d", len(visible))).FontSize(10).TextColor(p.TextMuted)
 			if hdr.Hovered() {
@@ -681,14 +716,22 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, section string, st 
 		})
 
 		if !collapsed {
-			treeKey := section + "|" + a.changeFilterKey(stCopy.Repo.ID)
-			tree, ok := a.changeTreeCache[treeKey]
-			if !ok {
-				tree = buildChangeTree(visible)
-				a.changeTreeCache[treeKey] = tree
+			if a.changesFlat {
+				flat := append([]gitops.ChangedFile(nil), visible...)
+				sort.Slice(flat, func(i, j int) bool { return flat[i].Path < flat[j].Path })
+				for _, f := range flat {
+					a.buildChangeFileRowMode(c, p, section, f, 10, flat, isStaged, true)
+				}
+			} else {
+				treeKey := section + "|" + a.changeFilterKey(stCopy.Repo.ID)
+				tree, ok := a.changeTreeCache[treeKey]
+				if !ok {
+					tree = buildChangeTree(visible)
+					a.changeTreeCache[treeKey] = tree
+				}
+				ordered := a.renderedChangeFiles(repoKey, tree)
+				a.renderChangeTreeNode(c, p, section, stCopy.Repo.ID, tree, 0, ordered, isStaged)
 			}
-			ordered := a.renderedChangeFiles(repoKey, tree)
-			a.renderChangeTreeNode(c, p, section, stCopy.Repo.ID, tree, 0, ordered, isStaged)
 		}
 	})
 }
@@ -762,6 +805,10 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, section, repoID str
 }
 
 func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gitops.ChangedFile, indent float32, ordered []gitops.ChangedFile, isStaged bool) {
+	a.buildChangeFileRowMode(c, p, section, cf, indent, ordered, isStaged, false)
+}
+
+func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, cf gitops.ChangedFile, indent float32, ordered []gitops.ChangedFile, isStaged, showDir bool) {
 	cfCopy := cf
 	key := cfCopy.Key()
 	isSelected := a.selectedChangeKey == key && a.diffStagedOnly == isStaged
@@ -769,13 +816,16 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 
 	rowBg := ui.Transparent
 	if isSelected {
-		rowBg = p.ActiveRowBg
+		rowBg = p.AccentSoft
 	}
 	kindColor := kindTextColor(cfCopy.Kind, p)
 	kindBg := kindChipBg(cfCopy.Kind, p)
 
 	fkc := c.Key(section + "-cf-" + key)
 	fRow := ui.Row(fkc).Height(22).Padding(0, 6, 0, indent).Gap(5).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if isSelected {
+		fRow.BorderWidth(0, 0, 0, 2).BorderColor(p.Accent)
+	}
 	if fRow.Hovered() && !isSelected {
 		fRow.Background(p.SurfaceHover)
 	}
@@ -892,12 +942,15 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 		}
 		info.Children(func() {
 			nameColor := kindColor
-			if isSelected {
-				nameColor = p.TextPrimary
-			}
 			nameText := ui.Text(fkc.Key("name"), baseName).FontSize(11.5).FontWeight(weightMedium).TextColor(nameColor).MaxLines(1)
 			if cfCopy.Kind == "D" {
 				nameText.Strikethrough()
+			}
+			if showDir {
+				dir := filepath.ToSlash(filepath.Dir(cfCopy.Path))
+				if dir != "." && dir != "" {
+					ui.Text(fkc.Key("dir"), dir).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1).Shrink(1)
+				}
 			}
 			ui.Spacer(fkc.Key("spc2"))
 			if !isSelected && (cfCopy.AddedLines > 0 || cfCopy.DeletedLines > 0) {
@@ -1078,7 +1131,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					splitBtn(false, "单栏")
 				})
 
-				if a.diffEditable || isDirty {
+				if isDirty {
 					pill(c, p, "保存 (⌘S)", true, func() {
 						a.saveDiffMicroEdit()
 					})
@@ -1102,16 +1155,8 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 
 		fileCount := len(a.visibleChangeFileList())
 		a.buildDiffToolbar(c, p, a.diffState, diffToolbarOptions{
-			prefix:        "changes",
-			staging:       true,
-			middleIcon:    icoEdit,
-			middleTip:     "编辑差异",
-			middleActive:  a.diffEditable,
-			middleEnabled: true,
-			middle: func() {
-				a.diffEditable = !a.diffEditable
-				a.diffState.Editable = a.diffEditable
-			},
+			prefix:      "changes",
+			staging:     true,
 			prevFile:    func() { a.moveChangeSelection(-1) },
 			nextFile:    func() { a.moveChangeSelection(1) },
 			canPrevFile: fileCount > 1,
@@ -1210,6 +1255,27 @@ func scrollToDiffHunk(state *editor.DiffState, i int) {
 
 // buildDiffToolbar draws IDEA's file-diff actions: previous/next change, the
 // context's middle action, and previous/next file.
+// stepDiffHunk moves to the next/previous difference within the current
+// file and keeps it centered, for F7 / Shift+F7.
+func stepDiffHunk(state *editor.DiffState, delta int) {
+	if state == nil {
+		return
+	}
+	hunks := state.Hunks()
+	if len(hunks) == 0 {
+		return
+	}
+	cur, _ := state.CurrentHunk()
+	next := cur + delta
+	if next < 0 {
+		next = 0
+	}
+	if next >= len(hunks) {
+		next = len(hunks) - 1
+	}
+	scrollToDiffHunk(state, next)
+}
+
 func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState, opts diffToolbarOptions) {
 	if state == nil {
 		return
@@ -1267,6 +1333,19 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
 		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, total > 0, nextHunk)
 		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+		foldLabel := "折叠未更改"
+		if state.ExpandUnchanged {
+			foldLabel = "展开全部"
+		}
+		miniBtn(c.Key(opts.prefix+"-fold"), p, foldLabel, func() {
+			state.ExpandUnchanged = !state.ExpandUnchanged
+			if !state.ExpandUnchanged {
+				state.CollapseAll()
+			}
+		})
+		miniBtn(c.Key(opts.prefix+"-find"), p, "查找", func() {
+			state.Find("")
+		})
 		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		if opts.staging && a.selectedChangeFile != nil {
 			if a.diffStagedOnly {
@@ -1462,7 +1541,7 @@ func (a *App) stageSelectedChange(stage bool) {
 
 // textFocusActive reports whether a text field owns typing in the main view.
 func (a *App) textFocusActive(c *ui.Context) bool {
-	return a.diffEditable || a.commitInputHandle.Focused(c) || a.changesFilterHandle.Focused(c) || a.codeFilterHandle.Focused(c)
+	return a.commitInputHandle.Focused(c) || a.changesFilterHandle.Focused(c) || a.codeFilterHandle.Focused(c)
 }
 
 // stageCurrentDiffHunk stages or unstages the hunk under the caret.
