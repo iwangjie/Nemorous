@@ -464,6 +464,9 @@ func (a *App) buildCodeTabBar(c *ui.Context, p Palette) {
 						})
 					}
 				})
+				if row.DoubleClicked() {
+					tabCopy.preview = false
+				}
 				if row.Clicked() && !closed {
 					a.activateCodeTab(tabIndex)
 				}
@@ -478,6 +481,9 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 		if tab == nil {
 			a.buildCodeWelcome(c, p)
 			return
+		}
+		if tab.preview && tab.dirty() {
+			tab.preview = false
 		}
 
 		a.buildCodeTabBar(c, p)
