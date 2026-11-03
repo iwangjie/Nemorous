@@ -395,21 +395,25 @@ func (a *App) buildCodeWelcome(c *ui.Context, p Palette) {
 	})
 }
 
-// buildCodeTabBar renders the open files like an editor's tabs: one row that
-// scrolls horizontally, with the active file in the surface color.
-func (a *App) buildCodeTabBar(c *ui.Context, p Palette) {
-	ui.Row(c).Height(36).FillWidth().Padding(0, 6).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
+// buildEditorTabBar is the single tab strip for the editor: open files and
+// the current working-tree/commit diff live in the same row, so a diff never
+// replaces the file tabs. A single working diff and a single commit diff are
+// kept, not one tab per file.
+func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
+	if len(a.codeTabs) == 0 && a.diffState == nil && a.gitCommitDiff == nil && !a.gitDiffLoading {
+		return
+	}
+	ui.Row(c).Height(36).FillWidth().Padding(0, 6).Background(p.RailBg).
+		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 		ui.ScrollHorizontal(c).Height(34).Grow(1).Children(func() {
 			for i, tab := range a.codeTabs {
 				tabIndex := i
 				tabCopy := tab
-				active := i == a.codeTabIdx
+				active := a.editorTab == "file" && i == a.codeTabIdx
 				borderCol := ui.Transparent
 				if active {
 					borderCol = p.Border
 				}
-				// Keep a 1px border and the close slot on every tab so switching
-				// the active tab never changes any tab's width.
 				row := ui.Row(c).Height(28).Padding(0, 8).Gap(6).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer).Border(1, borderCol)
 				if active {
 					row.Background(p.Surface)
@@ -471,8 +475,157 @@ func (a *App) buildCodeTabBar(c *ui.Context, p Palette) {
 					a.activateCodeTab(tabIndex)
 				}
 			}
+
+			if a.diffState != nil && a.selectedChangeFile != nil {
+				tabCopy := *a.selectedChangeFile
+				active := a.editorTab == "changes"
+				kc := c.Key("editor-tab-changes-diff")
+				row := ui.Row(kc).Height(28).Padding(0, 8).Gap(6).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer).Border(1, p.Border)
+				if active {
+					row.Background(p.Surface)
+				} else if row.Hovered() {
+					row.Background(p.Surface2)
+				}
+				row.Tooltip(tabCopy.RepoName + "/" + tabCopy.Path + " · 工作区")
+				row.PopoverMenu(func(m *ui.Menu) {
+					if m.Item("关闭差异").Chosen() {
+						a.closeWorkingDiffTab()
+					}
+				})
+				closed := false
+				row.Children(func() {
+					drawIcon(kc, icoColumns, 11, statusTextColor(tabCopy.Kind, p))
+					label := "Diff: " + filepath.Base(tabCopy.Path)
+					ui.Text(kc, label).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxWidth(180).SingleLine()
+					xb := ui.Box(kc.Key("x")).Size(16, 16).Radius(3).Center().Shrink(0)
+					if active || row.Hovered() {
+						xb.Cursor(ui.CursorPointer)
+						if xb.Hovered() {
+							xb.Background(p.SurfaceHover)
+						}
+						if xb.Clicked() {
+							closed = true
+							a.closeWorkingDiffTab()
+						}
+						xb.Children(func() {
+							col := p.TextMuted
+							if xb.Hovered() {
+								col = p.TextPrimary
+							}
+							drawIcon(kc.Key("x-ico"), icoClose, 10, col)
+						})
+					}
+				})
+				if row.Clicked() && !closed {
+					a.editorTab = "changes"
+					a.gitDiffOpen = false
+				}
+			}
+
+			if a.gitCommitDiff != nil || a.gitDiffLoading {
+				active := a.editorTab == "commit"
+				kc := c.Key("editor-tab-commit-diff")
+				row := ui.Row(kc).Height(28).Padding(0, 8).Gap(6).Radius(6).AlignItems(ui.Center).Cursor(ui.CursorPointer).Border(1, p.Border)
+				if active {
+					row.Background(p.Surface)
+				} else if row.Hovered() {
+					row.Background(p.Surface2)
+				}
+				short := a.gitDiffHash
+				if len(short) > 6 {
+					short = short[:6]
+				}
+				row.Tooltip(a.gitDiffRepo + "/" + a.gitDiffPath + " · 提交 " + short)
+				row.PopoverMenu(func(m *ui.Menu) {
+					if m.Item("关闭差异").Chosen() {
+						a.closeGitCommitDiff()
+					}
+				})
+				closed := false
+				row.Children(func() {
+					drawIcon(kc, icoColumns, 11, statusTextColor("M", p))
+					label := "Diff: " + filepath.Base(a.gitDiffPath)
+					if short != "" {
+						label += " · " + short
+					}
+					ui.Text(kc, label).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextPrimary).MaxWidth(200).SingleLine()
+					xb := ui.Box(kc.Key("x")).Size(16, 16).Radius(3).Center().Shrink(0)
+					if active || row.Hovered() {
+						xb.Cursor(ui.CursorPointer)
+						if xb.Hovered() {
+							xb.Background(p.SurfaceHover)
+						}
+						if xb.Clicked() {
+							closed = true
+							a.closeGitCommitDiff()
+						}
+						xb.Children(func() {
+							col := p.TextMuted
+							if xb.Hovered() {
+								col = p.TextPrimary
+							}
+							drawIcon(kc.Key("x-ico"), icoClose, 10, col)
+						})
+					}
+				})
+				if row.Clicked() && !closed {
+					a.editorTab = "commit"
+					a.gitDiffOpen = true
+				}
+			}
 		})
+		if len(a.codeTabs) > 0 || a.diffState != nil || a.gitCommitDiff != nil {
+			menuIconPill(c, p, "editor-tabs-menu", icoChevronDown, "全部标签", false, func(m *ui.Menu) {
+				for i, tab := range a.codeTabs {
+					tabIndex := i
+					if m.Item(filepath.Base(tab.file.RelPath)).Radio(a.editorTab == "file" && i == a.codeTabIdx).Chosen() {
+						a.activateCodeTab(tabIndex)
+					}
+				}
+				if a.diffState != nil && a.selectedChangeFile != nil {
+					if m.Item("Diff: " + filepath.Base(a.selectedChangeFile.Path)).Radio(a.editorTab == "changes").Chosen() {
+						a.editorTab = "changes"
+					}
+				}
+				if a.gitCommitDiff != nil {
+					short := a.gitDiffHash
+					if len(short) > 6 {
+						short = short[:6]
+					}
+					if m.Item("Diff: " + filepath.Base(a.gitDiffPath) + " · " + short).Radio(a.editorTab == "commit").Chosen() {
+						a.editorTab = "commit"
+					}
+				}
+			})
+		}
 	})
+}
+
+// buildEditorContent renders the active editor tab: a file, the working-tree
+// diff, the commit diff, or the welcome view for the current tool window.
+func (a *App) buildEditorContent(c *ui.Context, p Palette) {
+	switch a.editorTab {
+	case "file":
+		if a.activeCodeTab() != nil {
+			a.buildCodeRightPane(c, p)
+			return
+		}
+	case "changes":
+		if a.diffState != nil {
+			a.buildDiffRightPane(c, p)
+			return
+		}
+	case "commit":
+		if a.gitCommitDiff != nil || a.gitDiffLoading {
+			a.buildGitCommitDiffPane(c, p)
+			return
+		}
+	}
+	if a.activeTab == TabCode {
+		a.buildCodeWelcome(c, p)
+		return
+	}
+	a.buildDiffRightPane(c, p)
 }
 
 func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
@@ -486,7 +639,6 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			tab.preview = false
 		}
 
-		a.buildCodeTabBar(c, p)
 		a.prepareLSP(tab)
 		a.syncLSP(tab)
 		wf := tab.file

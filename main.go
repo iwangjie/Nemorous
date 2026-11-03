@@ -223,15 +223,8 @@ func (a *App) BuildUI(c *ui.Context) {
 				editorArea := func() {
 					center := func() {
 						editor := func() {
-							if a.gitDiffOpen {
-								a.buildGitCommitDiffPane(c, p)
-								return
-							}
-							if a.activeTab == TabCode {
-								a.buildCodeRightPane(c, p)
-							} else {
-								a.buildDiffRightPane(c, p)
-							}
+							a.buildEditorTabBar(c, p)
+							a.buildEditorContent(c, p)
 						}
 						ui.Column(c).FillHeight().Children(editor)
 					}
@@ -370,9 +363,9 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		return
 	}
 	if !a.textFocusActive(c) {
-		diff := a.gitCommitDiff
-		if !a.gitDiffOpen {
-			diff = a.diffState
+		diff := a.diffState
+		if a.editorTab == "commit" {
+			diff = a.gitCommitDiff
 		}
 		if diff != nil {
 			if c.Shortcut(ui.Cmd, ui.KeyF) {
@@ -390,7 +383,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		a.toggleBookmarkAtCursor()
 	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyO) {
-		a.activeTab = TabCode
+		a.setPrimaryTab(TabCode)
 		a.codeFilterHandle.Focus()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyF12) {
@@ -433,7 +426,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		a.RefreshAsync()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyK) {
-		a.activeTab = TabChanges
+		a.setPrimaryTab(TabChanges)
 		a.gitDiffOpen = false
 		a.commitInputHandle.Focus()
 	}
@@ -457,8 +450,17 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			a.triggerLSPFormat()
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyW) && a.activeTab == TabCode && a.activeCodeTab() != nil {
-		a.requestCloseCodeTab(a.activeCodeTab())
+	if c.Shortcut(ui.Cmd, ui.KeyW) {
+		switch a.editorTab {
+		case "file":
+			if a.activeCodeTab() != nil {
+				a.requestCloseCodeTab(a.activeCodeTab())
+			}
+		case "changes":
+			a.closeWorkingDiffTab()
+		case "commit":
+			a.closeGitCommitDiff()
+		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		if a.activeTab == TabChanges {
@@ -499,11 +501,11 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.Key1) {
-		a.activeTab = TabChanges
+		a.setPrimaryTab(TabChanges)
 		a.gitDiffOpen = false
 	}
 	if c.Shortcut(ui.Cmd, ui.Key2) {
-		a.activeTab = TabCode
+		a.setPrimaryTab(TabCode)
 		a.gitDiffOpen = false
 	}
 	if c.Shortcut(ui.Cmd, ui.Key3) {
@@ -563,7 +565,7 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				row.Background(p.SurfaceHover)
 			}
 			if row.Clicked() {
-				a.activeTab = tab
+				a.setPrimaryTab(tab)
 				a.gitDiffOpen = false
 			}
 			row.Children(func() {

@@ -1430,6 +1430,7 @@ func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 
 func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitFile) {
 	a.gitDiffOpen = true
+	a.editorTab = "commit"
 	a.gitDiffLoading = true
 	a.gitDiffSeq++
 	seq := a.gitDiffSeq
@@ -1447,7 +1448,7 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 	go func() {
 		oldText, newText, err := gitops.CommitFileVersions(context.Background(), detail.RepoPath, detail.Hash, file.Path, file.OldPath, file.Status)
 		a.runUI(func() {
-			if seq != a.gitDiffSeq || !a.gitDiffOpen {
+			if seq != a.gitDiffSeq {
 				return
 			}
 			a.gitDiffLoading = false
@@ -1477,11 +1478,15 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 }
 
 func (a *App) closeGitCommitDiff() {
+	a.gitDiffSeq++
 	a.gitDiffOpen = false
 	a.gitDiffLoading = false
 	a.gitCommitDiff = nil
 	a.gitDiffErr = ""
 	a.diffJumpEdge = 0
+	if a.editorTab == "commit" {
+		a.focusDefaultEditor()
+	}
 }
 
 // gitDiffFileIndex locates the open commit diff among the commit's changed files.

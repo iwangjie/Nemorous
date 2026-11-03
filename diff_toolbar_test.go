@@ -207,6 +207,7 @@ func TestGitCommitDiffToolbar(t *testing.T) {
 		Files:       []gitops.CommitFile{{Path: "a.txt"}, {Path: "b.txt"}},
 	}
 	app.gitDiffOpen = true
+	app.editorTab = "commit"
 	app.gitDiffRepo = "demo"
 	app.gitDiffPath = "a.txt"
 	app.gitDiffHash = hash

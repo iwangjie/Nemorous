@@ -140,6 +140,7 @@ type App struct {
 
 	// Navigation & Filter
 	activeTab    NavTab
+	editorTab    string // "file", "changes", "commit", or "" when empty
 	showGitPanel bool
 	gitEditorPct float32
 	logEditorPct float32
@@ -674,6 +675,7 @@ func NewApp(cfg config.Config) *App {
 	a := &App{
 		cfg:                    cfg,
 		activeTab:              TabChanges,
+		editorTab:              "",
 		updateMinutesDraft:     float64(cfg.UpdateCheckMinutes),
 		gitEditorPct:           62,
 		logEditorPct:           62,
@@ -1471,9 +1473,76 @@ func (a *App) resetDiffTabs() {
 	a.diffState = nil
 	a.diffEditable = false
 	a.gitDiffOpen = false
+	a.editorTab = ""
 	a.gitDiffLoading = false
 	a.gitCommitDiff = nil
 	a.gitDiffErr = ""
+}
+
+// setPrimaryTab switches the main view. Entering the file view activates a
+// file (or the welcome view), leaving diff tabs available in the shared tab
+// strip instead of keeping a diff in front of the file tree.
+func (a *App) setPrimaryTab(tab NavTab) {
+	a.activeTab = tab
+	switch tab {
+	case TabCode:
+		if len(a.codeTabs) > 0 {
+			a.editorTab = "file"
+			a.gitDiffOpen = false
+			a.codeTabIdx = min(max(a.codeTabIdx, 0), len(a.codeTabs)-1)
+		} else {
+			a.editorTab = ""
+			a.gitDiffOpen = false
+		}
+	case TabChanges:
+		if a.diffState != nil {
+			a.editorTab = "changes"
+			a.gitDiffOpen = false
+		} else if len(a.codeTabs) > 0 {
+			a.editorTab = "file"
+		} else {
+			a.editorTab = ""
+		}
+	}
+}
+
+// focusDefaultEditor activates the best remaining editor after a diff tab is
+// closed: an open file, then the other diff, then the welcome view.
+func (a *App) focusDefaultEditor() {
+	if len(a.codeTabs) > 0 {
+		a.editorTab = "file"
+		a.gitDiffOpen = false
+		a.codeTabIdx = min(max(a.codeTabIdx, 0), len(a.codeTabs)-1)
+		return
+	}
+	if a.diffState != nil {
+		a.editorTab = "changes"
+		a.gitDiffOpen = false
+		return
+	}
+	if a.gitCommitDiff != nil || a.gitDiffLoading {
+		a.editorTab = "commit"
+		a.gitDiffOpen = true
+		return
+	}
+	a.editorTab = ""
+	a.gitDiffOpen = false
+}
+
+// closeWorkingDiffTab closes the single working-tree diff tab.
+func (a *App) closeWorkingDiffTab() {
+	if a.diffState != nil && a.diffState.New != nil && a.diffState.New.Modified() {
+		a.saveDiffMicroEdit()
+		if a.diffState == nil || a.diffState.New == nil || a.diffState.New.Modified() {
+			return
+		}
+	}
+	a.diffState = nil
+	a.selectedChangeFile = nil
+	a.selectedChangeKey = ""
+	if a.editorTab == "changes" {
+		a.focusDefaultEditor()
+	}
 }
 
 // selectChangedFile replaces the single diff view with cf. There is
@@ -1494,6 +1563,7 @@ func (a *App) selectChangedFile(cf gitops.ChangedFile) {
 		}
 	}
 	a.gitDiffOpen = false
+	a.editorTab = "changes"
 	a.selectedChangeKey = cf.Key()
 	cfCopy := cf
 	a.selectedChangeFile = &cfCopy
@@ -1602,6 +1672,7 @@ func (a *App) selectCodeFilePreview(wf gitops.WorkspaceFile) {
 
 func (a *App) selectCodeFileMode(wf gitops.WorkspaceFile, preview bool) {
 	a.gitDiffOpen = false
+	a.editorTab = "file"
 	wf = a.normalizeWorkspaceFile(wf)
 	for i, tab := range a.codeTabs {
 		if tab.file.RepoID == wf.RepoID && tab.file.RelPath == wf.RelPath {
@@ -1671,6 +1742,8 @@ func (a *App) activateCodeTab(i int) {
 		return
 	}
 	a.codeTabIdx = i
+	a.editorTab = "file"
+	a.gitDiffOpen = false
 	a.prepareLSP(a.codeTabs[i])
 }
 
@@ -1771,6 +1844,9 @@ func (a *App) closeCodeTab(tab *codeTab) {
 		switch {
 		case len(a.codeTabs) == 0:
 			a.codeTabIdx = -1
+			if a.editorTab == "file" {
+				a.focusDefaultEditor()
+			}
 		case a.codeTabIdx > i:
 			a.codeTabIdx--
 		case a.codeTabIdx == i:
