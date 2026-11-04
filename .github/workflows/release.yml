@@ -94,7 +94,7 @@ jobs:
       - name: Build signed release packages
         run: go tool mygo build -platform ${{ matrix.platform }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages-${{ matrix.os }}-${{ strategy.job-index }}
           path: ${{ matrix.artifacts }}
