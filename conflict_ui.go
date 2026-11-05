@@ -32,12 +32,14 @@ func (a *App) openConflictResolver(repoID string) {
 	}
 	sameRepo := a.conflictRepoID == repoID && a.conflictRepoPath == path
 	a.showConflict = true
+	a.conflictShowList = true
 	a.conflictRepoID = repoID
 	a.conflictRepoPath = path
 	a.conflictRepoName = st.Repo.Name
 	a.conflictManual = manual
 	if !sameRepo {
 		a.conflictFiles = nil
+		a.conflictTotal = 0
 		a.conflictSelected = ""
 		a.conflictEditor = nil
 		a.conflictBaseView = nil
@@ -50,8 +52,19 @@ func (a *App) openConflictResolver(repoID string) {
 		a.conflictKinds = make(map[string]conflict.Kind)
 		a.conflictBinaryFiles = make(map[string]bool)
 		a.conflictNoMarkerFiles = make(map[string]bool)
+		a.conflictHunkTotals = make(map[string]int)
+		a.conflictResolved = nil
+		a.conflictResolvedOpen = true
+		a.conflictBasePresent = false
+		a.conflictOursPresent = false
+		a.conflictTheirsPresent = false
 		a.conflictBeforeAuto = ""
 		a.conflictBase, a.conflictOurs, a.conflictTheirs = "", "", ""
+	}
+	a.conflictOursBranch, a.conflictTheirsBranch = "", ""
+	if target := a.mergeTargetByID(repoID); target != nil {
+		a.conflictOursBranch = target.TargetBranch
+		a.conflictTheirsBranch = target.SourceBranch
 	}
 	a.conflictBinary = false
 	a.conflictConfirmAbort = false
@@ -74,12 +87,17 @@ func (a *App) loadConflictFiles() {
 		return
 	}
 	path := a.conflictRepoPath
+	a.conflictLoadSeq++
+	seq := a.conflictLoadSeq
 	a.conflictLoading = true
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		entries, err := conflict.UnmergedEntries(ctx, path)
 		a.runUI(func() {
+			if seq != a.conflictLoadSeq || a.conflictRepoPath != path {
+				return
+			}
 			a.conflictLoading = false
 			if err != nil {
 				a.conflictErr = err.Error()
@@ -92,6 +110,19 @@ func (a *App) loadConflictFiles() {
 				kinds[entry.Path] = entry.Kind
 			}
 			a.conflictFiles = files
+			// A file that is unmerged again must leave the resolved section.
+			if len(a.conflictResolved) > 0 {
+				kept := a.conflictResolved[:0]
+				for _, rec := range a.conflictResolved {
+					if !slices.Contains(files, rec.Path) {
+						kept = append(kept, rec)
+					}
+				}
+				a.conflictResolved = kept
+			}
+			if n := len(files) + len(a.conflictResolved); n > a.conflictTotal {
+				a.conflictTotal = n
+			}
 			a.conflictKinds = kinds
 			a.conflictHunkCount = make(map[string]int)
 			a.conflictBinaryFiles = make(map[string]bool)
@@ -121,10 +152,13 @@ func (a *App) loadConflictFiles() {
 			noMarkers := err == conflict.ErrNoMarkers
 			binary := isBinaryContent(content)
 			a.runUI(func() {
-				if a.conflictRepoPath != path {
+				if seq != a.conflictLoadSeq || a.conflictRepoPath != path {
 					return
 				}
 				a.conflictHunkCount[rel] = count
+				if _, ok := a.conflictHunkTotals[rel]; !ok {
+					a.conflictHunkTotals[rel] = count
+				}
 				if noMarkers {
 					a.conflictNoMarkerFiles[rel] = true
 				} else {
@@ -157,12 +191,19 @@ func (a *App) stashConflictDraft() {
 	}
 }
 
+func (a *App) openConflictFile(rel string) {
+	a.conflictShowList = false
+	a.selectConflictFile(rel)
+}
+
 func (a *App) selectConflictFile(rel string) {
 	if a.conflictSelected == rel && a.conflictEditor != nil {
 		return
 	}
 	a.stashConflictDraft()
 	path := a.conflictRepoPath
+	a.conflictSelectSeq++
+	seq := a.conflictSelectSeq
 	a.conflictSelected = rel
 	a.conflictHunkIdx = 0
 	a.conflictErr = ""
@@ -175,13 +216,14 @@ func (a *App) selectConflictFile(rel string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		base, ours, theirs := conflict.Versions(ctx, path, rel)
+		baseStage, oursStage, theirsStage := conflict.Stages(ctx, path, rel)
+		base, ours, theirs := baseStage.Text, oursStage.Text, theirsStage.Text
 		raw := ""
 		fellBack := false
 		if data, err := conflict.ReadFile(path, rel); err == nil {
 			raw = data
 		} else {
-			if ours != "" {
+			if oursStage.Present {
 				raw = ours
 			} else {
 				raw = theirs
@@ -206,11 +248,17 @@ func (a *App) selectConflictFile(rel string) {
 		}
 		a.runUI(func() {
 			// The file may have been resolved (or another one selected)
-			// while the index read was in flight; never resurrect it.
-			if a.conflictSelected != rel {
+			// while the index read was in flight; never resurrect it. A
+			// duplicate selection of the same path must not undo an accept
+			// either, so the generation must still be current.
+			if seq != a.conflictSelectSeq || a.conflictSelected != rel {
 				return
 			}
 			a.conflictBase, a.conflictOurs, a.conflictTheirs = base, ours, theirs
+			a.conflictBasePresent = baseStage.Present
+			a.conflictOursPresent = oursStage.Present
+			a.conflictTheirsPresent = theirsStage.Present
+			a.conflictKeepEmpty = oursStage.Present
 			a.conflictRaw = raw
 			a.conflictBeforeRaw = ""
 			a.conflictBinary = isBinaryContent(base) || isBinaryContent(ours) || isBinaryContent(theirs) || isBinaryContent(raw)
@@ -261,6 +309,29 @@ func (a *App) selectConflictFile(rel string) {
 			a.updateConflictPanes()
 		})
 	}()
+}
+
+// recordResolvedConflict moves a file into the list's resolved section and
+// keeps its original hunk count for the row.
+func (a *App) recordResolvedConflict(rel string) {
+	for _, rec := range a.conflictResolved {
+		if rec.Path == rel {
+			return
+		}
+	}
+	hunks := a.conflictHunkTotals[rel]
+	if hunks == 0 {
+		hunks = a.conflictHunkCount[rel]
+	}
+	a.conflictResolved = append(a.conflictResolved, resolvedConflictFile{
+		Path:   rel,
+		Kind:   a.conflictKind(rel),
+		Hunks:  hunks,
+		Binary: a.conflictBinaryFiles[rel],
+	})
+	if n := len(a.conflictResolved); n > a.conflictTotal {
+		a.conflictTotal = n
+	}
 }
 
 // conflictSay writes the latest file-level result into the modal header.
@@ -532,13 +603,15 @@ func (a *App) conflictUseVersion(side conflict.Strategy) {
 		return
 	}
 	content := a.conflictOurs
+	present := a.conflictOursPresent
 	if side == conflict.Theirs {
-		content = a.conflictTheirs
+		content, present = a.conflictTheirs, a.conflictTheirsPresent
 	} else if side == conflict.Base {
-		content = a.conflictBase
+		content, present = a.conflictBase, a.conflictBasePresent
 	} else if side == conflict.Both {
-		content = a.conflictOurs + a.conflictTheirs
+		content, present = a.conflictOurs+a.conflictTheirs, a.conflictOursPresent || a.conflictTheirsPresent
 	}
+	a.conflictKeepEmpty = present && content == ""
 	a.rememberConflictEdit()
 	a.conflictEditor.Buffer.Set(content)
 	a.conflictUndoExpect = editorText(a.conflictEditor.Buffer)
@@ -661,11 +734,14 @@ func (a *App) saveConflictFile() {
 	}
 	path := a.conflictRepoPath
 	rel := a.conflictSelected
+	// An empty result is a real empty file when the chosen side exists; only
+	// choosing a missing/deleted side means the resolution is a deletion.
+	removeEmpty := content == "" && !a.conflictKeepEmpty
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		var err error
-		if content == "" {
+		if removeEmpty {
 			err = conflict.RemoveAndStage(ctx, path, rel)
 		} else {
 			err = conflict.WriteAndStage(ctx, path, rel, content)
@@ -675,11 +751,13 @@ func (a *App) saveConflictFile() {
 				a.conflictErr = err.Error()
 				return
 			}
+			a.recordResolvedConflict(rel)
 			delete(a.conflictDrafts, rel)
 			delete(a.conflictHunkCount, rel)
 			a.conflictUndoRaw = ""
 			a.conflictUndoExpect = ""
 			a.conflictEditor = nil
+			a.conflictShowList = true
 			a.loadConflictFiles()
 			a.RefreshAsync()
 		})
@@ -844,9 +922,11 @@ func (a *App) conflictDeleteFile() {
 				a.conflictErr = err.Error()
 				return
 			}
+			a.recordResolvedConflict(rel)
 			delete(a.conflictDrafts, rel)
 			delete(a.conflictHunkCount, rel)
 			a.conflictEditor = nil
+			a.conflictShowList = true
 			a.loadConflictFiles()
 			a.RefreshAsync()
 		})
@@ -864,7 +944,14 @@ func (a *App) conflictSideSubs() (string, string) {
 	label := a.conflictOpLabel
 	switch {
 	case a.conflictManual:
-		return "目标分支（目标版本）", "合入分支（来源版本）"
+		ours, theirs := "目标分支（目标版本）", "合入分支（来源版本）"
+		if a.conflictOursBranch != "" {
+			ours = "目标分支（" + a.conflictOursBranch + "）"
+		}
+		if a.conflictTheirsBranch != "" {
+			theirs = "合入分支（" + a.conflictTheirsBranch + "）"
+		}
+		return ours, theirs
 	case strings.Contains(label, "Rebase"):
 		return "变基目标（上游）", "你的提交"
 	case strings.Contains(label, "Cherry-pick"):
@@ -878,7 +965,7 @@ func (a *App) conflictSideSubs() (string, string) {
 	}
 }
 
-func (a *App) conflictPaneSimple(c *ui.Context, p Palette, title, sub string, view *editor.State, tone ui.Color) {
+func (a *App) conflictPaneSimple(c *ui.Context, p Palette, title, sub string, view *editor.State, tone ui.Color, present, deleted bool) {
 	ui.Column(c).Grow(1).FillHeight().Background(p.Surface).Border(1, p.BorderSubtle).Radius(8).Children(func() {
 		ui.Row(c).Height(30).Padding(0, 9).Gap(5).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
 			ui.Box(c).Size(6, 6).Radius(3).Background(tone).Shrink(0)
@@ -886,11 +973,35 @@ func (a *App) conflictPaneSimple(c *ui.Context, p Palette, title, sub string, vi
 			if sub != "" {
 				ui.Text(c, "· "+sub).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
 			}
+			if deleted {
+				ui.Text(c, "· 已删除").FontSize(9.5).FontWeight(weightSemibold).TextColor(p.Danger).MaxLines(1)
+			} else if present && view != nil && view.Buffer != nil && view.Buffer.Len() == 0 {
+				ui.Text(c, "· 空文件").FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
+			}
 			ui.Spacer(c)
 		})
-		if view == nil || view.Buffer == nil || view.Buffer.Len() == 0 {
+		if deleted {
+			if view == nil || view.Buffer == nil || view.Buffer.LineCount() == 0 {
+				ui.Column(c).Grow(1).Center().Children(func() {
+					ui.Text(c, "已删除（删除前无内容）").FontSize(10.5).TextColor(p.Danger)
+				})
+				return
+			}
+			// Show what the delete removed, all in red, so a delete conflict
+			// is a diff instead of three panes saying "no version".
+			view.LineBackgrounds = []editor.LineBackground{{First: 0, Last: view.Buffer.LineCount() - 1, Color: ui.RGBA(239, 68, 68, 0.16)}}
+			editor.View(c, view).Grow(1).FillWidth()
+			return
+		}
+		if !present || view == nil || view.Buffer == nil {
 			ui.Column(c).Grow(1).Center().Children(func() {
 				ui.Text(c, "无此版本").FontSize(10.5).TextColor(p.TextMuted)
+			})
+			return
+		}
+		if view.Buffer.Len() == 0 {
+			ui.Column(c).Grow(1).Center().Children(func() {
+				ui.Text(c, "空文件").FontSize(10.5).TextColor(p.TextMuted)
 			})
 			return
 		}
@@ -958,7 +1069,7 @@ func (a *App) conflictArrowRail(c *ui.Context, p Palette, side conflict.Strategy
 						a.conflictApplyHunk(idx, conflict.Both)
 					}
 					both.Children(func() {
-						ui.Text(c, "BOTH").FontSize(8).FontWeight(weightSemibold).TextColor(p.TextSecondary)
+						ui.Text(c, "BOTH").FontSize(8).FontWeight(weightSemibold).TextColor(p.TextSecondary).PassThrough()
 					})
 				}
 			})
@@ -987,7 +1098,8 @@ func (a *App) conflictResultPane(c *ui.Context, p Palette) {
 			ui.Spacer(c)
 			if a.conflictDoc != nil && len(a.conflictDoc.Hunks) > 0 {
 				accept := func(label string, fg, bg ui.Color, strategy conflict.Strategy, tip string) {
-					btn := ui.Row(c).Height(21).Padding(0, 6).Radius(4).Background(bg).
+					btn := ui.ButtonBase(c).Key("conflict-accept-"+string(strategy)).
+						Height(21).Padding(0, 6).Radius(4).Background(bg).
 						AlignItems(ui.Center).Cursor(ui.CursorPointer).Tooltip(tip)
 					if btn.Hovered() {
 						btn.Background(p.SurfaceHover)
@@ -996,7 +1108,7 @@ func (a *App) conflictResultPane(c *ui.Context, p Palette) {
 						a.conflictApplyHunk(a.conflictHunkIdx, strategy)
 					}
 					btn.Children(func() {
-						ui.Text(c, label).FontSize(9.5).FontWeight(weightSemibold).TextColor(fg).SingleLine()
+						ui.Text(c, label).FontSize(9.5).FontWeight(weightSemibold).TextColor(fg).SingleLine().PassThrough()
 					})
 				}
 				accept("← OURS", p.AccentSoftText, p.AccentSoft, conflict.Ours, "采用 OURS（目标版本）")
@@ -1005,8 +1117,14 @@ func (a *App) conflictResultPane(c *ui.Context, p Palette) {
 			}
 		})
 		if a.conflictEditor == nil || a.conflictEditor.Buffer == nil || a.conflictEditor.Buffer.Len() == 0 {
+			label := "无此版本"
+			if a.conflictOursPresent {
+				label = "空文件"
+			} else if a.conflictKind(a.conflictSelected).DeletesFile() {
+				label = "我方已删除（结果为空）"
+			}
 			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, "无此版本").FontSize(10.5).TextColor(p.TextMuted)
+				ui.Text(c, label).FontSize(10.5).TextColor(p.TextMuted)
 			})
 			return
 		}
@@ -1018,7 +1136,7 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 	a.syncConflictScroll()
 	ui.DialogBase(c, &a.showConflict, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(15, 17, 24, 0.50))
-		width, height := float32(1520), float32(980)
+		width, height := float32(1400), float32(860)
 		if a.win != nil {
 			if w, h := a.win.ContentSize(); w > 0 && h > 0 {
 				width = min(width, float32(w)-24)
@@ -1028,14 +1146,19 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 		panel.Width(width).Height(height).Padding(14).Gap(8).Radius(12).Background(p.AppBg).Border(1, p.Border)
 
 		context := a.conflictRepoName
-		if a.conflictSelected != "" {
+		if !a.conflictShowList && a.conflictSelected != "" {
 			context += " · " + filepath.ToSlash(a.conflictSelected)
 		}
 		modalHeader(c, p, icoMerge, "冲突解决", context, func() {
 			if a.conflictManual {
 				badgeBox(c, "手动合并", p.Amber, p.AmberSoft, p.Amber, 9, true)
 			}
-			if len(a.conflictFiles) > 0 {
+			if !a.conflictShowList && len(a.conflictFiles) > 0 {
+				toolButton(c, p, "conflict-back-list", icoArrowLeft, "返回冲突文件列表", false, true, func() {
+					a.conflictShowList = true
+				})
+			}
+			if len(a.conflictFiles) > 0 && !a.conflictShowList {
 				if a.conflictStatus != "" {
 					col := p.TextMuted
 					switch a.conflictStatusKind {
@@ -1128,14 +1251,7 @@ func (a *App) buildConflictModal(c *ui.Context, p Palette) {
 			ui.Text(c, a.conflictErr).FontSize(10).TextColor(p.Danger).MaxLines(3)
 		}
 
-		if len(a.conflictFiles) == 0 {
-			a.conflictWorkArea(c, p)
-		} else {
-			ui.Row(c).Grow(1).FillWidth().Gap(8).Children(func() {
-				a.conflictFileList(c, p)
-				a.conflictWorkArea(c, p)
-			})
-		}
+		a.conflictWorkArea(c, p)
 
 	})
 }
@@ -1153,67 +1269,264 @@ func conflictKindColor(k conflict.Kind, p Palette) ui.Color {
 	}
 }
 
-func (a *App) conflictFileList(c *ui.Context, p Palette) {
-	ui.Column(c).Width(252).FillHeight().Background(p.Surface).Border(1, p.BorderSubtle).Radius(8).Children(func() {
-		ui.Row(c).Height(34).Padding(0, 9).Gap(6).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
-			ui.Text(c, "冲突文件").FontSize(10.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-			badgeBox(c, fmt.Sprintf("%d", len(a.conflictFiles)), p.TextMuted, p.Surface2, p.TextSecondary, 8.5, true)
+func sideStatusColor(status string, p Palette) ui.Color {
+	switch status {
+	case "删除":
+		return p.Danger
+	case "新增":
+		return p.Green
+	case "修改":
+		return p.TextSecondary
+	default:
+		return p.TextMuted
+	}
+}
+
+func (a *App) resolvedConflictRecord(rel string) (resolvedConflictFile, bool) {
+	for _, rec := range a.conflictResolved {
+		if rec.Path == rel {
+			return rec, true
+		}
+	}
+	return resolvedConflictFile{}, false
+}
+
+// conflictSimpleResolve stages only files whose every hunk is trivial
+// (identical sides, or one side untouched). Anything ambiguous stays for
+// manual review, matching IDEA's "resolve all simple conflicts".
+func (a *App) conflictSimpleResolve() {
+	if a.conflictSimpleBusy || len(a.conflictFiles) == 0 {
+		return
+	}
+	path := a.conflictRepoPath
+	files := slices.Clone(a.conflictFiles)
+	kinds := make(map[string]conflict.Kind, len(files))
+	for _, rel := range files {
+		kinds[rel] = a.conflictKind(rel)
+	}
+	a.conflictSimpleBusy = true
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		var records []resolvedConflictFile
+		for _, rel := range files {
+			content, err := conflict.ReadFile(path, rel)
+			if err != nil || isBinaryContent(content) {
+				continue
+			}
+			doc, err := conflict.Parse(content)
+			if err != nil || len(doc.Hunks) == 0 {
+				continue
+			}
+			raw, resolved, remaining := doc.SmartResolve()
+			if resolved == 0 || remaining > 0 {
+				continue
+			}
+			if err := conflict.WriteAndStage(ctx, path, rel, raw); err != nil {
+				continue
+			}
+			records = append(records, resolvedConflictFile{
+				Path:  rel,
+				Kind:  kinds[rel],
+				Hunks: len(doc.Hunks),
+			})
+		}
+		a.runUI(func() {
+			a.conflictSimpleBusy = false
+			if a.conflictRepoPath != path {
+				return
+			}
+			for _, rec := range records {
+				found := false
+				for _, existing := range a.conflictResolved {
+					if existing.Path == rec.Path {
+						found = true
+						break
+					}
+				}
+				if !found {
+					a.conflictResolved = append(a.conflictResolved, rec)
+				}
+			}
+			if len(records) == 0 {
+				a.showToast("info", "没有可自动解决的简单冲突")
+			} else {
+				a.showToast("ok", fmt.Sprintf("已自动解决 %d 个简单冲突", len(records)))
+			}
+			a.conflictShowList = true
+			a.loadConflictFiles()
+			a.RefreshAsync()
+		})
+	}()
+}
+
+func (a *App) conflictListPage(c *ui.Context, p Palette) {
+	remaining := len(a.conflictFiles)
+	done := len(a.conflictResolved)
+	total := remaining + done
+	if total == 0 {
+		total = a.conflictTotal
+	}
+	oursHead, theirsHead := "我方更改", "对方更改"
+	if a.conflictOursBranch != "" {
+		oursHead = "我方 (" + a.conflictOursBranch + ")"
+	}
+	if a.conflictTheirsBranch != "" {
+		theirsHead = "对方 (" + a.conflictTheirsBranch + ")"
+	}
+	ui.Column(c).Grow(1).FillHeight().Background(p.Surface).Border(1, p.BorderSubtle).Radius(8).Children(func() {
+		ui.Row(c).Height(48).Padding(0, 12).Gap(7).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
+			if remaining == 0 && done > 0 {
+				drawIcon(c, icoResolve, 16, p.Green)
+			} else {
+				drawIcon(c, icoAlert, 16, p.Amber)
+			}
+			if remaining == 0 && done > 0 {
+				ui.Text(c, "已解决").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+				badgeBox(c, fmt.Sprintf("%d", done), p.Green, p.GreenSoft, p.Green, 8.5, true)
+			} else {
+				ui.Text(c, "冲突文件").FontSize(11.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+				badgeBox(c, fmt.Sprintf("%d", remaining), p.Amber, p.AmberSoft, p.Amber, 8.5, true)
+			}
 			ui.Spacer(c)
-			if a.conflictLoading {
-				ui.Text(c, "读取中").FontSize(9).TextColor(p.TextMuted)
+			if remaining > 0 {
+				if a.conflictSimpleBusy {
+					ui.Text(c, "正在处理…").FontSize(9.5).TextColor(p.TextMuted)
+				} else {
+					miniBtn(c, p, "解决简单冲突", func() { a.conflictSimpleResolve() })
+				}
+				ui.Text(c, fmt.Sprintf("已完成 %d / %d", done, total)).FontSize(9.5).TextColor(p.TextMuted)
+				pillDisabled(c, p, fmt.Sprintf("完成 · 还有 %d 个未解决", remaining))
+			} else {
+				ui.Text(c, "所有冲突已解决").FontSize(9.5).TextColor(p.Green)
+				if a.conflictManual {
+					miniBtn(c, p, "完成（本地）", func() { a.finishManualMerge(a.conflictRepoID, false) })
+					pill(c, p, "完成并推送", true, func() { a.finishManualMerge(a.conflictRepoID, true) })
+				} else {
+					pill(c, p, a.conflictOperationLabel(), true, func() { a.continueAfterConflict() })
+				}
 			}
 		})
-		if len(a.conflictFiles) == 0 {
+		if a.conflictOursBranch != "" && a.conflictTheirsBranch != "" {
+			ui.Row(c).Height(24).Padding(0, 12).AlignItems(ui.Center).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
+				ui.Text(c, fmt.Sprintf("将 %s 合并到 %s", a.conflictTheirsBranch, a.conflictOursBranch)).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
+			})
+		}
+		ui.Row(c).Height(28).Padding(0, 12).Gap(8).AlignItems(ui.Center).Background(p.Surface2).BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle).Children(func() {
+			ui.Text(c, "文件").FontSize(9).FontWeight(weightSemibold).TextColor(p.TextMuted).Width(320).Shrink(0)
+			ui.Text(c, "冲突").FontSize(9).FontWeight(weightSemibold).TextColor(p.TextMuted).Width(58).Shrink(0)
+			ui.Text(c, oursHead).FontSize(9).FontWeight(weightSemibold).TextColor(p.TextMuted).Width(104).Shrink(0).MaxLines(1).Tooltip(a.conflictOursBranch)
+			ui.Text(c, theirsHead).FontSize(9).FontWeight(weightSemibold).TextColor(p.TextMuted).Width(104).Shrink(0).MaxLines(1).Tooltip(a.conflictTheirsBranch)
+			ui.Text(c, "路径").FontSize(9).FontWeight(weightSemibold).TextColor(p.TextMuted).Grow(1)
+			ui.Box(c).Width(62).Shrink(0)
+		})
+		if a.conflictLoading && remaining == 0 && done == 0 {
 			ui.Column(c).Grow(1).Center().Children(func() {
-				ui.Text(c, "没有未合并文件").FontSize(10).TextColor(p.TextMuted)
+				ui.Text(c, "正在读取冲突…").FontSize(10.5).TextColor(p.TextMuted)
 			})
 			return
 		}
 		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
-			ui.Column(c).FillWidth().Padding(4).Gap(1).Children(func() {
-				for _, rel := range a.conflictFiles {
-					a.conflictFileRow(c, p, rel)
+			ui.Column(c).FillWidth().Padding(6, 0).Children(func() {
+				if remaining > 0 {
+					ui.Row(c).Height(30).Padding(0, 8).AlignItems(ui.Center).Children(func() {
+						ui.Text(c, "未解决").FontSize(10).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+						badgeBox(c, fmt.Sprintf("%d 文件", remaining), p.Amber, p.AmberSoft, p.Amber, 8.5, true)
+					})
+					for _, rel := range a.conflictFiles {
+						a.conflictListRow(c, p, rel, false)
+					}
+				}
+				if done > 0 {
+					section := ui.ButtonBase(c).Key("conflict-resolved-section").FillWidth().Height(32).
+						Padding(0, 8).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					if section.Hovered() {
+						section.Background(p.SurfaceHover)
+					}
+					if section.Clicked() {
+						a.conflictResolvedOpen = !a.conflictResolvedOpen
+					}
+					section.Children(func() {
+						drawIcon(c, icoResolve, 13, p.Green)
+						ui.Text(c, "已解决").FontSize(10).FontWeight(weightSemibold).TextColor(p.TextPrimary)
+						badgeBox(c, fmt.Sprintf("%d 文件", done), p.Green, p.GreenSoft, p.Green, 8.5, true)
+						ui.Spacer(c)
+						ui.Text(c, map[bool]string{true: "收起", false: "展开"}[a.conflictResolvedOpen]).FontSize(9).TextColor(p.TextMuted)
+					})
+					if a.conflictResolvedOpen {
+						for _, rec := range a.conflictResolved {
+							a.conflictListRow(c, p, rec.Path, true)
+						}
+					}
 				}
 			})
 		})
 	})
 }
 
-func (a *App) conflictFileRow(c *ui.Context, p Palette, rel string) {
+func (a *App) conflictListRow(c *ui.Context, p Palette, rel string, resolved bool) {
+	rec, _ := a.resolvedConflictRecord(rel)
 	kind := a.conflictKind(rel)
-	selected := rel == a.conflictSelected
-	row := ui.Column(c).Key("conflict-row-"+rel).FillWidth().Padding(7, 6).Gap(2).Radius(6).Cursor(ui.CursorPointer)
-	if selected {
-		row.Background(p.AccentSoft)
-	} else if row.Hovered() {
-		row.Background(p.SurfaceHover)
+	hunks := a.conflictHunkCount[rel]
+	binary := a.conflictBinaryFiles[rel]
+	noMarkers := a.conflictNoMarkerFiles[rel]
+	if resolved {
+		kind = rec.Kind
+		hunks = rec.Hunks
+		binary = rec.Binary
+		noMarkers = kind.DeletesFile() || hunks == 0
 	}
-	if row.Clicked() {
-		a.selectConflictFile(rel)
+	var row ui.Element
+	if resolved {
+		row = ui.Row(c).FillWidth().MinHeight(38).Padding(4, 8).Gap(8).AlignItems(ui.Center).
+			BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+	} else {
+		row = ui.ButtonBase(c).Key("conflict-list-"+rel).FillWidth().MinHeight(38).Padding(4, 8).Gap(8).
+			AlignItems(ui.Center).Cursor(ui.CursorPointer).
+			BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
+		if row.Hovered() {
+			row.Background(p.SurfaceHover)
+		}
+		if row.Clicked() {
+			a.openConflictFile(rel)
+		}
 	}
+	row.Tooltip(kind.Label() + "：" + kind.Detail())
 	row.Children(func() {
-		ui.Row(c).FillWidth().Gap(5).AlignItems(ui.Center).Children(func() {
-			drawIcon(c, icoFile, 11, conflictKindColor(kind, p))
-			ui.Text(c, filepath.Base(rel)).FontSize(10.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).Grow(1).MaxLines(1)
-			if n := a.conflictHunkCount[rel]; n > 0 {
-				badgeBox(c, fmt.Sprintf("%d", n), p.Amber, p.AmberSoft, p.Amber, 8.5, true)
+		drawIcon(c, func() *ui.SVG {
+			if resolved {
+				return icoResolve
 			}
-		})
-		ui.Row(c).FillWidth().Gap(4).AlignItems(ui.Center).Children(func() {
-			reason := kind.Label()
-			if a.conflictBinaryFiles[rel] {
-				reason = "二进制 · " + reason
+			return icoFile
+		}(), 14, func() ui.Color {
+			if resolved {
+				return p.Green
 			}
-			ui.Text(c, reason).FontSize(9).TextColor(conflictKindColor(kind, p)).Shrink(0)
-			if a.conflictNoMarkerFiles[rel] && !kind.DeletesFile() {
-				ui.Text(c, "· 无标记").FontSize(9).TextColor(p.Amber).Shrink(0)
-			}
-			dir := filepath.ToSlash(filepath.Dir(rel))
-			if dir == "." {
-				dir = "根目录"
-			}
-			ui.Text(c, dir).FontSize(9).TextColor(p.TextMuted).Grow(1).MaxLines(1)
-		})
+			return conflictKindColor(kind, p)
+		}())
+		ui.Text(c, filepath.Base(rel)).FontSize(10.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).Width(292).Shrink(0).MaxLines(1)
+		count := ""
+		switch {
+		case binary:
+			count = "二进制"
+		case hunks > 0 && resolved:
+			count = fmt.Sprintf("%d/%d", hunks, hunks)
+		case hunks > 0:
+			count = fmt.Sprintf("%d 块", hunks)
+		case noMarkers:
+			count = "—"
+		}
+		ui.Text(c, count).FontSize(9).TextColor(p.TextMuted).Width(58).Shrink(0)
+		ui.Text(c, kind.OursStatus()).FontSize(9.5).TextColor(sideStatusColor(kind.OursStatus(), p)).Width(104).Shrink(0)
+		ui.Text(c, kind.TheirsStatus()).FontSize(9.5).TextColor(sideStatusColor(kind.TheirsStatus(), p)).Width(104).Shrink(0)
+		ui.Text(c, filepath.ToSlash(rel)).Font("monospace").FontSize(8.5).TextColor(p.TextMuted).Grow(1).MaxLines(1)
+		if resolved {
+			ui.Text(c, "已解决").FontSize(9).TextColor(p.Green).Width(62).Shrink(0)
+		} else {
+			ui.Row(c).Height(24).Padding(0, 10).Radius(5).Background(p.AccentSoft).AlignItems(ui.Center).PassThrough().Children(func() {
+				ui.Text(c, "解决").FontSize(9.5).FontWeight(weightSemibold).TextColor(p.AccentSoftText).PassThrough()
+			})
+		}
 	})
 }
 
@@ -1226,25 +1539,33 @@ func (a *App) conflictNoMarkersBanner(c *ui.Context, p Palette) {
 		drawIcon(c, icoAlert, 14, p.Amber)
 		ui.Column(c).Grow(1).Gap(1).Children(func() {
 			ui.Text(c, kind.Detail()).FontSize(10.5).TextColor(p.TextPrimary).MaxLines(2)
-			ui.Text(c, "没有冲突标记；请选择要保留的版本，或确认删除。").FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
+			hint := "没有冲突标记；请选择要保留的版本，或确认删除。"
+			if kind.DeletesFile() && a.conflictBasePresent {
+				hint = "没有冲突标记；红色为删除前的原始内容，可保留空文件或确认删除。"
+			}
+			ui.Text(c, hint).FontSize(9.5).TextColor(p.TextMuted).MaxLines(1)
 		})
-		if a.conflictOurs != "" {
+		if a.conflictOursPresent {
 			miniBtn(c, p, "保留 OURS", func() { a.conflictUseVersion(conflict.Ours) })
 		}
-		if a.conflictTheirs != "" {
+		if a.conflictTheirsPresent {
 			miniBtn(c, p, "保留 THEIRS", func() { a.conflictUseVersion(conflict.Theirs) })
 		}
 		if !kind.DeletesFile() && a.conflictEditor != nil {
 			miniBtn(c, p, "保留当前内容", func() { a.saveConflictFile() })
 		}
-		if kind.DeletesFile() || a.conflictOurs == "" || a.conflictTheirs == "" {
-			pill(c, p, "确认删除", true, func() { a.conflictDeleteFile() })
+		if kind.DeletesFile() || !a.conflictOursPresent || !a.conflictTheirsPresent {
+			dangerPill(c, p, "确认删除", func() { a.conflictDeleteFile() })
 		}
 	})
 }
 
 func (a *App) conflictWorkArea(c *ui.Context, p Palette) {
 	ui.Column(c).Grow(1).FillHeight().Children(func() {
+		if a.conflictShowList && (len(a.conflictFiles) > 0 || len(a.conflictResolved) > 0) {
+			a.conflictListPage(c, p)
+			return
+		}
 		if a.conflictSelected == "" {
 			ui.Column(c).Grow(1).FillHeight().Center().Gap(10).Children(func() {
 				if a.conflictLoading {
@@ -1286,11 +1607,47 @@ func (a *App) conflictWorkArea(c *ui.Context, p Palette) {
 		a.conflictNoMarkersBanner(c, p)
 		ui.Row(c).Grow(1).FillWidth().Gap(6).Children(func() {
 			oursSub, theirsSub := a.conflictSideSubs()
-			a.conflictPaneSimple(c, p, "OURS", oursSub, a.conflictOursView, p.Accent)
+			kind := a.conflictKind(a.conflictSelected)
+			deletes := kind.DeletesFile()
+			oursDeleted := deletes && !a.conflictOursPresent
+			theirsDeleted := deletes && !a.conflictTheirsPresent
+			oursView, theirsView := a.conflictOursView, a.conflictTheirsView
+			if oursDeleted {
+				oursView = a.conflictBaseView
+			}
+			if theirsDeleted {
+				theirsView = a.conflictBaseView
+			}
+			a.conflictPaneSimple(c, p, "OURS", oursSub, oursView, p.Accent, a.conflictOursPresent, oursDeleted)
 			a.conflictArrowRail(c, p, conflict.Ours)
 			a.conflictResultPane(c, p)
 			a.conflictArrowRail(c, p, conflict.Theirs)
-			a.conflictPaneSimple(c, p, "THEIRS", theirsSub, a.conflictTheirsView, p.Amber)
+			a.conflictPaneSimple(c, p, "THEIRS", theirsSub, theirsView, p.Amber, a.conflictTheirsPresent, theirsDeleted)
 		})
+		a.conflictActionBar(c, p)
+	})
+}
+
+// conflictActionBar gives each hunk large, predictable targets at the
+// bottom, like IDEA's merge dialog; the gutter arrows remain for precision.
+func (a *App) conflictActionBar(c *ui.Context, p Palette) {
+	if a.conflictDoc == nil || len(a.conflictDoc.Hunks) == 0 {
+		return
+	}
+	idx := a.conflictHunkIdx
+	if idx < 0 || idx >= len(a.conflictDoc.Hunks) {
+		idx = 0
+	}
+	ui.Row(c).FillWidth().Height(34).Gap(7).AlignItems(ui.Center).Padding(0, 4).
+		BorderWidth(1, 0, 0, 0).BorderColor(p.BorderSubtle).Children(func() {
+		ui.Text(c, fmt.Sprintf("冲突块 %d / %d", idx+1, len(a.conflictDoc.Hunks))).FontSize(9.5).TextColor(p.TextMuted)
+		ui.Box(c).Size(6, 6).Radius(3).Background(p.Accent)
+		ui.Text(c, "我方").FontSize(9).TextColor(p.TextMuted)
+		ui.Box(c).Size(6, 6).Radius(3).Background(p.Amber)
+		ui.Text(c, "对方").FontSize(9).TextColor(p.TextMuted)
+		ui.Spacer(c)
+		miniBtn(c, p, "接受左侧 (⌥1)", func() { a.conflictApplyHunk(idx, conflict.Ours) })
+		miniBtn(c, p, "接受右侧 (⌥2)", func() { a.conflictApplyHunk(idx, conflict.Theirs) })
+		miniBtn(c, p, "接受两者 (⌥3)", func() { a.conflictApplyHunk(idx, conflict.Both) })
 	})
 }

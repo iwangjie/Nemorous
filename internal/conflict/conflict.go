@@ -352,16 +352,30 @@ func ReadFile(repoPath, relPath string) (string, error) {
 	return string(data), nil
 }
 
-// Versions returns the conflict's base, ours and theirs stages from the
-// index, or "" for a stage the file lacks.
-func Versions(ctx context.Context, repoPath, relPath string) (base, ours, theirs string) {
-	for i, dst := range []*string{&base, &ours, &theirs} {
+// Stage is one version of a conflicted file in the index. Present tells an
+// empty file from a side that does not exist, as a delete conflict has.
+type Stage struct {
+	Text    string
+	Present bool
+}
+
+// Stages returns the conflict's base, ours and theirs stages, keeping track
+// of which sides exist.
+func Stages(ctx context.Context, repoPath, relPath string) (base, ours, theirs Stage) {
+	for i, dst := range []*Stage{&base, &ours, &theirs} {
 		out, err := gitops.RunGitRaw(ctx, repoPath, "show", fmt.Sprintf(":%d:%s", i+1, relPath))
 		if err == nil {
-			*dst = out
+			dst.Text, dst.Present = out, true
 		}
 	}
 	return
+}
+
+// Versions returns the conflict's base, ours and theirs stages from the
+// index, or "" for a stage the file lacks.
+func Versions(ctx context.Context, repoPath, relPath string) (base, ours, theirs string) {
+	b, o, t := Stages(ctx, repoPath, relPath)
+	return b.Text, o.Text, t.Text
 }
 
 // WriteAndStage writes content to a conflicted file and marks it resolved.

@@ -316,6 +316,26 @@ func pill(c *ui.Context, p Palette, label string, primary bool, onClick func()) 
 		onClick()
 	}
 	el.Children(func() {
+		ui.Text(c, label).FontSize(12).FontWeight(weightMedium).TextColor(fg).SingleLine().PassThrough()
+	})
+}
+
+// dangerPill marks a destructive action: red fill and border, never the
+// primary blue that reads as "the safe default".
+func dangerPill(c *ui.Context, p Palette, label string, onClick func()) {
+	el := ui.Row(c).Padding(5, 11).Radius(4).Background(p.DangerSoft).
+		Border(1, p.DangerBorder).Cursor(ui.CursorPointer).AlignItems(ui.Center).Shrink(0)
+	if el.Hovered() {
+		el.Background(p.Danger).BorderColor(p.Danger)
+	}
+	if el.Clicked() && onClick != nil {
+		onClick()
+	}
+	el.Children(func() {
+		fg := p.Danger
+		if el.Hovered() {
+			fg = p.AppBg
+		}
 		ui.Text(c, label).FontSize(12).FontWeight(weightMedium).TextColor(fg).SingleLine()
 	})
 }
@@ -525,7 +545,7 @@ func miniBtn(c *ui.Context, p Palette, label string, onClick func()) {
 		onClick()
 	}
 	el.Children(func() {
-		ui.Text(c, label).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextControl).SingleLine()
+		ui.Text(c, label).FontSize(11.5).FontWeight(weightMedium).TextColor(p.TextControl).SingleLine().PassThrough()
 	})
 }
 

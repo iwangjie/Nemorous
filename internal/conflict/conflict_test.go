@@ -290,3 +290,26 @@ func TestUnmergedEntriesClassifiesReasons(t *testing.T) {
 		t.Fatal("delete predicate is wrong")
 	}
 }
+
+func TestKindSideStatus(t *testing.T) {
+	cases := []struct {
+		k            Kind
+		ours, theirs string
+	}{
+		{KindBothModified, "修改", "修改"},
+		{KindBothAdded, "新增", "新增"},
+		{KindDeletedByUs, "删除", "修改"},
+		{KindDeletedByThem, "修改", "删除"},
+		{KindAddedByUs, "新增", "—"},
+		{KindAddedByThem, "—", "新增"},
+		{KindBothDeleted, "删除", "删除"},
+	}
+	for _, c := range cases {
+		if got := c.k.OursStatus(); got != c.ours {
+			t.Fatalf("%v ours = %q, want %q", c.k, got, c.ours)
+		}
+		if got := c.k.TheirsStatus(); got != c.theirs {
+			t.Fatalf("%v theirs = %q, want %q", c.k, got, c.theirs)
+		}
+	}
+}

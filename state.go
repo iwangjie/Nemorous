@@ -115,6 +115,15 @@ func (t *codeTab) dirty() bool {
 	return t != nil && t.state != nil && t.state.Buffer != nil && t.state.Buffer.Modified()
 }
 
+// resolvedConflictFile keeps a file visible in the conflict list after it was
+// resolved, so the list shows the whole merge instead of dropping rows.
+type resolvedConflictFile struct {
+	Path   string
+	Kind   conflict.Kind
+	Hunks  int
+	Binary bool
+}
+
 // ManualMerge holds the temporary worktree prepared for a hand-resolved merge.
 type ManualMerge struct {
 	RepoPath  string
@@ -475,6 +484,10 @@ type App struct {
 	conflictBase          string
 	conflictOurs          string
 	conflictTheirs        string
+	conflictBasePresent   bool
+	conflictOursPresent   bool
+	conflictTheirsPresent bool
+	conflictKeepEmpty     bool
 	conflictErr           string
 	conflictStatus        string
 	conflictStatusKind    string
@@ -482,6 +495,16 @@ type App struct {
 	conflictUndoExpect    string
 	conflictUndoIdx       int
 	conflictLoading       bool
+	conflictShowList      bool
+	conflictTotal         int
+	conflictLoadSeq       int
+	conflictSelectSeq     int
+	conflictResolved      []resolvedConflictFile
+	conflictResolvedOpen  bool
+	conflictHunkTotals    map[string]int
+	conflictOursBranch    string
+	conflictTheirsBranch  string
+	conflictSimpleBusy    bool
 
 	// Local history
 	localHistoryStore     *localhistory.Store

@@ -44,6 +44,34 @@ func (k Kind) Label() string {
 	}
 }
 
+// OursStatus and TheirsStatus are the per-side change columns in the file
+// list, matching IDEA's "your changes / their changes" table.
+func (k Kind) OursStatus() string {
+	switch k {
+	case KindBothModified, KindDeletedByThem:
+		return "修改"
+	case KindBothAdded, KindAddedByUs:
+		return "新增"
+	case KindDeletedByUs, KindBothDeleted:
+		return "删除"
+	default:
+		return "—"
+	}
+}
+
+func (k Kind) TheirsStatus() string {
+	switch k {
+	case KindBothModified, KindDeletedByUs:
+		return "修改"
+	case KindBothAdded, KindAddedByThem:
+		return "新增"
+	case KindDeletedByThem, KindBothDeleted:
+		return "删除"
+	default:
+		return "—"
+	}
+}
+
 // Detail explains a one-sided deletion, where opening the file shows no
 // conflict markers even though the index is still unmerged.
 func (k Kind) Detail() string {

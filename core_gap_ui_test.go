@@ -90,7 +90,16 @@ func TestConflictResolverUIEndToEnd(t *testing.T) {
 	waitApp(t, "conflict operation label", func() bool { return strings.Contains(app.conflictOpLabel, "Rebase") })
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if !tt.HasText("冲突解决") || !tt.HasText("file.txt") || !tt.HasText("RESULT") || !tt.HasText("OURS") || !tt.HasText("THEIRS") {
+	if !tt.HasText("冲突解决") || !tt.HasText("冲突文件") || !tt.HasText("file.txt") ||
+		!tt.HasText("我方更改") || !tt.HasText("对方更改") || !tt.HasText("修改") {
+		t.Fatal("conflict file list did not render")
+	}
+	if err := tt.Click("解决"); err != nil {
+		t.Fatalf("open conflict from list: %v", err)
+	}
+	waitApp(t, "merge view", func() bool { return !app.conflictShowList && app.conflictEditor != nil })
+	tt.Frame()
+	if !tt.HasText("RESULT") || !tt.HasText("OURS") || !tt.HasText("THEIRS") {
 		t.Fatal("three-pane conflict workbench did not render")
 	}
 	if !tt.HasText("变基目标（上游）") || !tt.HasText("你的提交") {
@@ -136,6 +145,9 @@ func TestConflictBlockArrowAppliesTheirs(t *testing.T) {
 	})
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
+	app.openConflictFile(app.conflictFiles[0])
+	waitApp(t, "merge view", func() bool { return !app.conflictShowList && app.conflictEditor != nil })
+	tt.Frame()
 	if err := tt.Click("冲突块 1 采用 THEIRS"); err != nil {
 		t.Fatalf("gutter theirs arrow: %v", err)
 	}
@@ -156,6 +168,9 @@ func TestConflictGutterBothKeepsBothSides(t *testing.T) {
 		return app.conflictEditor != nil && app.conflictDoc != nil
 	})
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	app.openConflictFile(app.conflictFiles[0])
+	waitApp(t, "merge view", func() bool { return !app.conflictShowList && app.conflictEditor != nil })
 	tt.Frame()
 	if err := tt.Click("冲突块 1 采用 BOTH"); err != nil {
 		t.Fatalf("gutter both button: %v", err)
@@ -179,6 +194,9 @@ func TestConflictUndoRestoresBlockForBoth(t *testing.T) {
 	})
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
+	app.openConflictFile(app.conflictFiles[0])
+	waitApp(t, "merge view", func() bool { return !app.conflictShowList && app.conflictEditor != nil })
+	tt.Frame()
 	if err := tt.Click("冲突块 1 采用 OURS"); err != nil {
 		t.Fatalf("gutter ours arrow: %v", err)
 	}
@@ -199,6 +217,159 @@ func TestConflictUndoRestoresBlockForBoth(t *testing.T) {
 	got := strings.TrimSpace(editorText(app.conflictEditor.Buffer))
 	if app.conflictDoc != nil || !strings.Contains(got, "main") || !strings.Contains(got, "feature") {
 		t.Fatalf("after undo + BOTH: doc=%v result=%q", app.conflictDoc != nil, got)
+	}
+}
+
+func TestConflictListReturnsAfterSavingOne(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-b", "main")
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "user.email", "test@example.com")
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("base\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	gitRun(t, dir, "checkout", "-b", "feature")
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("feature\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, dir, "commit", "-am", "feature")
+	gitRun(t, dir, "checkout", "main")
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitRun(t, dir, "commit", "-am", "main")
+	if _, err := gitops.RunGit(context.Background(), dir, "merge", "feature"); err == nil {
+		t.Fatal("expected conflicts")
+	}
+	app := newGapTestApp(t, dir)
+	app.openConflictResolver(app.statuses[0].Repo.ID)
+	waitApp(t, "two conflicts", func() bool { return len(app.conflictFiles) == 2 && !app.conflictLoading })
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if !tt.HasText("已完成 0 / 2") || !tt.HasText("完成 · 还有 2 个未解决") {
+		t.Fatal("list progress or disabled finish is missing")
+	}
+	if err := tt.Click("解决"); err != nil {
+		t.Fatalf("open first conflict: %v", err)
+	}
+	waitApp(t, "first merge view", func() bool { return !app.conflictShowList && app.conflictEditor != nil })
+	tt.Frame()
+	if !tt.HasText("← OURS") {
+		t.Fatal("accept button is missing")
+	}
+	if err := tt.Click("← OURS"); err != nil {
+		t.Fatalf("accept button: %v", err)
+	}
+	for i := 0; i < 10 && app.conflictDoc != nil; i++ {
+		tt.Frame()
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The headless tester dispatches the click on the next frame; real
+	// windows redraw continuously. Pump until the hunk is gone.
+	for i := 0; i < 10 && app.conflictDoc != nil; i++ {
+		tt.Frame()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if app.conflictDoc != nil {
+		t.Fatalf("accept click did not apply the hunk: %q", app.conflictErr)
+	}
+	app.saveConflictFile()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && !(len(app.conflictFiles) == 1 && app.conflictShowList) {
+		tt.Frame()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !(len(app.conflictFiles) == 1 && app.conflictShowList) {
+		t.Fatalf("back to list: files=%v show=%v err=%q doc=%v", app.conflictFiles, app.conflictShowList, app.conflictErr, app.conflictDoc != nil)
+	}
+	tt.Frame()
+	if !tt.HasText("已完成 1 / 2") || !tt.HasText("完成 · 还有 1 个未解决") ||
+		!tt.HasText("已解决") || !tt.HasText("1/1") {
+		t.Fatalf("list progress missing: files=%v resolved=%v total=%d show=%v", app.conflictFiles, app.conflictResolved, app.conflictTotal, app.conflictShowList)
+	}
+}
+
+func TestDeleteDiffShowsRemovedContentRed(t *testing.T) {
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-b", "main")
+	gitRun(t, dir, "config", "user.name", "Test")
+	gitRun(t, dir, "config", "user.email", "test@example.com")
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("line1\nline2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "base")
+	gitRun(t, dir, "checkout", "-b", "feature")
+	gitRun(t, dir, "rm", "file.txt")
+	gitRun(t, dir, "commit", "-m", "delete on feature")
+	gitRun(t, dir, "checkout", "main")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "commit", "-am", "empty on main")
+	if _, err := gitops.RunGit(context.Background(), dir, "merge", "feature"); err == nil {
+		t.Fatal("expected delete/modify conflict")
+	}
+
+	app := newGapTestApp(t, dir)
+	app.openConflictResolver(app.statuses[0].Repo.ID)
+	waitApp(t, "deleted-by-them conflict", func() bool {
+		return len(app.conflictFiles) == 1 && app.conflictKind(app.conflictFiles[0]) == conflict.KindDeletedByThem
+	})
+	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if !tt.HasText("对方更改") || !tt.HasText("删除") || tt.HasText("双方删除") {
+		t.Fatal("list columns do not match the actual UD conflict")
+	}
+	if err := tt.Click("解决"); err != nil {
+		t.Fatalf("open delete conflict from list: %v", err)
+	}
+	waitApp(t, "delete diff", func() bool { return !app.conflictShowList && app.conflictNoMarkers })
+	tt.Frame()
+	if !tt.HasText("对方删除了此文件，我方修改了它。") {
+		t.Fatal("banner does not match the list reason")
+	}
+	if !tt.HasText("已删除") || !tt.HasText("空文件") || tt.HasText("无此版本") {
+		t.Fatal("delete diff should show the empty ours, deleted theirs and removed content")
+	}
+	if !app.conflictOursPresent || app.conflictTheirsPresent {
+		t.Fatalf("stage presence ours=%v theirs=%v", app.conflictOursPresent, app.conflictTheirsPresent)
+	}
+	n := app.conflictBaseView.Buffer.LineCount()
+	if n < 2 || len(app.conflictBaseView.LineBackgrounds) != 1 ||
+		app.conflictBaseView.LineBackgrounds[0].First != 0 ||
+		app.conflictBaseView.LineBackgrounds[0].Last != n-1 {
+		t.Fatalf("deleted content is not fully red: lines=%d backgrounds=%+v", n, app.conflictBaseView.LineBackgrounds)
+	}
+	if !tt.HasText("保留 OURS") {
+		t.Fatal("an empty ours is a real version and must be keepable")
+	}
+	if err := tt.Click("保留 OURS"); err != nil {
+		t.Fatalf("keep empty ours: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("保存并标记解决 (⌘S)"); err != nil {
+		t.Fatalf("save empty ours: %v", err)
+	}
+	waitApp(t, "empty file kept", func() bool { return len(app.conflictFiles) == 0 })
+	if info, err := os.Stat(path); err != nil || info.Size() != 0 {
+		t.Fatalf("empty file was not kept: info=%v err=%v", info, err)
+	}
+	if out, err := gitops.RunGit(context.Background(), dir, "ls-files", "-u"); err != nil || strings.TrimSpace(out) != "" {
+		t.Fatalf("still unmerged: %q err=%v", out, err)
+	}
+	tt.Frame()
+	if !tt.HasText("所有冲突已解决") || !tt.HasText("已解决") {
+		t.Fatal("all-resolved state did not keep the resolved file list")
 	}
 }
 
@@ -234,8 +405,16 @@ func TestDeletedConflictShowsReasonAndOffersKeep(t *testing.T) {
 	})
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
 	tt.Frame()
-	if !tt.HasText("我方删除") || !tt.HasText("待选择") || !tt.HasText("保留 THEIRS") || !tt.HasText("确认删除") {
-		t.Fatal("deleted conflict reason or resolution choices are missing")
+	if !tt.HasText("冲突文件") || !tt.HasText("我方更改") || !tt.HasText("删除") {
+		t.Fatal("deleted conflict sides are missing from the list")
+	}
+	if err := tt.Click("解决"); err != nil {
+		t.Fatalf("open deleted conflict from list: %v", err)
+	}
+	waitApp(t, "deleted merge view", func() bool { return !app.conflictShowList && app.conflictNoMarkers })
+	tt.Frame()
+	if !tt.HasText("待选择") || !tt.HasText("保留 THEIRS") || !tt.HasText("确认删除") {
+		t.Fatal("deleted conflict resolution choices are missing")
 	}
 	if err := tt.Click("保留 THEIRS"); err != nil {
 		t.Fatalf("keep theirs: %v", err)
@@ -581,6 +760,14 @@ func TestBinaryConflictResolution(t *testing.T) {
 	app.openConflictResolver(app.statuses[0].Repo.ID)
 	waitAppUI(t, app, "binary conflict", func() bool { return app.conflictBinary && app.conflictSelected != "" })
 	tt := ui.NewTester(app.BuildUI, 1440, 900)
+	tt.Frame()
+	if !tt.HasText("解决") {
+		t.Fatal("binary conflict is missing from the file list")
+	}
+	if err := tt.Click("解决"); err != nil {
+		t.Fatalf("open binary conflict: %v", err)
+	}
+	app.openConflictFile(app.conflictFiles[0])
 	tt.Frame()
 	if !tt.HasText("二进制文件冲突") {
 		t.Fatal("binary conflict UI did not render")
