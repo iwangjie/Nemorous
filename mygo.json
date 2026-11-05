@@ -1,15 +1,15 @@
 {
-  "name": "Nemorous",
-  "slug": "nemorous",
   "identifier": "dev.nemorous.app",
-  "version": "0.10.16",
-  "out": "build",
   "linux": {
     "webview": false
   },
+  "name": "Nemorous",
+  "out": "build",
+  "slug": "nemorous",
   "updates": {
-    "publicKey": "ox37vmP3aFxe/cbZ19NuQUJd33TC0ZRn4TjtoCI1L2s=",
+    "deltas": 0,
     "github": "iwangjie/Nemorous",
-    "deltas": 0
-  }
+    "publicKey": "ox37vmP3aFxe/cbZ19NuQUJd33TC0ZRn4TjtoCI1L2s="
+  },
+  "version": "0.10.17"
 }
