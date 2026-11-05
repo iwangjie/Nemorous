@@ -441,6 +441,53 @@ func TestAmendCommitAndStashRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCommitToleratesAlreadyStagedDeletionAndVanishedPath(t *testing.T) {
+	ctx := context.Background()
+	repoDir := filepath.Join(t.TempDir(), "workspace")
+	initTestRepo(t, repoDir, "main", map[string]string{
+		"keep.go": "package keep\n",
+		".authz-scan/routes/auth-service-gone.jsonl": "{}\n",
+	})
+	mustGit := func(args ...string) {
+		t.Helper()
+		if _, err := gitops.RunGit(ctx, repoDir, args...); err != nil {
+			t.Fatalf("git %v failed: %v", args, err)
+		}
+	}
+
+	// The deletion is staged before the commit, so the path matches neither
+	// the index nor the worktree: `git add` rejects it as a pathspec, which
+	// used to fail the whole commit.
+	if err := os.Remove(filepath.Join(repoDir, ".authz-scan/routes/auth-service-gone.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	mustGit("add", "--", ".authz-scan/routes/auth-service-gone.jsonl")
+	if err := os.WriteFile(filepath.Join(repoDir, "keep.go"), []byte("package keep\n// v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := []string{
+		".authz-scan/routes/auth-service-gone.jsonl",
+		"keep.go",
+		"ghost.jsonl", // never existed: an untracked file removed after the status snapshot
+	}
+	if _, err := gitops.CommitRepo(ctx, repoDir, "refactor: 重新生成", staged); err != nil {
+		t.Fatalf("CommitRepo should stage the resolvable paths: %v", err)
+	}
+
+	status, _ := gitops.RunGit(ctx, repoDir, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("expected clean worktree after commit, got %q", status)
+	}
+	names, _ := gitops.RunGit(ctx, repoDir, "show", "--name-status", "--pretty=format:", "HEAD")
+	if !strings.Contains(names, "D\t.authz-scan/routes/auth-service-gone.jsonl") {
+		t.Fatalf("expected staged deletion in the commit, got %q", names)
+	}
+	if !strings.Contains(names, "M\tkeep.go") {
+		t.Fatalf("expected keep.go staged despite the unmatched paths, got %q", names)
+	}
+}
+
 func TestBatchCommitUsesPerRepoMessages(t *testing.T) {
 	ctx := context.Background()
 	wsDir := t.TempDir()

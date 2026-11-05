@@ -221,6 +221,13 @@ func runGitOutputTimeout(ctx context.Context, repoPath string, trim bool, timeou
 	return out, nil
 }
 
+// isUnmatchedPathspec reports git's "fatal: pathspec '…' did not match any
+// files", which `git add` raises when a path is in neither the index nor the
+// worktree (for example a deletion that is already staged).
+func isUnmatchedPathspec(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "did not match any files")
+}
+
 func unquoteGitPath(p string) string {
 	p = strings.TrimSpace(p)
 	if len(p) >= 2 && p[0] == '"' && p[len(p)-1] == '"' {
@@ -642,9 +649,21 @@ func commitRepo(ctx context.Context, repoPath string, message string, filesToSta
 		return "", errors.New("commit message cannot be empty")
 	}
 	if len(filesToStage) > 0 {
-		args := append([]string{"add", "--"}, filesToStage...)
+		args := append([]string{"add", "-A", "--"}, filesToStage...)
 		if _, err := RunGit(ctx, repoPath, args...); err != nil {
-			return "", err
+			if !isUnmatchedPathspec(err) {
+				return "", err
+			}
+			// A selected path can vanish from both index and worktree — a
+			// deletion that is already staged, or an untracked file removed
+			// after the status snapshot. `git add` rejects the whole pathspec
+			// list then, which used to block every other selected file. Retry
+			// per path and keep the ones git can still resolve.
+			for _, file := range filesToStage {
+				if _, addErr := RunGit(ctx, repoPath, "add", "-A", "--", file); addErr != nil && !isUnmatchedPathspec(addErr) {
+					return "", addErr
+				}
+			}
 		}
 	}
 	args := []string{"commit"}
