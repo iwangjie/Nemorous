@@ -227,49 +227,20 @@ func parseInt64(s string) int64 {
 // CommitFileVersions returns the old and new file contents for a commit diff,
 // mirroring the buffers the worktree diff viewer consumes.
 func CommitFileVersions(ctx context.Context, repoPath, hash, path, oldPath, status string) (string, string, error) {
-	oldRev := hash + "^"
-	oldContent := ""
-	var err error
-	switch status {
-	case "A":
-		oldContent = ""
-	case "R", "C":
+	var oldContent string
+	if status != "A" {
 		if oldPath == "" {
 			oldPath = path
 		}
-		oldContent, err = showFileAt(ctx, repoPath, oldRev, oldPath)
-		if err != nil {
-			oldContent = ""
-		}
-	case "D":
-		oldContent, err = showFileAt(ctx, repoPath, oldRev, path)
+		var err error
+		oldContent, err = readReviewBlob(ctx, repoPath, hash+"^:"+oldPath, status != "D")
 		if err != nil {
 			return "", "", err
 		}
+	}
+	if status == "D" {
 		return oldContent, "", nil
-	default:
-		oldContent, err = showFileAt(ctx, repoPath, oldRev, path)
-		if err != nil {
-			oldContent = ""
-		}
 	}
-	newContent, err := showFileAt(ctx, repoPath, hash, path)
-	if err != nil {
-		return oldContent, "", err
-	}
-	return oldContent, newContent, nil
-}
-
-func showFileAt(ctx context.Context, repoPath, rev, path string) (string, error) {
-	if rev == "" || rev == "^" {
-		return "", nil
-	}
-	out, err := RunGitRaw(ctx, repoPath, "show", rev+":"+path)
-	if err != nil {
-		return "", err
-	}
-	if strings.ContainsRune(out, '\x00') {
-		return "// 二进制文件，无法以文本形式显示", nil
-	}
-	return out, nil
+	newContent, err := readReviewBlob(ctx, repoPath, hash+":"+path, false)
+	return oldContent, newContent, err
 }

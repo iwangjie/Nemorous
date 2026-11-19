@@ -538,36 +538,19 @@ func detectDefaultBranch(ctx context.Context, repoPath string) string {
 
 // GetFileDiff returns the old content (HEAD/index), new content (working tree or staged), and unified diff patch for a file.
 func GetFileDiff(ctx context.Context, repoPath, relPath string, stagedOnly bool) (oldText, newText, patch string, err error) {
-	cleanRel := filepath.Clean(relPath)
-	if strings.HasPrefix(cleanRel, "..") {
+	if !filepath.IsLocal(relPath) {
 		return "", "", "", errors.New("invalid relative file path")
 	}
-	absFile := filepath.Join(repoPath, cleanRel)
-
+	contents, err := ReadReviewChange(ctx, ChangedFile{RepoPath: repoPath, Path: filepath.Clean(relPath)}, stagedOnly)
+	if err != nil {
+		return "", "", "", err
+	}
+	args := []string{"diff"}
 	if stagedOnly {
-		oldOut, _ := RunGitRaw(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
-		newOut, _ := RunGitRaw(ctx, repoPath, "show", ":"+filepath.ToSlash(cleanRel))
-		patchOut, _ := RunGit(ctx, repoPath, "diff", "--cached", "--", cleanRel)
-		return oldOut, newOut, patchOut, nil
+		args = append(args, "--cached")
 	}
-
-	// Default: compare HEAD (or index if untracked/conflicted) against current working tree file on disk
-	oldOut, showErr := RunGitRaw(ctx, repoPath, "show", "HEAD:"+filepath.ToSlash(cleanRel))
-	if showErr != nil {
-		// Might be newly staged or untracked
-		oldOut, _ = RunGitRaw(ctx, repoPath, "show", ":"+filepath.ToSlash(cleanRel))
-	}
-
-	diskBytes, readErr := os.ReadFile(absFile)
-	if readErr == nil {
-		newText = string(diskBytes)
-	}
-
-	patchOut, _ := RunGit(ctx, repoPath, "diff", "HEAD", "--", cleanRel)
-	if patchOut == "" {
-		patchOut, _ = RunGit(ctx, repoPath, "diff", "--", cleanRel)
-	}
-	return oldOut, newText, patchOut, nil
+	patch, err = RunGit(ctx, repoPath, append(args, "--", filepath.Clean(relPath))...)
+	return contents.Old, contents.New, patch, err
 }
 
 // ReadRepoFile reads a file from a repository and also fetches its HEAD version for gutter diff bars.
@@ -1032,7 +1015,7 @@ func SwitchToMainAll(ctx context.Context, repos []mani.DiscoveredRepo, concurren
 // ListWorkspaceFiles lists tracked/unignored files across all repositories in parallel for fast code browsing and Cmd+P search.
 func ListWorkspaceFiles(ctx context.Context, repos []mani.DiscoveredRepo, maxPerRepo int) []WorkspaceFile {
 	if maxPerRepo <= 0 {
-		maxPerRepo = 2500
+		maxPerRepo = WorkspaceFilePreviewLimit
 	}
 	perRepo := make([][]WorkspaceFile, len(repos))
 	var wg sync.WaitGroup
@@ -1045,45 +1028,11 @@ func ListWorkspaceFiles(ctx context.Context, repos []mani.DiscoveredRepo, maxPer
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			out, err := RunGit(ctx, r.AbsPath, "ls-files", "--cached", "--others", "--exclude-standard")
-			if err != nil || out == "" {
-				return
-			}
-			lines := strings.Split(out, "\n")
-			if len(lines) > maxPerRepo {
-				lines = lines[:maxPerRepo]
-			}
-			files := make([]WorkspaceFile, 0, len(lines))
-			for _, l := range lines {
-				l = unquoteGitPath(l)
-				if l == "" {
-					continue
-				}
-				// Skip nested child git repos when listing workspace root
-				if r.IsRoot && strings.Contains(l, "/") {
-					firstSeg := l[:strings.Index(l, "/")]
-					isChildRepo := false
-					for _, other := range repos {
-						if !other.IsRoot && other.RelPath == firstSeg {
-							isChildRepo = true
-							break
-						}
-					}
-					if isChildRepo {
-						continue
-					}
-				}
-				files = append(files, WorkspaceFile{
-					RepoID:   r.ID,
-					RepoName: r.Name,
-					RepoPath: r.AbsPath,
-					IsRoot:   r.IsRoot,
-					Monogram: r.Monogram,
-					ColorIdx: r.ColorIndex,
-					RelPath:  l,
-					AbsPath:  filepath.Join(r.AbsPath, l),
-				})
-			}
+			var files []WorkspaceFile
+			visitRepositoryFiles(ctx, r, repos, func(path string) bool {
+				files = append(files, workspaceFile(r, path))
+				return len(files) < maxPerRepo
+			})
 			perRepo[idx] = files
 		}(i, repo)
 	}

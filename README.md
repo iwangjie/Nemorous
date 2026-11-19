@@ -126,7 +126,7 @@ Updates are signed and can install in the background. No separate runtime is req
 2. Click the workspace name, then **Add repository** to clone, initialize or import a repository.
 3. Add an HTTPS token or SSH key under **Credentials** if the remote is private.
 4. Select changes, write or generate a commit message, and commit. Use **Commit and Push** for the full flow.
-5. Press `⌘3` / `Ctrl+3` for the commit history, or `⌘B` / `Ctrl+B` for the branch matrix.
+5. Press `⌘9` / `Ctrl+9` for the commit history, or `⌘B` / `Ctrl+B` for the branch matrix.
 
 `mani.yaml` is optional. When present, Nemorous uses it for project names, descriptions and Mani tasks.
 
@@ -141,11 +141,21 @@ Updates are signed and can install in the background. No separate runtime is req
 | `⌘T` | Update all repositories (fetch + fast-forward pull) |
 | `⌘↩` | Commit selected files |
 | `⌘⇧↩` | Commit and push |
-| `⌘1` / `⌘2` / `⌘3` / `⌘4` | Changes / Files / Git / Mani |
+| `⌘0` / `⌘1` / `⌘9` / `⌘4` | Commit / Project / Git / Mani |
 | `⌘B` | Branch matrix |
-| `⌘⇧P` / `⌘P` | Command palette / file finder |
+| `⌘⇧P` / `⌘⇧O` | Command palette / go to file, including `path:line:column` |
+| `⌘E` / `⌘⇧E` | Recent files / recent locations |
 | `⌘⇧F` | Global search |
-| `⌘R` | Refresh workspace |
+| `⌘L` | Go to line and column (`Ctrl+G` on Windows and Linux) |
+| `⌘F` / `⌘G` / `⇧⌘G` / `⌘R` | Find / next match / previous match / replace in the editor |
+| `⌘⌥Y` | Refresh workspace |
+| `⌘D` | Open the diff for the selected Commit file |
+| `F7` / `⇧F7` | Next / previous difference. Press again at the file boundary to switch files |
+| `⌥←` / `⌥→` | Previous / next diff file |
+| `F4` / `⌘[` / `⌘]` | Jump to source / return to the diff / go forward to the source |
+| `⌘C` | Copy the selected item. Untracked Commit files use `~/…` paths and Project uses names |
+| `⌘⇧C` / `⌘⌥⇧C` | Copy absolute path / workspace path and line |
+| `⌥F1` | Open Select In and choose Project to reveal the file in the tree |
 | `⌘S` | Save editor or diff micro-edit |
 | `Space` | Toggle selected file |
 | `S` / `U` | Stage / unstage selected file |

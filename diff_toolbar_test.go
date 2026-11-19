@@ -143,6 +143,13 @@ func TestDiffToolbar(t *testing.T) {
 		t.Fatalf("next difference across files: %v", err)
 	}
 	tt.Frame()
+	if app.selectedChangeKey != bigKey {
+		t.Fatal("the first boundary action should leave the file selected")
+	}
+	if err := tt.Click("下一个差异"); err != nil {
+		t.Fatalf("confirm navigation to next file: %v", err)
+	}
+	tt.Frame()
 	if app.selectedChangeKey == bigKey {
 		t.Fatal("next difference at the last hunk should move to the next file")
 	}
@@ -151,6 +158,10 @@ func TestDiffToolbar(t *testing.T) {
 	}
 	if err := tt.Click("上一个差异"); err != nil {
 		t.Fatalf("previous difference across files: %v", err)
+	}
+	tt.Frame()
+	if err := tt.Click("上一个差异"); err != nil {
+		t.Fatalf("confirm navigation to previous file: %v", err)
 	}
 	tt.Frame()
 	if app.selectedChangeKey != bigKey {

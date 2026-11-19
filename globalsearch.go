@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
@@ -84,10 +85,21 @@ type ripgrepEvent struct {
 // openGlobalSearch resets the find-in-files session and focuses its query
 // field. The actual search starts after the user types.
 func (a *App) openGlobalSearch() {
+	a.openGlobalSearchIn("")
+}
+
+func (a *App) openDirectorySearch(wf gitops.WorkspaceFile) {
+	if wf = a.normalizeWorkspaceFile(wf); wf.AbsPath != "" {
+		a.openGlobalSearchIn(wf.AbsPath)
+	}
+}
+
+func (a *App) openGlobalSearchIn(directory string) {
 	a.showCmdPalette = false
 	a.showBranchPicker = false
 	a.showGlobalSearch = true
 	a.globalSearchQuery = ""
+	a.globalSearchDirectory = directory
 	a.globalSearchGroups = nil
 	a.globalSearchTotal = 0
 	a.globalSearchRunning = false
@@ -137,7 +149,18 @@ func (a *App) scheduleGlobalSearch() {
 		return
 	}
 
-	files := append([]gitops.WorkspaceFile(nil), a.workspaceFiles...)
+	files := a.workspaceFiles
+	if directory := a.globalSearchDirectory; directory != "" {
+		root = directory
+		files = nil
+		for _, wf := range a.workspaceFiles {
+			if rel, err := filepath.Rel(directory, wf.AbsPath); err == nil && filepath.IsLocal(rel) {
+				files = append(files, wf)
+			}
+		}
+	} else {
+		files = append([]gitops.WorkspaceFile(nil), files...)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	a.globalSearchCancel = cancel
 	a.globalSearchRunning = true
@@ -295,20 +318,11 @@ func (a *App) openGlobalSearchHit(hit globalSearchHit) {
 	if hit.AbsPath == "" {
 		return
 	}
-	a.selectCodeFile(gitops.WorkspaceFile{
+	wf := gitops.WorkspaceFile{
 		RepoID: hit.RepoID, RepoName: hit.RepoName, RepoPath: hit.RepoPath,
 		RelPath: hit.RelPath, AbsPath: hit.AbsPath, Monogram: hit.Monogram, ColorIdx: hit.ColorIdx,
-	})
-	a.activeTab = TabCode
-	if a.codeTabIdx >= 0 && a.codeTabIdx < len(a.codeTabs) {
-		if st := a.codeTabs[a.codeTabIdx].state; st != nil {
-			line := hit.Line - 1
-			if line < 0 {
-				line = 0
-			}
-			st.ScrollTo(line)
-		}
 	}
+	a.openReviewLocation(reviewLocation{file: wf, pos: editor.Pos{Line: max(0, hit.Line-1), Col: max(0, hit.Column-1)}})
 }
 
 // searchWorkspace prefers ripgrep for speed and falls back to a bounded Go
@@ -581,7 +595,14 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			drawIcon(c, icoSearch, 15, p.TextMuted)
 			ui.Text(c, "在文件中查找").FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
-			ui.Text(c, "跨仓库文件内容").FontSize(11).TextColor(p.TextMuted)
+			scope := "整个工作区"
+			if directory := a.globalSearchDirectory; directory != "" {
+				scope = a.relativeWorkspacePath(directory)
+				if scope == "" {
+					scope = directory
+				}
+			}
+			ui.Text(c, scope).FontSize(11).TextColor(p.TextMuted).MaxLines(1)
 			ui.Spacer(c)
 			ui.Text(c, "⇧⌘F").FontSize(10.5).TextColor(p.TextMuted)
 		})

@@ -38,6 +38,7 @@ type Config struct {
 	EditorSoftWrap       bool              `json:"editor_soft_wrap"`
 	Zoom                 float32           `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
 	NavShowLabels        bool              `json:"nav_show_labels"`
+	ChangeDiffPreview    bool              `json:"change_diff_preview,omitempty"`
 	IncludeRootRepo      bool              `json:"include_root_repo"`
 	ManiEnabled          bool              `json:"mani_enabled"`
 	AutoUpdate           bool              `json:"auto_update"`          // check GitHub Releases for signed updates

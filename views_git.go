@@ -1429,12 +1429,19 @@ func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 }
 
 func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitFile) {
+	a.rememberCodeLocation()
+	if a.reviewReturn != nil && a.reviewReturn.editor == "commit" {
+		a.reviewReturn = nil
+	}
 	a.gitDiffOpen = true
 	a.editorTab = "commit"
 	a.gitDiffLoading = true
 	a.gitDiffSeq++
 	seq := a.gitDiffSeq
 	a.gitDiffRepo = detail.RepoName
+	a.gitDiffDetail = &detail
+	a.gitDiffJumpEdge = 0
+	a.gitDiffBoundary = diffNavigationBoundary{}
 	a.gitDiffPath = file.Path
 	a.gitDiffOldPath = file.OldPath
 	a.gitDiffHash = detail.Hash
@@ -1454,7 +1461,7 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 			a.gitDiffLoading = false
 			if err != nil {
 				a.gitDiffErr = err.Error()
-				a.diffJumpEdge = 0
+				a.gitDiffJumpEdge = 0
 				return
 			}
 			lang := editor.LanguageFor(file.Path)
@@ -1472,18 +1479,24 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 				HunkActions:   false,
 				LineSelection: true,
 				Font:          font,
+				RenderFindBar: renderReviewFindBar,
 			}
 		})
 	}()
 }
 
 func (a *App) closeGitCommitDiff() {
+	if a.reviewReturn != nil && a.reviewReturn.editor == "commit" {
+		a.reviewReturn = nil
+	}
 	a.gitDiffSeq++
 	a.gitDiffOpen = false
 	a.gitDiffLoading = false
 	a.gitCommitDiff = nil
+	a.gitDiffDetail = nil
 	a.gitDiffErr = ""
-	a.diffJumpEdge = 0
+	a.gitDiffJumpEdge = 0
+	a.gitDiffBoundary = diffNavigationBoundary{}
 	if a.editorTab == "commit" {
 		a.focusDefaultEditor()
 	}
@@ -1491,41 +1504,62 @@ func (a *App) closeGitCommitDiff() {
 
 // gitDiffFileIndex locates the open commit diff among the commit's changed files.
 func (a *App) gitDiffFileIndex() (int, int) {
-	if a.gitDetail == nil {
+	detail := a.currentCommitDiffDetail()
+	if detail == nil {
 		return -1, 0
 	}
-	for i := range a.gitDetail.Files {
-		if a.gitDetail.Files[i].Path == a.gitDiffPath {
-			return i, len(a.gitDetail.Files)
+	for i := range detail.Files {
+		if detail.Files[i].Path == a.gitDiffPath {
+			return i, len(detail.Files)
 		}
 	}
-	return -1, len(a.gitDetail.Files)
+	return -1, len(detail.Files)
+}
+
+func (a *App) currentCommitDiffDetail() *gitops.CommitDetail {
+	if a.gitDiffDetail != nil {
+		return a.gitDiffDetail
+	}
+	if a.gitDetail != nil && a.gitDetail.Hash == a.gitDiffHash {
+		return a.gitDetail
+	}
+	return nil
 }
 
 // stepGitDiffFile opens the previous or next changed file of the same commit.
-func (a *App) stepGitDiffFile(delta int) {
+func (a *App) stepGitDiffFile(delta int) bool {
 	i, n := a.gitDiffFileIndex()
 	if i < 0 {
-		return
+		return false
 	}
 	j := i + delta
 	if j < 0 || j >= n {
-		return
+		return false
 	}
-	a.TriggerGitFileDiff(*a.gitDetail, a.gitDetail.Files[j])
+	detail := a.currentCommitDiffDetail()
+	a.TriggerGitFileDiff(*detail, detail.Files[j])
+	return true
+}
+
+func (a *App) commitDiffOptions() diffToolbarOptions {
+	idx, files := a.gitDiffFileIndex()
+	return diffToolbarOptions{
+		prefix:        "commit-diff",
+		source:        a.openGitDiffSource,
+		sourceEnabled: a.gitDiffPath != "",
+		moveFile:      a.stepGitDiffFile,
+		canPrevFile:   idx > 0,
+		canNextFile:   idx >= 0 && idx < files-1,
+		jumpEdge:      &a.gitDiffJumpEdge,
+		boundary:      &a.gitDiffBoundary,
+		loading:       a.gitDiffLoading,
+	}
 }
 
 // openGitDiffSource opens the commit's changed file in the working-tree code view.
 func (a *App) openGitDiffSource() {
-	if a.gitDetail == nil || a.gitDiffPath == "" {
-		return
-	}
-	for _, r := range a.repos {
-		if r.Name == a.gitDiffRepo || r.AbsPath == a.gitDetail.RepoPath {
-			a.openDiffSourceAtCaret(gitops.WorkspaceFile{RepoID: r.ID, RepoName: r.Name, RepoPath: r.AbsPath, RelPath: a.gitDiffPath}, a.gitCommitDiff)
-			a.activeTab = TabCode
-			return
-		}
+	if wf := a.gitDiffWorkspaceFile(); wf.RelPath != "" {
+		a.openDiffSourceAtCaret(wf, a.gitCommitDiff)
 	}
 }
 
@@ -1538,7 +1572,11 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 				if a.gitDiffOldPath != "" && a.gitDiffOldPath != a.gitDiffPath {
 					pathLabel = a.gitDiffOldPath + " → " + a.gitDiffPath
 				}
-				ui.Text(c, pathLabel).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1)
+				ui.Text(c, pathLabel).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1).PopoverMenu(func(m *ui.Menu) {
+					if a.gitCommitDiff != nil {
+						a.fileLocationMenu(m, a.gitDiffWorkspaceFile(), false, sourcePosition(a.gitCommitDiff).Line+1)
+					}
+				})
 			})
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Shrink(0).Children(func() {
 				ui.Row(c).Padding(2).Gap(2).Radius(6).Background(p.Surface3).Children(func() {
@@ -1575,16 +1613,7 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 				})
 			})
 		})
-		idx, files := a.gitDiffFileIndex()
-		a.buildDiffToolbar(c, p, a.gitCommitDiff, diffToolbarOptions{
-			prefix:        "commit-diff",
-			source:        a.openGitDiffSource,
-			sourceEnabled: a.gitDiffPath != "",
-			prevFile:      func() { a.stepGitDiffFile(-1) },
-			nextFile:      func() { a.stepGitDiffFile(1) },
-			canPrevFile:   idx > 0,
-			canNextFile:   idx >= 0 && idx < files-1,
-		})
+		a.buildDiffToolbar(c, p, a.gitCommitDiff, a.commitDiffOptions())
 		if a.showDiffOptions {
 			ui.Row(c).Padding(6, 14).Gap(10).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "显示选项：").FontSize(11.5).TextColor(p.TextMuted)
@@ -1648,7 +1677,7 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 				ui.Text(c, a.gitDiffErr).FontSize(10.5).TextColor(p.TextMuted).MaxLines(3)
 			})
 		case a.gitCommitDiff != nil:
-			editor.DiffView(c, a.gitCommitDiff).Grow(1).FillWidth()
+			editor.DiffView(c, a.gitCommitDiff).Bind(&a.commitDiffHandle).Grow(1).FillWidth()
 		}
 	})
 }

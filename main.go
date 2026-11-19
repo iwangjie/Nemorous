@@ -12,6 +12,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/conflict"
 )
@@ -290,6 +291,8 @@ func (a *App) BuildUI(c *ui.Context) {
 
 		// Modals & Dialogs
 		a.buildCommandPaletteModal(c, p)
+		a.buildReviewPicker(c, p)
+		a.buildSelectIn(c, p)
 		a.buildGlobalSearchModal(c, p)
 		a.buildBranchSwitchModal(c, p)
 		a.buildSettingsModal(c, p)
@@ -317,6 +320,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildLSPProblemsModal(c, p)
 		a.buildCommitResetModal(c, p)
 		a.buildCommitMsgHistoryModal(c, p)
+		a.buildReviewSaveConflict(c, p)
 	})
 }
 
@@ -347,14 +351,14 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			a.closeConflictModal()
 		}
 	}
-	// Global window zoom shortcuts (Cmd +, Cmd -, Cmd 0)
+	// Global window zoom shortcuts (Cmd +, Cmd -, Cmd Shift 0).
 	if c.Shortcut(ui.Cmd, ui.KeyEqual) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEqual) {
 		a.ZoomIn()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyMinus) {
 		a.ZoomOut()
 	}
-	if c.Shortcut(ui.Cmd, ui.Key0) {
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.Key0) {
 		a.ZoomReset()
 	}
 
@@ -362,32 +366,44 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if a.overlayOpen() {
 		return
 	}
-	if c.Shortcut(0, ui.KeyF4) && (a.editorTab == "changes" || a.editorTab == "commit") {
+	copyAbsolute := c.Shortcut(ui.Cmd|ui.Shift, ui.KeyC)
+	copyLocation := c.Shortcut(ui.Cmd|ui.Alt|ui.Shift, ui.KeyC)
+	locateFile := c.Shortcut(ui.Alt, ui.KeyF1)
+	if copyAbsolute || copyLocation || locateFile {
+		if wf, line := a.activeReviewFile(); wf.RelPath != "" {
+			switch {
+			case locateFile:
+				a.openSelectIn(wf)
+			case copyLocation:
+				a.copyReference(wf, line)
+			default:
+				a.pendingClipboard = a.normalizeWorkspaceFile(wf).AbsPath
+			}
+		}
+	}
+	if (c.Shortcut(0, ui.KeyF4) || c.Shortcut(ui.Cmd, ui.KeyDown)) && (a.editorTab == "changes" || a.editorTab == "commit") {
 		a.openCurrentDiffSource()
 	}
-	if !a.textFocusActive(c) {
-		diff := a.diffState
-		if a.editorTab == "commit" {
-			diff = a.gitCommitDiff
-		}
-		if diff != nil {
-			if c.Shortcut(ui.Cmd, ui.KeyF) {
-				diff.Find("")
-			}
-			if c.Shortcut(0, ui.KeyF7) {
-				stepDiffHunk(diff, 1)
-			}
-			if c.Shortcut(ui.Shift, ui.KeyF7) {
-				stepDiffHunk(diff, -1)
-			}
-		}
+	if !a.textFocusActive(c) && !a.showTerminalPanel {
+		a.registerDiffShortcuts(c)
 	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyB) {
 		a.toggleBookmarkAtCursor()
 	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyO) {
-		a.setPrimaryTab(TabCode)
-		a.codeFilterHandle.Focus()
+		a.openReviewPicker(reviewGoToFile)
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyE) {
+		a.openReviewPicker(reviewRecentFiles)
+	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyE) {
+		a.openReviewPicker(reviewRecentLocations)
+	}
+	if (c.Shortcut(ui.Cmd, ui.KeyBracketLeft) || c.Shortcut(ui.Cmd|ui.Alt, ui.KeyLeft)) && a.editorTab == "file" {
+		a.returnToReview()
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyBracketRight) || c.Shortcut(ui.Cmd|ui.Alt, ui.KeyRight) {
+		a.forwardToReviewSource()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyF12) {
 		a.openStructure()
@@ -398,7 +414,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
 		a.openGlobalSearch()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd, ui.KeyP) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyA) {
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyA) {
 		a.showCmdPalette = !a.showCmdPalette
 		a.cmdPaletteQuery = ""
 		if a.showCmdPalette {
@@ -426,6 +442,13 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyR) {
+		if tab := a.activeCodeTab(); a.editorTab == "file" && tab != nil && !tab.state.ReadOnly && a.reviewEditorFocused(c) {
+			tab.state.Run(editor.FindReplace)
+		} else if a.editorTab == "changes" && a.diffState != nil && a.diffEditable && a.reviewEditorFocused(c) {
+			a.diffState.Run(editor.FindReplace)
+		}
+	}
+	if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyY) {
 		a.RefreshAsync()
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyK) {
@@ -466,9 +489,10 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
-		if a.activeTab == TabChanges {
+		switch a.editorTab {
+		case "changes":
 			a.saveDiffMicroEdit()
-		} else if a.activeTab == TabCode {
+		case "file":
 			if ref := a.activePluginEditorRef(); ref != "" && a.pluginMgr != nil {
 				a.pluginMgr.Dispatch(ref, "save", nil)
 			} else {
@@ -485,12 +509,12 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		} else if c.Shortcut(ui.Cmd, ui.KeyEnter) {
 			a.TriggerCommit(false)
 		}
-		if !terminalFocused && !a.textFocusActive(c) {
+		if !terminalFocused && !a.textFocusActive(c) && !a.reviewEditorFocused(c) {
 			if c.Shortcut(0, ui.KeyDown) {
-				a.moveChangeSelection(1)
+				a.moveChangeSelection(1, true)
 			}
 			if c.Shortcut(0, ui.KeyUp) {
-				a.moveChangeSelection(-1)
+				a.moveChangeSelection(-1, true)
 			}
 			if c.Shortcut(0, ui.KeySpace) {
 				a.toggleSelectedChange()
@@ -503,15 +527,13 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			}
 		}
 	}
+	if c.Shortcut(ui.Cmd, ui.Key0) {
+		a.focusCommitToolWindow()
+	}
 	if c.Shortcut(ui.Cmd, ui.Key1) {
-		a.setPrimaryTab(TabChanges)
-		a.gitDiffOpen = false
+		a.focusProjectToolWindow()
 	}
-	if c.Shortcut(ui.Cmd, ui.Key2) {
-		a.setPrimaryTab(TabCode)
-		a.gitDiffOpen = false
-	}
-	if c.Shortcut(ui.Cmd, ui.Key3) {
+	if c.Shortcut(ui.Cmd, ui.Key9) {
 		a.showLogPanel = false
 		a.showTerminalPanel = false
 		a.showGitPanel = !a.showGitPanel
@@ -568,8 +590,11 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 				row.Background(p.SurfaceHover)
 			}
 			if row.Clicked() {
-				a.setPrimaryTab(tab)
-				a.gitDiffOpen = false
+				if tab == TabChanges {
+					a.focusCommitToolWindow()
+				} else {
+					a.focusProjectToolWindow()
+				}
 			}
 			row.Children(func() {
 				drawIcon(kc, icon, 15, iconCol)
@@ -820,7 +845,7 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 					a.showOpLog = true
 				})
 			}
-			hint := "⌘1 提交 · ⌘2 文件 · ⌘3 Git · ⌘4 Mani · ⇧⌘F 全局搜索 · ⌘B 分支 · ⌘Enter 提交"
+			hint := "⌘0 Commit · ⌘1 Project · ⌘9 Git · ⌘4 Mani · ⇧⌘F 全局搜索 · ⌘B 分支 · ⌘Enter 提交"
 			if a.activeTab == TabChanges {
 				hint = "↑↓ 选择 · 空格勾选 · S/U 暂存 · ⌘Enter 提交"
 			}

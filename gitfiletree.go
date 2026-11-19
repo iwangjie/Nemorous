@@ -91,9 +91,16 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 		collapsed := a.gitDetailCollapsedDirs[key]
 		kc := c.Key("git-dir-" + key)
 		row := ui.Row(kc).Height(gitCommitTreeRowHeight).Padding(0, 6, 0, indent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-		if row.Hovered() {
+		folder := gitops.WorkspaceFile{RepoPath: detail.RepoPath, RelPath: dirCopy.relPath}
+		a.bindTreeCopy(row, folder, false)
+		if row.Focused() {
+			row.Background(p.ActiveRowBg)
+		} else if row.Hovered() {
 			row.Background(p.SurfaceHover)
 		}
+		row.PopoverMenu(func(m *ui.Menu) {
+			a.fileLocationMenu(m, folder, true, 0)
+		})
 		chevKc := c.Key("git-dir-chev-" + key)
 		chev := icoChevronRight
 		if !collapsed {
@@ -102,12 +109,14 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 		row.Children(func() {
 			chevEl := ui.Row(chevKc).Padding(1, 0).Cursor(ui.CursorPointer).Shrink(0)
 			if chevEl.Clicked() {
+				row.Focus()
 				a.gitDetailCollapsedDirs[key] = !collapsed
 			}
 			chevEl.Children(func() { drawIcon(chevKc, chev, 9, p.TextMuted) })
 			infoKc := c.Key("git-dir-info-" + key)
 			info := ui.Row(infoKc).Grow(1).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 			if info.Clicked() {
+				row.Focus()
 				a.gitDetailCollapsedDirs[key] = !collapsed
 			}
 			info.Children(func() {
@@ -125,15 +134,24 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 		kc := c.Key("git-detail-file-" + detail.Hash + "::" + fileCopy.Path)
 		selected := a.gitDetailSelectedPath == fileCopy.Path
 		row := ui.Row(kc).Height(gitCommitTreeRowHeight).Padding(0, 6, 0, indent+8).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+		wf := gitops.WorkspaceFile{RepoPath: detail.RepoPath, RelPath: fileCopy.Path}
+		a.bindTreeCopy(row, wf, false)
 		if selected {
 			row.Background(p.AccentSoft)
 		} else if row.Hovered() {
 			row.Background(p.SurfaceHover)
 		}
 		if row.Clicked() {
+			row.Focus()
 			a.gitDetailSelectedPath = fileCopy.Path
 			a.TriggerGitFileDiff(detail, fileCopy)
 		}
+		row.PopoverMenu(func(m *ui.Menu) {
+			if m.Item("查看差异").Chosen() {
+				a.TriggerGitFileDiff(detail, fileCopy)
+			}
+			a.fileLocationMenu(m, wf, false, 0)
+		})
 		row.Children(func() {
 			col, bg := statusTextColor(fileCopy.Status, p), statusChipBg(fileCopy.Status, p)
 			badgeBox(kc, fileCopy.Status, col, bg, ui.Color{}, 9, true)

@@ -315,11 +315,18 @@ func (a *App) buildBookmarksModal(c *ui.Context, p Palette) {
 	})
 }
 
-func (a *App) workspaceFileByKey(repoID, relPath string) (gitops.WorkspaceFile, bool) {
+func (a *App) workspacePreviewFileByKey(repoID, relPath string) (gitops.WorkspaceFile, bool) {
 	for _, f := range a.workspaceFiles {
 		if f.RepoID == repoID && f.RelPath == relPath {
 			return f, true
 		}
+	}
+	return gitops.WorkspaceFile{}, false
+}
+
+func (a *App) workspaceFileByKey(repoID, relPath string) (gitops.WorkspaceFile, bool) {
+	if file, ok := a.workspacePreviewFileByKey(repoID, relPath); ok {
+		return file, true
 	}
 	for _, st := range a.statuses {
 		if st.Repo.ID != repoID {
@@ -327,6 +334,7 @@ func (a *App) workspaceFileByKey(repoID, relPath string) (gitops.WorkspaceFile, 
 		}
 		return gitops.WorkspaceFile{
 			RepoID: repoID, RepoName: st.Repo.Name, RepoPath: st.Repo.AbsPath,
+			IsRoot: st.Repo.IsRoot, Monogram: st.Repo.Monogram, ColorIdx: st.Repo.ColorIndex,
 			RelPath: relPath, AbsPath: filepath.Join(st.Repo.AbsPath, filepath.FromSlash(relPath)),
 		}, true
 	}
@@ -460,11 +468,15 @@ func (a *App) formatActiveFile() {
 		a.showToast("warn", "先打开一个代码文件")
 		return
 	}
-	if er := gitops.SaveMicroEdit(tab.file.RepoPath, tab.file.RelPath, tab.state.Buffer.String()); er != nil {
-		a.showToast("err", "保存失败: "+er.Error())
+	if tab.state.ReadOnly {
 		return
 	}
-	tab.state.Buffer.MarkSaved()
+	if tab.dirty() {
+		if err := a.writeCodeTab(tab, reviewBufferText(tab.state.Buffer)); err != nil {
+			a.showToast("err", "保存失败: "+err.Error())
+			return
+		}
+	}
 	changed, err := a.formatFile(tab.file.RepoPath, tab.file.RelPath)
 	if err != nil {
 		a.showToast("err", "格式化失败: "+err.Error())
@@ -559,13 +571,12 @@ func (a *App) reloadCodeTab(tab *codeTab) {
 	if tab == nil {
 		return
 	}
-	cur, _, err := gitops.ReadRepoFile(context.Background(), tab.file.RepoPath, tab.file.RelPath)
+	cur, err := gitops.ReadReviewWorktree(tab.file.RepoPath, tab.file.RelPath)
 	if err != nil {
 		a.showToast("err", "重新读取文件失败: "+err.Error())
 		return
 	}
-	tab.state.Buffer.Set(cur)
-	tab.state.Buffer.MarkSaved()
+	setCodeTabText(tab, cur, nil)
 }
 
 // recordLocalHistory snapshots a file after a save or commit.

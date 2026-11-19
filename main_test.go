@@ -91,12 +91,12 @@ func TestCodeTabsReuseAndClose(t *testing.T) {
 	}
 	gotoBound := false
 	for _, b := range app.codeTabs[0].state.Bindings {
-		if b.Mods == ui.Cmd && b.Key == ui.KeyG && b.Command == editor.GoToLine {
+		if b.Mods == ui.Cmd && b.Key == reviewEditorGoToLineKey() && b.Command == editor.GoToLine {
 			gotoBound = true
 		}
 	}
 	if !gotoBound {
-		t.Fatal("Cmd+G should open go-to-line in the code editor")
+		t.Fatal("the platform Go to Line shortcut should be bound")
 	}
 
 	app.codeTabs[1].state.Buffer.Set(app.codeTabs[1].state.Buffer.String() + "\n// unsaved\n")
@@ -558,8 +558,8 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	}
 	tt.Key(0, ui.KeyDown)
 	tt.Frame()
-	if app.selectedChangeKey == selectedKey {
-		t.Fatal("Down should move the diff selection")
+	if app.changeTreeSelection == nil || app.changeTreeSelection.file.Key() == selectedKey || app.selectedChangeKey != selectedKey {
+		t.Fatal("Down should move the tree selection while keeping the displayed diff")
 	}
 
 	// 2. Navigate to Files / Code view (文件) and verify hierarchical file tree + compacted folders + Chinese filename
@@ -580,7 +580,7 @@ func TestNemorousHeadlessUI(t *testing.T) {
 	if !tt.HasText("src/main/go") {
 		t.Fatal("expected compacted single-child directory src/main/go after expanding the repository")
 	}
-	if err := tt.Click("src/main/go"); err != nil {
+	if err := tt.Click("展开或折叠 src/main/go"); err != nil {
 		t.Fatalf("failed to click folder src/main/go in file tree: %v", err)
 	}
 	if !tt.HasText("中文模块.go") {

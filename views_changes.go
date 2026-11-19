@@ -205,30 +205,36 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 		allVisibleChecked := visibleTotal > 0 && checkedVisible == visibleTotal
 		someVisibleChecked := checkedVisible > 0 && !allVisibleChecked
 
-		ui.Row(c).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				if visibleTotal > 0 {
-					a.changeParentCheck(c, p, "changes-root-check", "选择全部改动", allVisibleChecked, someVisibleChecked, func() {
-						a.setChangeFilesChecked(visibleFiles, !allVisibleChecked)
-					})
-				}
-				ui.Text(c, "本地变更").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
-				if allTotal > 0 {
-					ui.Text(c, fmt.Sprintf("%d 个文件", allTotal)).FontSize(10.5).TextColor(p.TextMuted)
-				}
-				if filtered {
-					badgeBox(c, fmt.Sprintf("筛出 %d", visibleTotal), p.AccentSoftText, p.AccentSoft, ui.Color{}, 10, false)
-				}
-			})
+		ui.Row(c).FillWidth().Gap(6).AlignItems(ui.Center).Children(func() {
+			if visibleTotal > 0 {
+				a.changeParentCheck(c, p, "changes-root-check", "选择全部改动", allVisibleChecked, someVisibleChecked, func() {
+					a.setChangeFilesChecked(visibleFiles, !allVisibleChecked)
+				})
+			}
+			ui.Text(c, "本地变更").SingleLine().FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)
 			if allTotal > 0 {
+				ui.Text(c, fmt.Sprintf("%d 个文件", allTotal)).SingleLine().FontSize(10.5).TextColor(p.TextMuted)
+			}
+			if filtered {
+				badgeBox(c, fmt.Sprintf("筛出 %d", visibleTotal), p.AccentSoftText, p.AccentSoft, ui.Color{}, 10, false)
+			}
+		})
+		if allTotal > 0 {
+			ui.Toolbar(c, func() {
+				menuIconAction(c, p, "changes-view-options", icoSettings, "变更视图选项", false, func(m *ui.Menu) {
+					if m.Item("单击时预览差异").Checked(a.cfg.ChangeDiffPreview).Chosen() {
+						a.cfg.ChangeDiffPreview = !a.cfg.ChangeDiffPreview
+						_ = a.cfg.Save()
+					}
+				})
 				layoutLabel := "平铺"
 				if a.changesFlat {
 					layoutLabel = "树形"
 				}
-				miniBtn(c.Key("changes-layout-toggle"), p, layoutLabel, func() {
+				toolButton(c, p, "changes-layout-toggle", icoFolder, layoutLabel, a.changesFlat, true, func() {
 					a.changesFlat = !a.changesFlat
 				})
-				menuIconPill(c, p, "changes-list-menu", icoList, "变更列表", false, func(m *ui.Menu) {
+				menuIconAction(c, p, "changes-list-menu", icoList, "变更列表", false, func(m *ui.Menu) {
 					if m.Item("全部变更").Radio(a.changeListFilter == "__all__").Chosen() {
 						a.changeListFilter = "__all__"
 					}
@@ -267,7 +273,7 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 						}
 					}
 				})
-				menuIconPill(c, p, "changes-stash-menu", icoArchive, "Stash", false, func(m *ui.Menu) {
+				menuIconAction(c, p, "changes-stash-menu", icoArchive, "Stash", false, func(m *ui.Menu) {
 					if m.Item("贮藏全部改动").Chosen() {
 						a.TriggerStashAll()
 					}
@@ -279,8 +285,8 @@ func (a *App) buildChangesLeftPane(c *ui.Context, p Palette) {
 						a.openGitOps("stash")
 					}
 				})
-			}
-		})
+			}).FillWidth().Padding(0).Gap(4).Label("变更工具栏")
+		}
 
 		stagedRepoFiles := make(map[string][]gitops.ChangedFile, len(dirtyStatuses))
 		unstagedRepoFiles := make(map[string][]gitops.ChangedFile, len(dirtyStatuses))
@@ -579,7 +585,14 @@ func (a *App) buildChangeRepoGroup(c *ui.Context, p Palette, section string, st 
 	gkc := c.Key("grp-" + repoKey)
 	ui.Column(gkc).Children(func() {
 		hdr := ui.Row(gkc).Height(24).Padding(0, 6, 0, 10).Gap(5).AlignItems(ui.Center)
-		if hdr.Hovered() {
+		folder := gitops.WorkspaceFile{RepoID: stCopy.Repo.ID, RepoPath: stCopy.Repo.AbsPath, RelPath: "."}
+		if hdr.Clicked() {
+			hdr.Focus()
+		}
+		a.bindTreeCopy(hdr, folder, true)
+		if hdr.Focused() {
+			hdr.Background(p.ActiveRowBg)
+		} else if hdr.Hovered() {
 			hdr.Background(p.SurfaceHover)
 		}
 		repoMenu := func(m *ui.Menu) {
@@ -754,10 +767,25 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, section, repoID str
 
 		dkc := c.Key("cdir-" + dirKey)
 		dRow := ui.Row(dkc).Height(22).Padding(0, 6, 0, indent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-		if dRow.Hovered() {
+		folder := gitops.WorkspaceFile{RepoID: repoID, RelPath: dirCopy.relPath}
+		a.bindTreeCopy(dRow, folder, true)
+		if dRow.Focused() {
+			dRow.Background(p.ActiveRowBg)
+			if dRow.Shortcut(0, ui.KeyLeft) {
+				a.collapsedChangeDirs[dirKey] = true
+			}
+			if dRow.Shortcut(0, ui.KeyRight) {
+				a.collapsedChangeDirs[dirKey] = false
+			}
+		} else if dRow.Hovered() {
 			dRow.Background(p.SurfaceHover)
 		}
 		dRow.PopoverMenu(func(m *ui.Menu) {
+			a.treeLocationMenu(m, folder, true, 0, true)
+			m.Separator()
+			if m.Item("在目录中查找").Chosen() {
+				a.openDirectorySearch(folder)
+			}
 			if isStaged {
 				if m.Item("取消暂存此目录").Chosen() {
 					a.stageChangeFiles(children, false)
@@ -779,6 +807,7 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, section, repoID str
 			chevKc := c.Key("cdir-chev-" + dirKey)
 			chevEl := ui.Row(chevKc).Padding(1, 0).Cursor(ui.CursorPointer).Shrink(0)
 			if chevEl.Clicked() {
+				dRow.Focus()
 				a.collapsedChangeDirs[dirKey] = !collapsed
 			}
 			chevEl.Children(func() { drawIcon(chevKc, chev, 9, p.TextMuted) })
@@ -786,6 +815,9 @@ func (a *App) renderChangeTreeNode(c *ui.Context, p Palette, section, repoID str
 			infoKc := c.Key("cdir-info-" + dirKey)
 			info := ui.Row(infoKc).Grow(1).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 			if info.Clicked() {
+				dRow.Focus()
+			}
+			if info.DoubleClicked() {
 				a.collapsedChangeDirs[dirKey] = !collapsed
 			}
 			info.Children(func() {
@@ -811,7 +843,7 @@ func (a *App) buildChangeFileRow(c *ui.Context, p Palette, section string, cf gi
 func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, cf gitops.ChangedFile, indent float32, ordered []gitops.ChangedFile, isStaged, showDir bool) {
 	cfCopy := cf
 	key := cfCopy.Key()
-	isSelected := a.selectedChangeKey == key && a.diffStagedOnly == isStaged
+	isSelected := a.changeTreeSelection != nil && a.changeTreeSelection.file.Key() == key && a.changeTreeSelection.staged == isStaged
 	isChecked := a.checkedChanges[key]
 
 	rowBg := ui.Transparent
@@ -823,15 +855,37 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 
 	fkc := c.Key(section + "-cf-" + key)
 	fRow := ui.Row(fkc).Height(22).Padding(0, 6, 0, indent).Gap(5).Background(rowBg).AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if isSelected && a.focusChangeTreeFile {
+		fRow.Focus()
+		fRow.ScrollIntoView()
+		a.focusChangeTreeFile = false
+	}
+	a.bindTreeCopy(fRow, changedWorkspaceFile(cfCopy), cfCopy.Untracked)
+	showDiff := func() {
+		a.selectChangedFileInScope(cfCopy, isStaged)
+		if a.editorTab == "changes" && a.selectedChangeKey == key {
+			a.workingDiffHandle.Focus()
+		}
+	}
+	if fRow.Focused() {
+		if fRow.Shortcut(ui.Cmd, ui.KeyD) || fRow.Shortcut(0, ui.KeyEnter) {
+			showDiff()
+		}
+		if fRow.Shortcut(0, ui.KeyF4) || fRow.Shortcut(ui.Cmd, ui.KeyDown) {
+			a.openDiffSourceAtCaret(changedWorkspaceFile(cfCopy), nil)
+		}
+		if fRow.Shortcut(ui.Alt, ui.KeyF1) {
+			a.openSelectIn(changedWorkspaceFile(cfCopy))
+		}
+		if fRow.Shortcut(ui.Cmd|ui.Alt, ui.KeyZ) {
+			a.confirmChangeRollback(&cfCopy)
+		}
+	}
 	if isSelected {
 		fRow.BorderWidth(0, 0, 0, 2).BorderColor(p.Accent)
 	}
 	if fRow.Hovered() && !isSelected {
 		fRow.Background(p.SurfaceHover)
-	}
-	if fRow.RightClicked() {
-		a.diffStagedOnly = isStaged
-		a.selectChangedFile(cfCopy)
 	}
 	fRow.PopoverMenu(func(m *ui.Menu) {
 		if isStaged {
@@ -845,12 +899,10 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 		}
 		if m.Item("只选中此文件").Chosen() {
 			a.checkedChanges = map[string]bool{key: true}
-			a.diffStagedOnly = isStaged
-			a.selectChangedFile(cfCopy)
+			a.selectChangedFileInScope(cfCopy, isStaged)
 		}
 		if m.Item("查看差异").Chosen() {
-			a.diffStagedOnly = isStaged
-			a.selectChangedFile(cfCopy)
+			showDiff()
 		}
 		if m.Item("在文件视图打开").Chosen() {
 			a.selectCodeFile(gitops.WorkspaceFile{
@@ -861,9 +913,7 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 			})
 			a.activeTab = TabCode
 		}
-		if m.Item("复制相对路径").Chosen() {
-			a.pendingClipboard = cfCopy.Path
-		}
+		a.treeLocationMenu(m, changedWorkspaceFile(cfCopy), false, 0, cfCopy.Untracked)
 		m.Separator()
 		if m.Item("AI 生成提交说明").Chosen() {
 			a.checkedChanges = map[string]bool{key: true}
@@ -878,13 +928,6 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 			a.openFileHistory(cfCopy)
 		}
 		absPath := filepath.Join(cfCopy.RepoPath, cfCopy.Path)
-		if m.Item("在文件管理器中显示").Chosen() {
-			target := absPath
-			if cfCopy.Kind == "D" {
-				target = filepath.Join(cfCopy.RepoPath, filepath.Dir(cfCopy.Path))
-			}
-			_ = revealPath(target)
-		}
 		if cfCopy.Kind != "D" {
 			if m.Item("用默认应用打开").Chosen() {
 				_ = openPath(absPath)
@@ -932,12 +975,14 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 		baseName := filepath.Base(cfCopy.Path)
 
 		info := ui.Row(fkc.Key("info")).Grow(1).Gap(5).AlignItems(ui.Center).Cursor(ui.CursorPointer)
-		if info.Clicked() {
-			a.diffStagedOnly = isStaged
-			if info.ClickModifiers()&ui.Shift != 0 {
-				a.toggleChangeRange(ordered, key)
-			} else {
-				a.selectChangedFile(cfCopy)
+		doubleClick, click := info.DoubleClicked(), info.Clicked()
+		if click || doubleClick {
+			fRow.Focus()
+			a.changeTreeSelection = &changeReviewItem{file: cfCopy, staged: isStaged}
+			if doubleClick {
+				showDiff()
+			} else if a.cfg.ChangeDiffPreview {
+				a.selectChangedFileInScope(cfCopy, isStaged)
 			}
 		}
 		info.Children(func() {
@@ -1064,11 +1109,13 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
 				badgeBox(c, cf.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
+				path := cf.Path
 				if cf.OrigPath != "" {
-					ui.Text(c, cf.OrigPath+" → "+cf.Path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
-				} else {
-					ui.Text(c, cf.Path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+					path = cf.OrigPath + " → " + cf.Path
 				}
+				ui.Text(c, path).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine().PopoverMenu(func(m *ui.Menu) {
+					a.fileLocationMenu(m, changedWorkspaceFile(cf), false, sourcePosition(a.diffState).Line+1)
+				})
 				ui.Text(c, fmt.Sprintf("+%d  -%d", cf.AddedLines, cf.DeletedLines)).FontSize(11.5).TextColor(p.TextMuted).SingleLine()
 				if isDirty {
 					badgeBox(c, "未保存", p.Amber, p.AmberSoft, ui.Color{}, 10.5, true)
@@ -1091,14 +1138,13 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 							}
 							el := ui.Row(c.Key("dscope-"+label)).Padding(3, 8).Radius(4).Background(bg).Cursor(ui.CursorPointer)
 							if el.Clicked() && a.diffStagedOnly != staged {
-								a.diffStagedOnly = staged
-								a.selectChangedFile(cf)
+								a.selectChangedFileInScope(cf, staged)
 							}
 							el.Children(func() {
 								ui.Text(c, label).FontSize(11.5).FontWeight(weightMedium).TextColor(fg)
 							})
 						}
-						diffScope(false, "工作区")
+						diffScope(false, "未暂存")
 						diffScope(true, "暂存区")
 					})
 				}
@@ -1143,17 +1189,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 			})
 		})
 
-		fileCount := len(a.visibleChangeFileList())
-		a.buildDiffToolbar(c, p, a.diffState, diffToolbarOptions{
-			prefix:        "changes",
-			staging:       true,
-			source:        a.openCurrentDiffSource,
-			sourceEnabled: true,
-			prevFile:      func() { a.moveChangeSelection(-1) },
-			nextFile:      func() { a.moveChangeSelection(1) },
-			canPrevFile:   fileCount > 1,
-			canNextFile:   fileCount > 1,
-		})
+		a.buildDiffToolbar(c, p, a.diffState, a.workingDiffOptions())
 
 		// Collapsible Diff Display Options Bar ("不常用操作折叠起来，必要时候也能用")
 		if a.showDiffOptions {
@@ -1202,8 +1238,15 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 			})
 		}
 
-		// DiffView
-		editor.DiffView(c, a.diffState).Grow(1).FillWidth()
+		if a.diffReadError != "" {
+			emptyState(c, p, icoColumns, "无法预览此差异", a.diffReadError)
+			return
+		}
+		if a.diffLoading {
+			emptyState(c, p, icoColumns, "正在读取差异…", "")
+			return
+		}
+		editor.DiffView(c, a.diffState).Bind(&a.workingDiffHandle).Grow(1).FillWidth()
 	})
 }
 
@@ -1215,10 +1258,18 @@ type diffToolbarOptions struct {
 	staging       bool
 	source        func()
 	sourceEnabled bool
-	prevFile      func()
-	nextFile      func()
+	moveFile      func(int) bool
 	canPrevFile   bool
 	canNextFile   bool
+	jumpEdge      *int
+	boundary      *diffNavigationBoundary
+	loading       bool
+}
+
+type diffNavigationBoundary struct {
+	direction int
+	caret     editor.Pos
+	side      editor.DiffSide
 }
 
 // scrollToDiffHunk moves to hunk i and centers its first line in the viewer,
@@ -1242,27 +1293,30 @@ func scrollToDiffHunk(state *editor.DiffState, i int) {
 	}
 }
 
-// buildDiffToolbar draws IDEA's file-diff actions: previous/next change, the
-// context's middle action, and previous/next file.
-// stepDiffHunk moves to the next/previous difference within the current
-// file and keeps it centered, for F7 / Shift+F7.
-func stepDiffHunk(state *editor.DiffState, delta int) {
-	if state == nil {
+func (a *App) stepDiffHunk(state *editor.DiffState, delta int, opts diffToolbarOptions) {
+	if state == nil || opts.loading {
 		return
 	}
-	hunks := state.Hunks()
-	if len(hunks) == 0 {
-		return
-	}
+	total := len(state.Hunks())
 	cur, _ := state.CurrentHunk()
 	next := cur + delta
-	if next < 0 {
-		next = 0
+	if next >= 0 && next < total {
+		*opts.boundary = diffNavigationBoundary{}
+		scrollToDiffHunk(state, next)
+		return
 	}
-	if next >= len(hunks) {
-		next = len(hunks) - 1
+	if (delta < 0 && !opts.canPrevFile) || (delta > 0 && !opts.canNextFile) {
+		return
 	}
-	scrollToDiffHunk(state, next)
+	end := diffNavigationBoundary{direction: delta, caret: state.CursorPos(), side: state.ActiveSide()}
+	if total > 0 && *opts.boundary != end {
+		*opts.boundary = end
+		return
+	}
+	*opts.boundary = diffNavigationBoundary{}
+	if opts.moveFile(delta) {
+		*opts.jumpEdge = delta
+	}
 }
 
 func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState, opts diffToolbarOptions) {
@@ -1271,64 +1325,33 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	}
 	hunks := state.Hunks()
 	total := len(hunks)
-	if a.diffJumpEdge != 0 {
+	if !opts.loading && *opts.jumpEdge != 0 {
 		if total > 0 {
-			if a.diffJumpEdge > 0 {
+			if *opts.jumpEdge > 0 {
 				scrollToDiffHunk(state, 0)
 			} else {
 				scrollToDiffHunk(state, total-1)
 			}
 		}
-		a.diffJumpEdge = 0
+		*opts.jumpEdge = 0
 	}
 	cur, _ := state.CurrentHunk()
 	pos := cur + 1
 	if pos < 0 {
 		pos = 0
 	}
-	// IDEA's difference arrows cross file boundaries: the last difference of a
-	// file steps into the next file's first difference, and the first into the
-	// previous file's last one.
-	prevHunk := func() {
-		if cur > 0 {
-			scrollToDiffHunk(state, cur-1)
-			return
-		}
-		if opts.canPrevFile && opts.prevFile != nil {
-			a.diffJumpEdge = -1
-			opts.prevFile()
-			return
-		}
-		if total > 0 {
-			scrollToDiffHunk(state, total-1)
-		}
-	}
-	nextHunk := func() {
-		if total > 0 && cur < total-1 {
-			scrollToDiffHunk(state, cur+1)
-			return
-		}
-		if opts.canNextFile && opts.nextFile != nil {
-			a.diffJumpEdge = 1
-			opts.nextFile()
-			return
-		}
-		if total > 0 {
-			scrollToDiffHunk(state, 0)
-		}
-	}
 	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
 		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
-		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, total > 0, prevHunk)
-		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, total > 0, nextHunk)
+		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, cur > 0 || opts.canPrevFile, func() { a.stepDiffHunk(state, -1, opts) })
+		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, cur < total-1 || opts.canNextFile, func() { a.stepDiffHunk(state, 1, opts) })
 		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
 		if opts.source != nil {
 			diffToolButton(c, p, opts.prefix+"-source", icoEdit, "修改 (F4)", false, opts.sourceEnabled, opts.source)
 			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		}
-		foldLabel := "折叠未更改"
+		foldLabel := "展开未改动"
 		if state.ExpandUnchanged {
-			foldLabel = "展开全部"
+			foldLabel = "折叠未改动"
 		}
 		miniBtn(c.Key(opts.prefix+"-fold"), p, foldLabel, func() {
 			state.ExpandUnchanged = !state.ExpandUnchanged
@@ -1337,10 +1360,10 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			}
 		})
 		miniBtn(c.Key(opts.prefix+"-find"), p, "查找", func() {
-			state.Find("")
+			state.Run(editor.Find)
 		})
 		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
-		if opts.staging && a.selectedChangeFile != nil {
+		if opts.staging && a.selectedChangeFile != nil && a.diffReadError == "" && total > 0 {
 			if a.diffStagedOnly {
 				miniBtn(c, p, "取消暂存块", func() { a.stageCurrentDiffHunk(true) })
 			} else {
@@ -1359,9 +1382,16 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			}
 			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		}
-		diffToolButton(c, p, opts.prefix+"-prev-file", icoArrowLeft, "上一个文件", false, opts.canPrevFile, opts.prevFile)
-		diffToolButton(c, p, opts.prefix+"-next-file", icoArrowRight, "下一个文件", false, opts.canNextFile, opts.nextFile)
+		diffToolButton(c, p, opts.prefix+"-prev-file", icoArrowLeft, "上一个文件", false, opts.canPrevFile, func() { opts.moveFile(-1) })
+		diffToolButton(c, p, opts.prefix+"-next-file", icoArrowRight, "下一个文件", false, opts.canNextFile, func() { opts.moveFile(1) })
 	})
+	if end := *opts.boundary; end.direction != 0 && end.caret == state.CursorPos() && end.side == state.ActiveSide() {
+		label := "已到最后一个差异，再按 F7 查看下一个文件"
+		if end.direction < 0 {
+			label = "已到第一个差异，再按 ⇧F7 查看上一个文件"
+		}
+		ui.Text(c, label).FontSize(11).TextColor(p.TextSecondary).Padding(4, 10)
+	}
 }
 
 // changeParentCheck renders the tri-state checkbox shared by the changes root,
@@ -1431,6 +1461,10 @@ func (a *App) visibleChangeFilesForSection(section string, repoID string, isStag
 	if len(files) == 0 {
 		return nil
 	}
+	if a.changesFlat {
+		sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+		return files
+	}
 	treeKey := section + "|" + a.changeFilterKey(repoID)
 	tree, ok := a.changeTreeCache[treeKey]
 	if !ok {
@@ -1440,15 +1474,22 @@ func (a *App) visibleChangeFilesForSection(section string, repoID string, isStag
 	return a.renderedChangeFiles(section+"::"+repoID, tree)
 }
 
-// visibleChangeFileList flattens every visible repository tree in display order.
-func (a *App) visibleChangeFileList() []gitops.ChangedFile {
-	var out []gitops.ChangedFile
+type changeReviewItem struct {
+	file   gitops.ChangedFile
+	staged bool
+}
+
+// A partially staged file occurs once in each scope of the changes tree.
+func (a *App) visibleChangeFileList() []changeReviewItem {
+	var out []changeReviewItem
 	if !a.collapsedStagedSection {
 		for _, st := range a.statuses {
 			if a.collapsedChangeRepos["staged::"+st.Repo.ID] {
 				continue
 			}
-			out = append(out, a.visibleChangeFilesForSection("staged", st.Repo.ID, true)...)
+			for _, file := range a.visibleChangeFilesForSection("staged", st.Repo.ID, true) {
+				out = append(out, changeReviewItem{file: file, staged: true})
+			}
 		}
 	}
 	if !a.collapsedUnstagedSection {
@@ -1456,7 +1497,9 @@ func (a *App) visibleChangeFileList() []gitops.ChangedFile {
 			if a.collapsedChangeRepos["unstaged::"+st.Repo.ID] {
 				continue
 			}
-			out = append(out, a.visibleChangeFilesForSection("unstaged", st.Repo.ID, false)...)
+			for _, file := range a.visibleChangeFilesForSection("unstaged", st.Repo.ID, false) {
+				out = append(out, changeReviewItem{file: file})
+			}
 		}
 	}
 	return out
@@ -1489,44 +1532,93 @@ func (a *App) toggleChangeRange(ordered []gitops.ChangedFile, targetKey string) 
 }
 
 // moveChangeSelection moves the diff selection with the arrow keys.
-func (a *App) moveChangeSelection(delta int) {
+func (a *App) moveChangeSelection(delta int, wrap bool) bool {
 	list := a.visibleChangeFileList()
 	if len(list) == 0 {
-		return
+		return false
 	}
-	idx := -1
-	for i, f := range list {
-		if f.Key() == a.selectedChangeKey {
-			idx = i
-			break
+	idx := a.changeReviewIndex(list)
+	if wrap && a.changeTreeSelection != nil {
+		idx = changeReviewItemIndex(list, a.changeTreeSelection.file.Key(), a.changeTreeSelection.staged)
+	}
+	next := idx + delta
+	if idx < 0 && delta < 0 {
+		next = len(list) - 1
+	}
+	if wrap {
+		next = (next + len(list)) % len(list)
+	}
+	if next < 0 || next >= len(list) {
+		return false
+	}
+	if wrap {
+		item := list[next]
+		a.changeTreeSelection = &item
+		a.focusChangeTreeFile = true
+		if a.cfg.ChangeDiffPreview {
+			a.selectChangedFileInScope(list[next].file, list[next].staged)
+		}
+		return true
+	}
+	a.selectChangedFileInScope(list[next].file, list[next].staged)
+	return a.selectedChangeKey == list[next].file.Key() && a.diffStagedOnly == list[next].staged
+}
+
+func (a *App) changeReviewIndex(list []changeReviewItem) int {
+	return changeReviewItemIndex(list, a.selectedChangeKey, a.diffStagedOnly)
+}
+
+func changeReviewItemIndex(list []changeReviewItem, key string, staged bool) int {
+	for i, item := range list {
+		if item.staged == staged && item.file.Key() == key {
+			return i
 		}
 	}
-	next := 0
-	switch {
-	case idx < 0 && delta < 0:
-		next = len(list) - 1
-	case idx >= 0:
-		next = (idx + delta + len(list)) % len(list)
+	return -1
+}
+
+func (a *App) workingDiffOptions() diffToolbarOptions {
+	list := a.visibleChangeFileList()
+	i := a.changeReviewIndex(list)
+	return diffToolbarOptions{
+		prefix:        "changes",
+		staging:       true,
+		source:        a.openCurrentDiffSource,
+		sourceEnabled: a.selectedChangeFile != nil && a.selectedChangeFile.WorktreeStatus != 'D',
+		moveFile:      func(delta int) bool { return a.moveChangeSelection(delta, false) },
+		canPrevFile:   len(list) > 0 && i != 0,
+		canNextFile:   i+1 < len(list),
+		jumpEdge:      &a.diffJumpEdge,
+		boundary:      &a.diffBoundary,
+		loading:       a.diffLoading,
 	}
-	a.selectChangedFile(list[next])
 }
 
 // toggleSelectedChange flips the commit checkbox of the selected file.
 func (a *App) toggleSelectedChange() {
-	if a.selectedChangeFile == nil {
+	file := a.selectedCommitTreeFile()
+	if file == nil {
 		return
 	}
-	key := a.selectedChangeFile.Key()
+	key := file.Key()
 	a.checkedChanges[key] = !a.checkedChanges[key]
 	a.lastCheckedKey = key
 }
 
 // stageSelectedChange stages or unstages the selected file.
 func (a *App) stageSelectedChange(stage bool) {
-	if a.selectedChangeFile == nil {
+	file := a.selectedCommitTreeFile()
+	if file == nil {
 		return
 	}
-	a.stageChangeFiles([]gitops.ChangedFile{*a.selectedChangeFile}, stage)
+	a.stageChangeFiles([]gitops.ChangedFile{*file}, stage)
+}
+
+func (a *App) selectedCommitTreeFile() *gitops.ChangedFile {
+	if a.changeTreeSelection != nil {
+		return &a.changeTreeSelection.file
+	}
+	return a.selectedChangeFile
 }
 
 // textFocusActive reports whether a text field owns typing in the main view.
@@ -1554,25 +1646,31 @@ func (a *App) stageDiffHunkAt(idx int, unstage bool) {
 	if a.diffStageBusy || a.selectedChangeFile == nil || a.diffState == nil {
 		return
 	}
+	if a.workingDiffDirty() {
+		a.showToast("info", "请先保存文件，再操作暂存区")
+		return
+	}
 	hunks := a.diffState.Hunks()
 	if idx < 0 || idx >= len(hunks) {
 		return
 	}
 	cf := *a.selectedChangeFile
+	old, new := reviewBufferText(a.diffState.Old), reviewBufferText(a.diffState.New)
 	a.diffStageBusy = true
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		var err error
-		if unstage {
+		err := verifyReviewDiff(ctx, cf, unstage, old, new)
+		if err == nil && unstage {
 			err = gitops.UnstageHunks(ctx, cf.RepoPath, cf.Path, []int{idx})
-		} else {
+		} else if err == nil {
 			err = gitops.StageHunks(ctx, cf.RepoPath, cf.Path, []int{idx})
 		}
 		a.runUI(func() {
 			a.diffStageBusy = false
 			if err != nil {
 				a.showToast("err", err.Error())
+				a.RefreshAsync()
 				return
 			}
 			action := "已暂存变更块"
@@ -1581,7 +1679,6 @@ func (a *App) stageDiffHunkAt(idx int, unstage bool) {
 			}
 			a.showToast("ok", action+" "+cf.Path)
 			a.RefreshAsync()
-			a.selectChangedFile(cf)
 		})
 	}()
 }
@@ -1590,7 +1687,11 @@ func (a *App) stageDiffHunkAt(idx int, unstage bool) {
 // is a pure insertion or deletion. Paired replacements are rejected with an
 // actionable message by the git layer.
 func (a *App) stageSelectedDiffLines(sel editor.DiffLineRange) {
-	if a.diffStageBusy || a.selectedChangeFile == nil {
+	if a.diffStageBusy || a.selectedChangeFile == nil || a.diffStagedOnly {
+		return
+	}
+	if a.workingDiffDirty() {
+		a.showToast("info", "请先保存文件，再操作暂存区")
 		return
 	}
 	if !a.diffLineInHunk(sel) {
@@ -1598,21 +1699,25 @@ func (a *App) stageSelectedDiffLines(sel editor.DiffLineRange) {
 		return
 	}
 	cf := *a.selectedChangeFile
+	old, new := reviewBufferText(a.diffState.Old), reviewBufferText(a.diffState.New)
 	oldSide := sel.Side == editor.DiffOld
 	a.diffStageBusy = true
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := gitops.StageLines(ctx, cf.RepoPath, cf.Path, oldSide, sel.Start+1, sel.End+1)
+		err := verifyReviewDiff(ctx, cf, false, old, new)
+		if err == nil {
+			err = gitops.StageLines(ctx, cf.RepoPath, cf.Path, oldSide, sel.Start+1, sel.End+1)
+		}
 		a.runUI(func() {
 			a.diffStageBusy = false
 			if err != nil {
 				a.showToast("warn", err.Error())
+				a.RefreshAsync()
 				return
 			}
 			a.showToast("ok", fmt.Sprintf("已暂存 %d 行 · %s", sel.End-sel.Start+1, cf.Path))
 			a.RefreshAsync()
-			a.selectChangedFile(cf)
 		})
 	}()
 }
@@ -1620,11 +1725,14 @@ func (a *App) stageSelectedDiffLines(sel editor.DiffLineRange) {
 // rollbackSelectedChange opens the same rollback confirmation used by the
 // file context menu.
 func (a *App) rollbackSelectedChange() {
-	if a.selectedChangeFile == nil {
+	a.confirmChangeRollback(a.selectedChangeFile)
+}
+
+func (a *App) confirmChangeRollback(cf *gitops.ChangedFile) {
+	if cf == nil {
 		a.showToast("warn", "先选择一个改动文件")
 		return
 	}
-	cf := *a.selectedChangeFile
 	a.pendingDiscard = &PendingDiscard{
 		RepoID:    cf.RepoID,
 		RepoPath:  cf.RepoPath,

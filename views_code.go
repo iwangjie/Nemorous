@@ -97,29 +97,37 @@ func (a *App) codeRepoGroups(query string) []codeRepoGroup {
 	var groups []codeRepoGroup
 	groupIdx := make(map[string]int)
 
-	for _, wf := range a.workspaceFiles {
-		if query != "" {
-			hay := strings.ToLower(wf.RepoName + "/" + wf.RelPath)
-			if !strings.Contains(hay, query) {
+	extra := a.codeExtraFile
+	if len(extra) == 1 {
+		if _, ok := a.workspacePreviewFileByKey(extra[0].RepoID, extra[0].RelPath); ok {
+			extra = nil
+		}
+	}
+	for _, files := range [2][]gitops.WorkspaceFile{a.workspaceFiles, extra} {
+		for _, wf := range files {
+			if query != "" {
+				hay := strings.ToLower(wf.RepoName + "/" + wf.RelPath)
+				if !strings.Contains(hay, query) {
+					continue
+				}
+			}
+			idx, ok := groupIdx[wf.RepoID]
+			if !ok {
+				idx = len(groups)
+				groupIdx[wf.RepoID] = idx
+				groups = append(groups, codeRepoGroup{
+					repoID:   wf.RepoID,
+					repoName: wf.RepoName,
+					monogram: wf.Monogram,
+					colorIdx: wf.ColorIdx,
+					isRoot:   wf.IsRoot,
+				})
+			}
+			if query != "" && len(groups[idx].files) >= codeFilterGroupLimit {
 				continue
 			}
+			groups[idx].files = append(groups[idx].files, wf)
 		}
-		idx, ok := groupIdx[wf.RepoID]
-		if !ok {
-			idx = len(groups)
-			groupIdx[wf.RepoID] = idx
-			groups = append(groups, codeRepoGroup{
-				repoID:   wf.RepoID,
-				repoName: wf.RepoName,
-				monogram: wf.Monogram,
-				colorIdx: wf.ColorIdx,
-				isRoot:   wf.IsRoot,
-			})
-		}
-		if query != "" && len(groups[idx].files) >= codeFilterGroupLimit {
-			continue
-		}
-		groups[idx].files = append(groups[idx].files, wf)
 	}
 	sort.Slice(groups, func(i, j int) bool {
 		return strings.ToLower(groups[i].repoName) < strings.ToLower(groups[j].repoName)
@@ -187,6 +195,7 @@ func drawCodeTreeGuides(c *ui.Context, p Palette, depth int) {
 }
 
 func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
+	defer func() { a.focusProjectTree = false }()
 	query := strings.ToLower(strings.TrimSpace(a.codeFilterQuery))
 	groups := a.codeRepoGroups(query)
 
@@ -212,18 +221,27 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 				rootExpanded := query != "" || !a.codeRootCollapsed
 				rkc := c.Key("croot")
 				rootRow := ui.Row(rkc).Height(codeTreeRootHeight).Padding(0, 10).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-				if rootRow.Hovered() {
+				root := gitops.WorkspaceFile{AbsPath: a.cfg.WorkspacePath}
+				if a.focusProjectTree {
+					rootRow.Focus()
+				}
+				const rootKey = "workspace-root"
+				toggleRoot := func() {
+					if query == "" {
+						a.codeRootCollapsed = !a.codeRootCollapsed
+					}
+				}
+				a.codeFolderSelection(rootRow, root, rootKey, rootExpanded, toggleRoot)
+				if a.codeLocatedKey == rootKey {
+					rootRow.Background(p.ActiveRowBg)
+				} else if rootRow.Hovered() {
 					rootRow.Background(p.SurfaceHover)
 				}
-				if rootRow.Clicked() && query == "" {
-					a.codeRootCollapsed = !a.codeRootCollapsed
-				}
+				rootRow.PopoverMenu(func(m *ui.Menu) {
+					a.fileLocationMenu(m, root, true, 0)
+				})
 				rootRow.Children(func() {
-					chev := icoChevronRight
-					if rootExpanded {
-						chev = icoChevronDown
-					}
-					drawIcon(rkc, chev, 10, p.TextMuted)
+					a.codeFolderChevron(rkc, p, rootRow, rootKey, rootName, rootExpanded, toggleRoot)
 					drawIcon(rkc, icoFolder, 13, p.TextControl)
 					ui.Text(rkc, rootName).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1)
 					ui.Text(rkc, displayPath(a.cfg.WorkspacePath)).FontSize(10.5).TextColor(p.TextMuted).MaxLines(1).Grow(1)
@@ -258,23 +276,21 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 
 					gkc := c.Key("cgrp-" + grpCopy.repoID)
 					hdr := ui.Row(gkc).Height(codeTreeRepoHeight).Padding(0, 10, 0, 10+codeTreeIndent).Gap(5).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-					if hdr.Hovered() {
+					folder := gitops.WorkspaceFile{RepoID: grpCopy.repoID, RepoPath: grpCopy.files[0].RepoPath, RelPath: "."}
+					key := grpCopy.repoID + "::."
+					toggleRepo := func() { a.expandedCodeRepos[grpCopy.repoID] = !expanded }
+					a.codeFolderSelection(hdr, folder, key, expanded, toggleRepo)
+					if a.codeLocatedKey == key {
+						hdr.Background(p.ActiveRowBg)
+					} else if hdr.Hovered() {
 						hdr.Background(p.RailBg)
 					}
-					if hdr.Clicked() {
-						if expanded {
-							delete(a.expandedCodeRepos, grpCopy.repoID)
-						} else {
-							a.expandedCodeRepos[grpCopy.repoID] = true
-						}
-					}
+					hdr.PopoverMenu(func(m *ui.Menu) {
+						a.fileLocationMenu(m, folder, true, 0)
+					})
 					hdr.Children(func() {
 						drawCodeTreeGuides(gkc, p, 1)
-						chev := icoChevronRight
-						if expanded {
-							chev = icoChevronDown
-						}
-						drawIcon(gkc, chev, 10, p.TextMuted)
+						a.codeFolderChevron(gkc, p, hdr, key, grpCopy.repoName, expanded, toggleRepo)
 						ui.Box(gkc).Size(15, 15).Radius(3).Background(badge.Bg).Center().Children(func() {
 							ui.Text(gkc, grpCopy.monogram).FontSize(8.5).FontWeight(weightBold).TextColor(badge.Text)
 						})
@@ -290,6 +306,35 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 	})
 }
 
+func (a *App) codeFolderSelection(row ui.Element, folder gitops.WorkspaceFile, key string, expanded bool, toggle func()) {
+	if a.focusProjectTree && a.codeLocatedKey == key {
+		row.Focus()
+	}
+	if row.Clicked() {
+		row.Focus()
+		a.codeLocatedKey = key
+	}
+	a.bindTreeCopy(row, folder, false)
+	if row.DoubleClicked() || (row.Focused() && (row.Shortcut(0, ui.KeyEnter) ||
+		(expanded && row.Shortcut(0, ui.KeyLeft)) || (!expanded && row.Shortcut(0, ui.KeyRight)))) {
+		toggle()
+	}
+}
+
+func (a *App) codeFolderChevron(c *ui.Context, p Palette, row ui.Element, key, name string, expanded bool, toggle func()) {
+	button := ui.Row(c.Key("chevron")).Size(10, 16).Center().Cursor(ui.CursorPointer).Label("展开或折叠 " + name)
+	if button.Clicked() {
+		row.Focus()
+		a.codeLocatedKey = key
+		toggle()
+	}
+	icon := icoChevronRight
+	if expanded {
+		icon = icoChevronDown
+	}
+	button.Children(func() { drawIcon(c, icon, 10, p.TextMuted) })
+}
+
 func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *codeTreeDir, depth int, forceExpand bool) {
 	indent := float32(10 + depth*codeTreeIndent)
 
@@ -301,19 +346,24 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 
 		dkc := c.Key("dir-" + dirKey)
 		dRow := ui.Row(dkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent).Gap(5).Background(p.RailBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-		if dRow.Hovered() {
+		folder := gitops.WorkspaceFile{RepoID: repoID, RelPath: subCopy.relPath}
+		toggleDir := func() { a.expandedCodeDirs[dirKey] = !expanded }
+		a.codeFolderSelection(dRow, folder, dirKey, expanded, toggleDir)
+		if a.codeLocatedKey == dirKey {
+			dRow.Background(p.ActiveRowBg)
+		} else if dRow.Hovered() {
 			dRow.Background(p.SurfaceHover)
 		}
-		if dRow.Clicked() {
-			a.expandedCodeDirs[dirKey] = !a.expandedCodeDirs[dirKey]
-		}
+		dRow.PopoverMenu(func(m *ui.Menu) {
+			a.fileLocationMenu(m, folder, true, 0)
+			m.Separator()
+			if m.Item("在目录中查找").Chosen() {
+				a.openDirectorySearch(folder)
+			}
+		})
 		dRow.Children(func() {
 			drawCodeTreeGuides(dkc, p, depth)
-			chev := icoChevronRight
-			if expanded {
-				chev = icoChevronDown
-			}
-			drawIcon(dkc, chev, 10, p.TextMuted)
+			a.codeFolderChevron(dkc, p, dRow, dirKey, subCopy.name, expanded, toggleDir)
 			folderCol := p.TextControl
 			if a.codeDirDirty(repoID, subCopy.relPath) {
 				folderCol = p.Blue
@@ -331,7 +381,8 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 	for _, wf := range node.files {
 		wfCopy := wf
 		activeFile := a.activeCodeFile()
-		selected := activeFile != nil && activeFile.RepoID == wf.RepoID && activeFile.RelPath == wf.RelPath
+		key := wf.RepoID + "::" + wf.RelPath
+		selected := a.codeLocatedKey == key || (a.codeLocatedKey == "" && activeFile != nil && activeFile.RepoID == wf.RepoID && activeFile.RelPath == wf.RelPath)
 		rowBg := p.RailBg
 		textCol := p.TextSecondary
 		if selected {
@@ -343,16 +394,35 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		}
 		base := filepath.Base(wf.RelPath)
 
-		fkc := c.Key("wf-" + wf.RepoID + "::" + wf.RelPath)
+		fkc := c.Key("wf-" + key)
 		fRow := ui.Row(fkc).Height(codeTreeRowHeight).Padding(0, 10, 0, indent+codeTreeChevronSlot).Gap(5).Background(rowBg).Cursor(ui.CursorPointer).AlignItems(ui.Center)
+		if a.codeRevealKey == key || (a.focusProjectTree && a.codeLocatedKey == key) {
+			fRow.ScrollIntoView()
+			fRow.Focus()
+			a.codeRevealKey = ""
+		}
+		a.bindTreeCopy(fRow, wfCopy, false)
 		if fRow.Hovered() && !selected {
 			fRow.Background(p.SurfaceHover)
 		}
-		if fRow.DoubleClicked() {
+		if fRow.DoubleClicked() || (fRow.Focused() && fRow.Shortcut(0, ui.KeyEnter)) {
 			a.selectCodeFile(wfCopy)
+			if tab := a.activeCodeTab(); tab != nil {
+				tab.viewHandle.Focus()
+			}
 		} else if fRow.Clicked() {
-			a.selectCodeFilePreview(wfCopy)
+			fRow.Focus()
+			a.codeLocatedKey = key
 		}
+		fRow.PopoverMenu(func(m *ui.Menu) {
+			if m.Item("打开源码").Chosen() {
+				a.selectCodeFile(wfCopy)
+			}
+			if m.Item("预览").Chosen() {
+				a.selectCodeFilePreview(wfCopy)
+			}
+			a.fileLocationMenu(m, wfCopy, false, 0)
+		})
 		fRow.Children(func() {
 			drawCodeTreeGuides(fkc, p, depth)
 			drawIcon(fkc, icoFile, 12, codeFileIconColor(base, p))
@@ -378,9 +448,8 @@ func (a *App) buildCodeWelcome(c *ui.Context, p Palette) {
 			})
 		}
 
-		shortcutRow("search", "搜索文件", "⌘P", func() {
-			a.showCmdPalette = true
-			a.cmdInputHandle.Focus()
+		shortcutRow("search", "搜索文件", "⇧⌘O", func() {
+			a.openReviewPicker(reviewGoToFile)
 		})
 		shortcutRow("find", "全局查找", "⇧⌘F", func() {
 			a.openGlobalSearch()
@@ -421,6 +490,8 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 					row.Background(p.Surface2)
 				}
 				row.PopoverMenu(func(m *ui.Menu) {
+					a.fileLocationMenu(m, tabCopy.file, false, tabCopy.state.CursorPos().Line+1)
+					m.Separator()
 					if m.Item("关闭").Chosen() {
 						a.requestCloseCodeTab(tabCopy)
 					}
@@ -488,6 +559,8 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				}
 				row.Tooltip(tabCopy.RepoName + "/" + tabCopy.Path + " · 工作区")
 				row.PopoverMenu(func(m *ui.Menu) {
+					a.fileLocationMenu(m, changedWorkspaceFile(tabCopy), false, sourcePosition(a.diffState).Line+1)
+					m.Separator()
 					if m.Item("关闭差异").Chosen() {
 						a.closeWorkingDiffTab()
 					}
@@ -533,6 +606,10 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				}
 				row.Tooltip(a.gitDiffRepo + "/" + a.gitDiffPath)
 				row.PopoverMenu(func(m *ui.Menu) {
+					if a.gitCommitDiff != nil {
+						a.fileLocationMenu(m, a.gitDiffWorkspaceFile(), false, sourcePosition(a.gitCommitDiff).Line+1)
+						m.Separator()
+					}
 					if m.Item("关闭差异").Chosen() {
 						a.closeGitCommitDiff()
 					}
@@ -605,7 +682,7 @@ func (a *App) buildEditorContent(c *ui.Context, p Palette) {
 			return
 		}
 	case "commit":
-		if a.gitCommitDiff != nil || a.gitDiffLoading {
+		if a.gitCommitDiff != nil || a.gitDiffLoading || a.gitDiffErr != "" {
 			a.buildGitCommitDiffPane(c, p)
 			return
 		}
@@ -644,7 +721,9 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 		ui.Row(c).Height(42).FillWidth().Padding(0, 14).Background(p.RailBg).BorderWidth(0, 0, 1, 0).BorderColor(p.Border).Justify(ui.SpaceBetween).AlignItems(ui.Center).Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Grow(1).Children(func() {
 				badgeBox(c, wf.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 11, true)
-				ui.Text(c, wf.RelPath).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine()
+				ui.Text(c, wf.RelPath).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine().PopoverMenu(func(m *ui.Menu) {
+					a.fileLocationMenu(m, wf, false, tab.state.CursorPos().Line+1)
+				})
 				if isModified {
 					badgeBox(c, "未保存", p.Amber, p.AmberSoft, ui.Color{}, 10.5, true)
 				}
@@ -660,6 +739,9 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			})
 
 			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				if a.canReturnToReview() {
+					miniBtn(c, p, "返回差异", a.returnToReview)
+				}
 				if hasEditorPlugin {
 					icon := icoCode
 					label := "原文"

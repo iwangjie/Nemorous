@@ -1,7 +1,9 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 )
 
@@ -28,6 +30,9 @@ func revealPath(path string) error {
 	case "windows":
 		cmd = exec.Command("explorer", "/select,", path)
 	default:
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			path = filepath.Dir(path)
+		}
 		cmd = exec.Command("xdg-open", path)
 	}
 	return cmd.Start()
