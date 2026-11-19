@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,7 +39,8 @@ type CommitFile struct {
 // CommitDetail is a commit plus its changed paths.
 type CommitDetail struct {
 	CommitEntry
-	Files []CommitFile
+	Files        []CommitFile
+	BaseRevision string // empty for a regular commit against its first parent
 }
 
 // LogOptions narrows a history query.
@@ -135,41 +137,41 @@ func RepoLog(ctx context.Context, repo RepoStatus, opts LogOptions) ([]CommitEnt
 
 // CommitFiles lists paths changed by a commit with per-file line counts.
 func CommitFiles(ctx context.Context, repoPath, hash string) ([]CommitFile, error) {
-	out, err := RunGit(ctx, repoPath, "show", "--format=", "--find-renames", "--name-status", hash)
+	return changedRevisionFiles(ctx, repoPath, []string{"show", "--format="}, hash)
+}
+
+// CompareCommitFiles lists the changed paths between two committed trees.
+func CompareCommitFiles(ctx context.Context, repoPath, before, after string) ([]CommitFile, error) {
+	return changedRevisionFiles(ctx, repoPath, []string{"diff"}, before, after)
+}
+
+func changedRevisionFiles(ctx context.Context, repoPath string, command []string, revisions ...string) ([]CommitFile, error) {
+	read := func(format string) (string, error) {
+		args := append(slices.Clone(command), "--no-ext-diff", "--find-renames", "-z", format)
+		args = append(args, revisions...)
+		return RunGitRaw(ctx, repoPath, append(args, "--")...)
+	}
+	out, err := read("--name-status")
 	if err != nil {
 		return nil, err
 	}
-	files := make([]CommitFile, 0, 16)
+	files := parseRevisionPaths(out)
 	index := make(map[string]int)
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "\t")
-		if len(parts) < 2 {
-			continue
-		}
-		status := strings.TrimSpace(parts[0])
-		path := strings.TrimSpace(parts[len(parts)-1])
-		oldPath := ""
-		if (strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C")) && len(parts) >= 3 {
-			oldPath = strings.TrimSpace(parts[1])
-		}
-		if path == "" {
-			continue
-		}
-		index[path] = len(files)
-		files = append(files, CommitFile{Path: path, OldPath: oldPath, Status: string(status[0])})
+	for i, file := range files {
+		index[file.Path] = i
 	}
-
-	if stats, statErr := RunGit(ctx, repoPath, "show", "--format=", "--find-renames", "--numstat", hash); statErr == nil {
-		for _, line := range strings.Split(stats, "\n") {
-			parts := strings.Split(line, "\t")
+	if stats, statErr := read("--numstat"); statErr == nil {
+		records := strings.Split(stats, "\x00")
+		for i := 0; i < len(records); i++ {
+			parts := strings.SplitN(records[i], "\t", 3)
 			if len(parts) < 3 {
 				continue
 			}
-			path := strings.TrimSpace(parts[2])
+			path := parts[2]
+			if path == "" && i+2 < len(records) {
+				i += 2 // An empty path is followed by the old and new names.
+				path = records[i]
+			}
 			idx, ok := index[path]
 			if !ok {
 				continue
@@ -180,6 +182,54 @@ func CommitFiles(ctx context.Context, repoPath, hash string) ([]CommitFile, erro
 	}
 	sort.SliceStable(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
+}
+
+func parseRevisionPaths(out string) []CommitFile {
+	var files []CommitFile
+	fields := strings.Split(strings.Trim(out, "\x00"), "\x00")
+	for i := 0; i+1 < len(fields); {
+		status := strings.TrimSpace(fields[i])
+		path := fields[i+1]
+		i += 2
+		if status == "" || path == "" {
+			continue
+		}
+		file := CommitFile{Path: path, Status: status[:1]}
+		if (file.Status == "R" || file.Status == "C") && i < len(fields) {
+			file.OldPath, file.Path = path, fields[i]
+			i++
+		}
+		files = append(files, file)
+	}
+	return files
+}
+
+type FileRevision struct {
+	CommitInfo
+	File CommitFile
+}
+
+// FileHistoryAtRevision follows the file backwards from the selected commit.
+// Its paths are the paths in those commits, including renames.
+func FileHistoryAtRevision(ctx context.Context, repoPath, revision, path string) ([]FileRevision, error) {
+	const format = "%x1e%H%x1f%s%x1f%cr%x1f%an%x00"
+	out, err := RunGitRaw(ctx, repoPath, "log", "--follow", "--find-renames", "-n", "100", "-z", "--name-status", "--pretty=format:"+format, revision, "--", ":(literal)"+path)
+	if err != nil {
+		return nil, err
+	}
+	var entries []FileRevision
+	for _, record := range strings.Split(out, "\x1e") {
+		meta, names, _ := strings.Cut(record, "\x00")
+		parts := strings.SplitN(meta, "\x1f", 4)
+		if len(parts) != 4 {
+			continue
+		}
+		for _, file := range parseRevisionPaths(names) {
+			entries = append(entries, FileRevision{CommitInfo: CommitInfo{Hash: parts[0], Subject: parts[1], RelTime: parts[2], Author: parts[3]}, File: file})
+			break
+		}
+	}
+	return entries, nil
 }
 
 // RepoAuthors lists distinct author names seen in a repository.
@@ -227,13 +277,18 @@ func parseInt64(s string) int64 {
 // CommitFileVersions returns the old and new file contents for a commit diff,
 // mirroring the buffers the worktree diff viewer consumes.
 func CommitFileVersions(ctx context.Context, repoPath, hash, path, oldPath, status string) (string, string, error) {
+	return RevisionFileVersions(ctx, repoPath, hash+"^", hash, CommitFile{Path: path, OldPath: oldPath, Status: status})
+}
+
+func RevisionFileVersions(ctx context.Context, repoPath, before, after string, file CommitFile) (string, string, error) {
+	path, oldPath, status := file.Path, file.OldPath, file.Status
 	var oldContent string
 	if status != "A" {
 		if oldPath == "" {
 			oldPath = path
 		}
 		var err error
-		oldContent, err = readReviewBlob(ctx, repoPath, hash+"^:"+oldPath, status != "D")
+		oldContent, err = readReviewBlob(ctx, repoPath, before+":"+oldPath, status != "D")
 		if err != nil {
 			return "", "", err
 		}
@@ -241,6 +296,10 @@ func CommitFileVersions(ctx context.Context, repoPath, hash, path, oldPath, stat
 	if status == "D" {
 		return oldContent, "", nil
 	}
-	newContent, err := readReviewBlob(ctx, repoPath, hash+":"+path, false)
+	newContent, err := readReviewBlob(ctx, repoPath, after+":"+path, false)
 	return oldContent, newContent, err
+}
+
+func ReadFileRevision(ctx context.Context, repoPath, revision, path string) (string, error) {
+	return readReviewBlob(ctx, repoPath, revision+":"+path, false)
 }

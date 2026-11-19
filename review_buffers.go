@@ -132,7 +132,7 @@ func (a *App) refreshReviewDiff(files map[string]gitops.ChangedFile, first *gito
 
 func (a *App) refreshVisibleCodeFile(touched map[string]bool) {
 	tab := a.activeCodeTab()
-	if a.editorTab != "file" || tab == nil || tab.dirty() || (touched != nil && !touched[tab.file.RepoID]) {
+	if a.editorTab != "file" || tab == nil || tab.revision != "" || tab.dirty() || (touched != nil && !touched[tab.file.RepoID]) {
 		return
 	}
 	tab.reloadSeq++

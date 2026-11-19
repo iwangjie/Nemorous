@@ -79,7 +79,7 @@ func (a *App) saveSession() {
 	st := session.State{
 		Workspace:         a.cfg.WorkspacePath,
 		ActiveTab:         string(a.activeTab),
-		ActiveFile:        a.codeTabIdx,
+		ActiveFile:        -1,
 		ShowGitPanel:      a.showGitPanel,
 		ShowManiPanel:     a.showManiPanel,
 		PluginPanel:       a.pluginPanel,
@@ -89,7 +89,13 @@ func (a *App) saveSession() {
 		ShowTerminalPanel: false,
 		ShowLogPanel:      false,
 	}
-	for _, tab := range a.codeTabs {
+	for i, tab := range a.codeTabs {
+		if tab.revision != "" {
+			continue
+		}
+		if i == a.codeTabIdx {
+			st.ActiveFile = len(st.OpenFiles)
+		}
 		line := 0
 		if tab.state != nil {
 			line = tab.state.CursorPos().Line + 1

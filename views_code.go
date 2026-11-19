@@ -506,7 +506,7 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				row.Children(func() {
 					badge := repoBadgeColors(tabCopy.file.ColorIdx, p.IsDark)
 					ui.Box(c).Size(6, 6).Radius(3).Background(badge.Text)
-					name := filepath.Base(tabCopy.file.RelPath)
+					name := codeTabTitle(tabCopy)
 					textCol := p.TextSecondary
 					if kind := a.codeFileStatus(tabCopy.file.RepoID, tabCopy.file.RelPath); kind != "" {
 						textCol = statusTextColor(kind, p)
@@ -648,7 +648,7 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 			menuIconPill(c, p, "editor-tabs-menu", icoChevronDown, "全部标签", false, func(m *ui.Menu) {
 				for i, tab := range a.codeTabs {
 					tabIndex := i
-					if m.Item(filepath.Base(tab.file.RelPath)).Radio(a.editorTab == "file" && i == a.codeTabIdx).Chosen() {
+					if m.Item(codeTabTitle(tab)).Radio(a.editorTab == "file" && i == a.codeTabIdx).Chosen() {
 						a.activateCodeTab(tabIndex)
 					}
 				}
@@ -699,6 +699,10 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 		tab := a.activeCodeTab()
 		if tab == nil {
 			a.buildCodeWelcome(c, p)
+			return
+		}
+		if tab.revision != "" {
+			editor.View(c, tab.state).Bind(&tab.viewHandle).Grow(1).FillWidth()
 			return
 		}
 		if tab.preview && tab.dirty() {

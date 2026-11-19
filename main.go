@@ -843,6 +843,12 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 		ui.Spacer(c)
 
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			if a.editorTab == "commit" && a.gitCommitDiff != nil {
+				pos := a.gitCommitDiff.CursorPos()
+				miniBtn(c.Key("commit-diff-position"), p, fmt.Sprintf("%d:%d", pos.Line+1, pos.Col+1), func() {
+					a.gitCommitDiff.Run(editor.GoToLine)
+				})
+			}
 			if len(a.lastBatchResults) > 0 {
 				miniBtn(c, p, fmt.Sprintf("操作记录 (%d)", len(a.lastBatchResults)), func() {
 					a.showOpLog = true

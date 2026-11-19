@@ -20,7 +20,15 @@ type BlameLine struct {
 // the working tree, so uncommitted lines come back as "Not Committed Yet",
 // as git reports them.
 func FileBlame(ctx context.Context, repoPath, relPath string) ([]BlameLine, error) {
-	out, err := RunGit(ctx, repoPath, "blame", "--line-porcelain", "--", relPath)
+	return FileBlameAtRevision(ctx, repoPath, "", relPath)
+}
+
+func FileBlameAtRevision(ctx context.Context, repoPath, revision, relPath string) ([]BlameLine, error) {
+	args := []string{"blame", "--line-porcelain"}
+	if revision != "" {
+		args = append(args, revision)
+	}
+	out, err := RunGit(ctx, repoPath, append(args, "--", relPath)...)
 	if err != nil {
 		return nil, err
 	}

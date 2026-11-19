@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -50,7 +52,7 @@ func gitGraphLane(lane, limit int) int {
 // buildGitView is the Git management hub. Release merges open as a slim bar
 // over the same branch tree instead of a separate full-page workflow.
 func (a *App) buildGitView(c *ui.Context, p Palette) {
-	if a.gitSubTab != "history" {
+	if a.gitSubTab != "history" && a.gitRevisionHistory == nil {
 		a.gitSubTab = "history"
 	}
 	ui.Column(c).Fill().Children(func() {
@@ -78,6 +80,14 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 				})
 			}
 			gitTab("history", "提交图", icoBranch)
+			if history := a.gitRevisionHistory; history != nil {
+				gitTab("file-history", "历史："+filepath.Base(history.path), icoLog)
+				toolButton(c, p, "close-file-history", icoClose, "关闭文件历史", false, true, func() {
+					history.cancel()
+					a.gitRevisionHistory = nil
+					a.gitSubTab = "history"
+				})
+			}
 			ui.Spacer(c)
 			mergeLabel := "发版合并"
 			if n := a.mergeableCount(); n > 0 {
@@ -101,6 +111,10 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 				drawIcon(closeKc, icoClose, 11, p.TextMuted)
 			})
 		})
+		if a.gitSubTab == "file-history" && a.gitRevisionHistory != nil {
+			a.buildRevisionHistory(c, p, a.gitRevisionHistory)
+			return
+		}
 		a.ensureGitLog()
 		ui.Column(c).Grow(1).Fill().Children(func() {
 			a.buildReleaseMergeBar(c, p)
@@ -792,7 +806,9 @@ func (a *App) buildGitCommitRow(c *ui.Context, p Palette, row gitCommitRow, gutt
 func (a *App) buildGitCommitRowMode(c *ui.Context, p Palette, row gitCommitRow, gutterW float32, laneLimit int, showGraph bool) {
 	entry := row.Entry
 	key := entry.RepoID + "|" + entry.Hash
-	selected := a.gitSelectedCommit == key
+	selected := a.gitSelectedCommit == key || slices.ContainsFunc(a.gitSelectedPair, func(e gitops.CommitEntry) bool {
+		return e.RepoID == entry.RepoID && e.Hash == entry.Hash
+	})
 	kc := c.Key("git-commit-" + key)
 	rowEl := ui.Row(kc).Height(28).Padding(0, 8).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
 	if a.gitRevealCommit == key {
@@ -806,9 +822,15 @@ func (a *App) buildGitCommitRowMode(c *ui.Context, p Palette, row gitCommitRow, 
 	}
 	if rowEl.Clicked() {
 		a.gitAutoSelected = false
-		a.TriggerGitDetail(entry)
+		a.selectCommitForReview(entry, rowEl.ClickModifiers())
 	}
 	rowEl.PopoverMenu(func(m *ui.Menu) {
+		if a.canCompareSelectedVersions() && selected {
+			if m.Item("比较版本").Chosen() {
+				a.compareSelectedVersions()
+			}
+			return
+		}
 		if m.Item("复制提交哈希").Chosen() {
 			a.pendingClipboard = entry.Hash
 		}
@@ -981,6 +1003,12 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 			}
 			d := a.gitDetail
 			ui.Column(c).Padding(14).Gap(8).Children(func() {
+				if d.BaseRevision != "" {
+					ui.Text(c, "比较版本").FontSize(13).FontWeight(weightBold).TextColor(p.TextPrimary)
+					ui.Text(c, shortRevision(d.BaseRevision)+" → "+shortRevision(d.Hash)).FontSize(11).TextColor(p.TextMuted)
+					a.buildGitChangedFiles(c, p, *d)
+					return
+				}
 				ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 					badgeBox(c, d.RepoName, p.AccentSoftText, p.AccentSoft, ui.Color{}, 9.5, true)
 					ui.Text(c, d.ShortHash).Font("SF Mono, Menlo, monospace").FontSize(11).FontWeight(weightSemibold).TextColor(p.AccentSoftText)
@@ -1051,10 +1079,7 @@ func (a *App) buildGitDetails(c *ui.Context, p Palette) {
 						})
 					})
 				})
-				ui.Text(c, fmt.Sprintf("变更文件 (%d)", len(d.Files))).FontSize(11).FontWeight(weightSemibold).TextColor(p.TextMuted)
-				if len(d.Files) > 0 {
-					a.renderGitCommitTree(c, p, *d, buildGitCommitTree(d.Files), 0)
-				}
+				a.buildGitChangedFiles(c, p, *d)
 			})
 		})
 	})
@@ -1105,6 +1130,7 @@ func (a *App) TriggerGitLog() {
 	a.gitLogTotal = 0
 	a.gitLogLoaded = true
 	a.gitSelectedCommit = ""
+	a.gitSelectedPair = nil
 	a.gitAutoSelected = false
 	a.gitRevealCommit = ""
 	a.gitPinnedCommit = nil
@@ -1403,7 +1429,7 @@ func (a *App) openGitCommit(entry gitops.CommitEntry) {
 
 func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 	key := entry.RepoID + "|" + entry.Hash
-	if a.gitSelectedCommit == key && (a.gitDetail != nil || a.gitDetailLoading) {
+	if a.gitSelectedCommit == key && ((a.gitDetail != nil && a.gitDetail.BaseRevision == "") || a.gitDetailLoading) {
 		return
 	}
 	a.gitSelectedCommit = key
@@ -1429,11 +1455,16 @@ func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 }
 
 func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitFile) {
+	a.loadCommittedDiff(detail, file, commitDiffBase(detail), detail.Hash)
+}
+
+func (a *App) loadCommittedDiff(detail gitops.CommitDetail, file gitops.CommitFile, before, after string) {
 	a.rememberCodeLocation()
 	if a.reviewReturn != nil && a.reviewReturn.editor == "commit" {
 		a.reviewReturn = nil
 	}
 	a.gitDiffOpen = true
+	a.stopCommitDiffReads()
 	a.editorTab = "commit"
 	a.gitDiffLoading = true
 	a.gitDiffSeq++
@@ -1445,6 +1476,7 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 	a.gitDiffPath = file.Path
 	a.gitDiffOldPath = file.OldPath
 	a.gitDiffHash = detail.Hash
+	a.gitDiffBefore, a.gitDiffAfter = before, after
 	a.gitDiffErr = ""
 	a.gitCommitDiff = nil
 	a.gitDetailSelectedPath = file.Path
@@ -1452,13 +1484,32 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 	inline := parseInlineMode(a.cfg.DiffInlineMode)
 	wrap := a.cfg.EditorSoftWrap
 	font := ui.Font{Size: a.cfg.EditorFontSize}
-	go func() {
-		oldText, newText, err := gitops.CommitFileVersions(context.Background(), detail.RepoPath, detail.Hash, file.Path, file.OldPath, file.Status)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	a.gitDiffCancel = cancel
+	load := func() {
+		defer cancel()
+		var oldText, newText string
+		var err error
+		if after == "" {
+			oldText, err = gitops.ReadFileRevision(ctx, detail.RepoPath, before, file.Path)
+			if err == nil {
+				newText, err = gitops.ReadReviewWorktree(detail.RepoPath, file.Path)
+			}
+		} else {
+			oldText, newText, err = gitops.RevisionFileVersions(ctx, detail.RepoPath, before, after, file)
+		}
+		if strings.HasSuffix(before, "^") && file.Status != "A" && err == nil {
+			if parent, parentErr := gitops.RunGit(ctx, detail.RepoPath, "rev-parse", "--verify", before); parentErr == nil {
+				before = parent
+			}
+		}
 		a.runUI(func() {
 			if seq != a.gitDiffSeq {
 				return
 			}
 			a.gitDiffLoading = false
+			a.gitDiffCancel = nil
+			a.gitDiffBefore = before
 			if err != nil {
 				a.gitDiffErr = err.Error()
 				a.gitDiffJumpEdge = 0
@@ -1479,10 +1530,16 @@ func (a *App) TriggerGitFileDiff(detail gitops.CommitDetail, file gitops.CommitF
 				HunkActions:   false,
 				LineSelection: true,
 				Font:          font,
+				Bindings:      []editor.Binding{{Mods: ui.Cmd, Key: reviewEditorGoToLineKey(), Command: editor.GoToLine}},
 				RenderFindBar: renderReviewFindBar,
 			}
 		})
-	}()
+	}
+	if a.win == nil {
+		load()
+	} else {
+		go load()
+	}
 }
 
 func (a *App) closeGitCommitDiff() {
@@ -1490,6 +1547,7 @@ func (a *App) closeGitCommitDiff() {
 		a.reviewReturn = nil
 	}
 	a.gitDiffSeq++
+	a.stopCommitDiffReads()
 	a.gitDiffOpen = false
 	a.gitDiffLoading = false
 	a.gitCommitDiff = nil
@@ -1499,6 +1557,9 @@ func (a *App) closeGitCommitDiff() {
 	a.gitDiffBoundary = diffNavigationBoundary{}
 	if a.editorTab == "commit" {
 		a.focusDefaultEditor()
+	}
+	if a.showGitPanel && a.gitSubTab == "history" && a.gitDetail != nil && a.gitDetail.Hash == a.gitDiffHash {
+		a.gitFocusDetailFile = true
 	}
 }
 
@@ -1573,8 +1634,8 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 					pathLabel = a.gitDiffOldPath + " → " + a.gitDiffPath
 				}
 				ui.Text(c, pathLabel).FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary).MaxLines(1).Grow(1).PopoverMenu(func(m *ui.Menu) {
-					if a.gitCommitDiff != nil {
-						a.fileLocationMenu(m, a.gitDiffWorkspaceFile(), false, sourcePosition(a.gitCommitDiff).Line+1)
+					if wf, line := a.activeCommitDiffLocation(); wf.RelPath != "" {
+						a.fileLocationMenu(m, wf, false, line)
 					}
 				})
 			})
@@ -1677,7 +1738,7 @@ func (a *App) buildGitCommitDiffPane(c *ui.Context, p Palette) {
 				ui.Text(c, a.gitDiffErr).FontSize(10.5).TextColor(p.TextMuted).MaxLines(3)
 			})
 		case a.gitCommitDiff != nil:
-			editor.DiffView(c, a.gitCommitDiff).Bind(&a.commitDiffHandle).Grow(1).FillWidth()
+			a.buildHistoricalDiffEditor(c, p)
 		}
 	})
 }

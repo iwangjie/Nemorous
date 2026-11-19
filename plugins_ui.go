@@ -276,7 +276,7 @@ func (a *App) buildPluginEditorView(c *ui.Context, p Palette, ref string) {
 // activePluginEditorRef is the editor plugin that should receive Save.
 func (a *App) activePluginEditorRef() string {
 	tab := a.activeCodeTab()
-	if tab == nil || a.pluginEditorInTextMode(tab.file.RepoID, tab.file.RelPath) {
+	if tab == nil || tab.revision != "" || a.pluginEditorInTextMode(tab.file.RepoID, tab.file.RelPath) {
 		return ""
 	}
 	if info, ok := a.editorPluginForFile(tab.file.AbsPath); ok {

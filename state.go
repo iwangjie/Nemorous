@@ -84,6 +84,7 @@ type lspProblem struct {
 
 type codeTab struct {
 	file        gitops.WorkspaceFile
+	revision    string
 	state       *editor.State
 	preview     bool // preview tab: reused until pinned by a double click
 	diskVersion gitops.ReviewVersion
@@ -303,6 +304,10 @@ type App struct {
 	gitDetailLoading       bool
 	gitDetailBodyExpanded  bool
 	gitDetailSelectedPath  string
+	gitFocusDetailFile     bool
+	gitSelectedPair        []gitops.CommitEntry
+	gitRevisionHistory     *revisionHistory
+	gitRevisionOpenSeq     uint64
 	gitDetailSeq           uint64
 	gitDetailCollapsedDirs map[string]bool
 	gitCollapsedRepos      map[string]bool
@@ -319,6 +324,10 @@ type App struct {
 	gitDiffPath            string
 	gitDiffOldPath         string
 	gitDiffHash            string
+	gitDiffBefore          string
+	gitDiffAfter           string
+	gitDiffCancel          context.CancelFunc
+	gitDiffBlame           [2]*revisionBlame
 	gitDiffErr             string
 	gitDiffSeq             uint64
 	gitCommitDiff          *editor.DiffState
@@ -1472,6 +1481,15 @@ func (a *App) newChangeDiffState(cf gitops.ChangedFile) *editor.DiffState {
 // resetDiffTabs drops the current diff when the workspace changes.
 func (a *App) resetDiffTabs() {
 	a.closeReviewPicker()
+	a.stopCommitDiffReads()
+	a.gitDiffSeq++
+	a.gitRevisionOpenSeq++
+	if a.gitRevisionHistory != nil {
+		a.gitRevisionHistory.cancel()
+		a.gitRevisionHistory = nil
+	}
+	a.gitSelectedPair = nil
+	a.gitFocusDetailFile = false
 	a.codeExtraFile = nil
 	a.reviewReturn = nil
 	a.recentCode = nil
@@ -1726,7 +1744,7 @@ func (a *App) selectCodeFileMode(wf gitops.WorkspaceFile, preview bool) {
 	a.editorTab = "file"
 	wf = a.normalizeWorkspaceFile(wf)
 	for i, tab := range a.codeTabs {
-		if tab.file.RepoID == wf.RepoID && tab.file.RelPath == wf.RelPath && tab.file.AbsPath == wf.AbsPath {
+		if tab.revision == "" && tab.file.RepoID == wf.RepoID && tab.file.RelPath == wf.RelPath && tab.file.AbsPath == wf.AbsPath {
 			if !preview {
 				tab.preview = false
 			}
@@ -1792,6 +1810,9 @@ func (a *App) activateCodeTab(i int) {
 	a.codeTabIdx = i
 	a.editorTab = "file"
 	a.gitDiffOpen = false
+	if a.codeTabs[i].revision != "" {
+		return
+	}
 	a.prepareLSP(a.codeTabs[i])
 	a.refreshVisibleCodeFile(nil)
 }

@@ -26,11 +26,18 @@ func (a *App) activeReviewFile() (gitops.WorkspaceFile, int) {
 			return changedWorkspaceFile(*a.selectedChangeFile), sourcePosition(a.diffState).Line + 1
 		}
 	case "commit":
-		if wf := a.gitDiffWorkspaceFile(); wf.RelPath != "" && a.gitCommitDiff != nil {
-			return wf, sourcePosition(a.gitCommitDiff).Line + 1
-		}
+		return a.activeCommitDiffLocation()
 	}
 	return gitops.WorkspaceFile{}, 0
+}
+
+func (a *App) activeCommitDiffLocation() (gitops.WorkspaceFile, int) {
+	wf := a.gitDiffWorkspaceFile()
+	diff := a.gitCommitDiff
+	if wf.RelPath == "" || diff == nil {
+		return wf, 0
+	}
+	return a.commitDiffSideFile(diff.ActiveSide()), diff.CursorPos().Line + 1
 }
 
 func (a *App) gitDiffWorkspaceFile() gitops.WorkspaceFile {

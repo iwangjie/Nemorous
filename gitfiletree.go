@@ -133,8 +133,14 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 		fileCopy := file
 		kc := c.Key("git-detail-file-" + detail.Hash + "::" + fileCopy.Path)
 		selected := a.gitDetailSelectedPath == fileCopy.Path
-		row := ui.Row(kc).Height(gitCommitTreeRowHeight).Padding(0, 6, 0, indent+8).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center)
-		wf := gitops.WorkspaceFile{RepoPath: detail.RepoPath, RelPath: fileCopy.Path}
+		row := ui.Row(kc).Height(gitCommitTreeRowHeight).Padding(0, 6, 0, indent+8).Gap(6).Cursor(ui.CursorPointer).AlignItems(ui.Center).
+			Label("变更文件 " + fileCopy.Path)
+		wf := committedFile(detail, fileCopy.Path)
+		if selected && a.gitFocusDetailFile {
+			row.Focus()
+			row.ScrollIntoView()
+			a.gitFocusDetailFile = false
+		}
 		a.bindTreeCopy(row, wf, false)
 		if selected {
 			row.Background(p.AccentSoft)
@@ -144,11 +150,25 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 		if row.Clicked() {
 			row.Focus()
 			a.gitDetailSelectedPath = fileCopy.Path
+		}
+		if row.DoubleClicked() || row.Shortcut(ui.Cmd, ui.KeyD) || row.Shortcut(0, ui.KeyEnter) {
 			a.TriggerGitFileDiff(detail, fileCopy)
+		}
+		if row.Shortcut(0, ui.KeyF4) || row.Shortcut(ui.Cmd, ui.KeyDown) {
+			a.openCommittedSource(detail, fileCopy)
 		}
 		row.PopoverMenu(func(m *ui.Menu) {
 			if m.Item("查看差异").Chosen() {
 				a.TriggerGitFileDiff(detail, fileCopy)
+			}
+			if m.Item("与本地版本比较").Chosen() {
+				a.compareCommittedFileWithLocal(detail, fileCopy)
+			}
+			if m.Item("打开仓库版本").Chosen() {
+				a.openRepositoryVersion(detail, fileCopy)
+			}
+			if m.Item("查看截至此处的历史").Chosen() {
+				a.openHistoryUpToHere(detail, fileCopy)
 			}
 			a.fileLocationMenu(m, wf, false, 0)
 		})

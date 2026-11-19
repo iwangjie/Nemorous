@@ -117,7 +117,7 @@ func (a *App) rememberCodeLocation() {
 		return
 	}
 	tab := a.activeCodeTab()
-	if tab == nil || tab.state == nil {
+	if tab == nil || tab.state == nil || tab.revision != "" {
 		return
 	}
 	loc := reviewLocation{file: tab.file, pos: tab.state.CursorPos()}
