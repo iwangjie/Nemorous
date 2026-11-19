@@ -544,7 +544,7 @@ func (a *App) renderPluginNode(c *ui.Context, p Palette, ref string, n *plugins.
 		if len(keyTail) > 16 {
 			keyTail = keyTail[:16] + strconv.Itoa(len(raw))
 		}
-		ui.Image(c, img).Key(path+":"+keyTail).Size(w, h).Radius(4)
+		ui.Image(c.Key(path+":"+keyTail), img).Size(w, h).Radius(4)
 	case "card":
 		el := ui.Column(c.Key(path)).Radius(8).Background(p.Surface2).Border(1, p.BorderSubtle)
 		applyPluginBox(el, n)

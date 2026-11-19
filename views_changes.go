@@ -1763,7 +1763,7 @@ func (a *App) buildDiffHunkActions(c *ui.Context, bar ui.Element, acts *editor.D
 		if !a.diffStagedOnly {
 			if sel, ok := a.diffState.SelectedLines(); ok && diffSelectionInHunk(sel, acts.Hunk) {
 				lineLabel := fmt.Sprintf("暂存选中行 (%d)", sel.End-sel.Start+1)
-				lineBtn := ui.ButtonBase(c).Key("stage-lines").Padding(0, 6).Height(20).Radius(4).Background(p.Surface).Border(1, p.Border).Label(lineLabel)
+				lineBtn := ui.ButtonBase(c.Key("stage-lines")).Padding(0, 6).Height(20).Radius(4).Background(p.Surface).Border(1, p.Border).Label(lineLabel)
 				lineBtn.Children(func() { ui.Text(c, lineLabel).FontSize(10).TextColor(p.TextControl) })
 				if lineBtn.Clicked() {
 					a.stageSelectedDiffLines(sel)
@@ -1776,7 +1776,7 @@ func (a *App) buildDiffHunkActions(c *ui.Context, bar ui.Element, acts *editor.D
 				fn    func()
 			}{{"还原", acts.Revert}, {"保留", acts.Keep}} {
 				item := item
-				b := ui.ButtonBase(c).Key("hunk-"+item.label).Padding(0, 6).Height(20).Radius(4).Background(p.Surface).Border(1, p.Border).Label(item.label)
+				b := ui.ButtonBase(c.Key("hunk-"+item.label)).Padding(0, 6).Height(20).Radius(4).Background(p.Surface).Border(1, p.Border).Label(item.label)
 				b.Children(func() { ui.Text(c, item.label).FontSize(10).TextColor(p.TextMuted) })
 				if b.Clicked() {
 					item.fn()

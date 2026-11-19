@@ -1042,7 +1042,7 @@ func (a *App) conflictArrowRail(c *ui.Context, p Palette, side conflict.Strategy
 				if side == conflict.Theirs {
 					sideName = "THEIRS"
 				}
-				btn := ui.Box(c).Key(fmt.Sprintf("conflict-rail-%s-%d", side, idx)).
+				btn := ui.Box(c.Key(fmt.Sprintf("conflict-rail-%s-%d", side, idx))).
 					Size(18, 20).Radius(4).Center().Background(p.Surface).Border(1, p.Border).
 					Cursor(ui.CursorPointer).Tooltip(tip).
 					Label(fmt.Sprintf("冲突块 %d 采用 %s", idx+1, sideName))
@@ -1056,7 +1056,7 @@ func (a *App) conflictArrowRail(c *ui.Context, p Palette, side conflict.Strategy
 				btn.Children(func() { drawIcon(c, icon, 12, tone) })
 
 				if side == conflict.Ours {
-					both := ui.Box(c).Key(fmt.Sprintf("conflict-rail-both-%d", idx)).
+					both := ui.Box(c.Key(fmt.Sprintf("conflict-rail-both-%d", idx))).
 						Width(32).Height(20).Radius(4).Center().Background(p.Surface).
 						Border(1, p.Border).Cursor(ui.CursorPointer).
 						Tooltip("采用两者（OURS + THEIRS）").
@@ -1098,7 +1098,7 @@ func (a *App) conflictResultPane(c *ui.Context, p Palette) {
 			ui.Spacer(c)
 			if a.conflictDoc != nil && len(a.conflictDoc.Hunks) > 0 {
 				accept := func(label string, fg, bg ui.Color, strategy conflict.Strategy, tip string) {
-					btn := ui.ButtonBase(c).Key("conflict-accept-"+string(strategy)).
+					btn := ui.ButtonBase(c.Key("conflict-accept-"+string(strategy))).
 						Height(21).Padding(0, 6).Radius(4).Background(bg).
 						AlignItems(ui.Center).Cursor(ui.CursorPointer).Tooltip(tip)
 					if btn.Hovered() {
@@ -1438,7 +1438,7 @@ func (a *App) conflictListPage(c *ui.Context, p Palette) {
 					}
 				}
 				if done > 0 {
-					section := ui.ButtonBase(c).Key("conflict-resolved-section").FillWidth().Height(32).
+					section := ui.ButtonBase(c.Key("conflict-resolved-section")).FillWidth().Height(32).
 						Padding(0, 8).Gap(6).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 					if section.Hovered() {
 						section.Background(p.SurfaceHover)
@@ -1481,7 +1481,7 @@ func (a *App) conflictListRow(c *ui.Context, p Palette, rel string, resolved boo
 		row = ui.Row(c).FillWidth().MinHeight(38).Padding(4, 8).Gap(8).AlignItems(ui.Center).
 			BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
 	} else {
-		row = ui.ButtonBase(c).Key("conflict-list-"+rel).FillWidth().MinHeight(38).Padding(4, 8).Gap(8).
+		row = ui.ButtonBase(c.Key("conflict-list-"+rel)).FillWidth().MinHeight(38).Padding(4, 8).Gap(8).
 			AlignItems(ui.Center).Cursor(ui.CursorPointer).
 			BorderWidth(0, 0, 1, 0).BorderColor(p.BorderSubtle)
 		if row.Hovered() {
