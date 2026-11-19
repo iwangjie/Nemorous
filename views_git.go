@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 	"github.com/iwangjie/nemorous/internal/mani"
 )
@@ -122,10 +122,22 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 			ui.Split(c, &a.gitLeftWidth,
 				func() { a.buildGitBranchTree(c, p) },
 				func() {
-					ui.SplitPercent(c, &a.gitCenterPct,
-						func() { a.buildGitCommitList(c, p) },
-						func() { a.buildGitDetails(c, p) },
-					).FillHeight()
+					log := func() {
+						ui.SplitPercent(c, &a.gitCenterPct,
+							func() { a.buildGitCommitList(c, p) },
+							func() { a.buildGitDetails(c, p) },
+						).Fill()
+					}
+					if !a.cfg.GitLogDiffPreview {
+						log()
+						return
+					}
+					if a.gitLogPreviewTop == 0 {
+						a.gitLogPreviewTop = 58
+					}
+					ui.SplitVerticalPercent(c, &a.gitLogPreviewTop, log, func() {
+						a.buildGitLogPreview(c.Key("git-log-preview"), p)
+					}).Fill()
 				},
 			).Grow(1).Fill()
 		})
@@ -1439,6 +1451,7 @@ func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 	a.gitDetail = nil
 	a.gitDetailBodyExpanded = false
 	a.gitDetailSelectedPath = ""
+	a.clearGitLogPreview()
 	go func() {
 		files, err := gitops.CommitFiles(context.Background(), entry.RepoPath, entry.Hash)
 		if err != nil {
@@ -1450,6 +1463,9 @@ func (a *App) TriggerGitDetail(entry gitops.CommitEntry) {
 			}
 			a.gitDetailLoading = false
 			a.gitDetail = &gitops.CommitDetail{CommitEntry: entry, Files: files}
+			if a.cfg.GitLogDiffPreview && len(files) > 0 {
+				a.selectGitChangedFile(*a.gitDetail, files[0])
+			}
 		})
 	}()
 }

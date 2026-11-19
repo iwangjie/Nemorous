@@ -19,6 +19,7 @@ require (
 	github.com/dlclark/regexp2/v2 v2.13.1 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
+	github.com/egoist/mygo/nemorouseditor v0.0.0
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/go-text/typesetting v0.3.5 // indirect
 	github.com/google/pprof v0.0.0-20261118010117-084b33a85f63 // indirect
@@ -41,3 +42,5 @@ require (
 )
 
 tool github.com/egoist/mygo/cmd/mygo
+
+replace github.com/egoist/mygo/nemorouseditor => ./third_party/mygo-editor

@@ -35,11 +35,13 @@ type Config struct {
 	Concurrency          int               `json:"concurrency"`           // parallel git workers (default 8)
 	DiffSideBySide       bool              `json:"diff_side_by_side"`
 	DiffInlineMode       string            `json:"diff_inline_mode"` // "word", "char", "none"
+	DiffIgnoreMode       uint8             `json:"diff_ignore_mode,omitempty"`
 	EditorFontSize       float32           `json:"editor_font_size"`
 	EditorSoftWrap       bool              `json:"editor_soft_wrap"`
 	Zoom                 float32           `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
 	NavShowLabels        bool              `json:"nav_show_labels"`
 	ChangeDiffPreview    bool              `json:"change_diff_preview,omitempty"`
+	GitLogDiffPreview    bool              `json:"git_log_diff_preview,omitempty"`
 	IncludeRootRepo      bool              `json:"include_root_repo"`
 	ManiEnabled          bool              `json:"mani_enabled"`
 	AutoUpdate           bool              `json:"auto_update"`          // check GitHub Releases for signed updates

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
@@ -142,13 +142,28 @@ func (a *App) buildRevisionHistory(c *ui.Context, p Palette, view *revisionHisto
 		emptyState(c, p, icoLog, label, "")
 		return
 	}
+	columns := func(kc *ui.Context, author, date, subject, hash string, header bool) {
+		color := p.TextPrimary
+		if header {
+			color = p.TextMuted
+		}
+		ui.Text(kc, author).Width(110).Shrink(0).SingleLine().FontSize(11).TextColor(color).Tooltip(author)
+		ui.Text(kc, date).Width(106).Shrink(0).SingleLine().FontSize(11).TextColor(color)
+		ui.Text(kc, subject).MinWidth(0).Grow(1).SingleLine().FontSize(11.5).TextColor(color).Tooltip(subject)
+		ui.Text(kc, hash).Width(62).Shrink(0).SingleLine().FontSize(10.5).TextColor(p.TextMuted)
+	}
+	ui.Row(c.Key("file-history-columns")).Height(24).FillWidth().Padding(0, 10).Gap(8).AlignItems(ui.Center).
+		Background(p.RailBg).Children(func() {
+		columns(c, "作者", "时间", "提交说明", "哈希", true)
+	})
 	ui.Scroll(c).Grow(1).FillWidth().Children(func() {
 		for _, revision := range view.entries {
 			kc := c.Key("file-revision-" + revision.Hash)
 			entry := view.entry
 			entry.Hash, entry.ShortHash, entry.Parents = revision.Hash, shortRevision(revision.Hash), nil
 			detail := gitops.CommitDetail{CommitEntry: entry, Files: []gitops.CommitFile{revision.File}}
-			row := ui.Row(kc).Height(26).Padding(0, 10).Gap(8).AlignItems(ui.Center).Focusable().Cursor(ui.CursorPointer)
+			row := ui.Row(kc).Height(26).FillWidth().Padding(0, 10).Gap(8).AlignItems(ui.Center).Focusable().Cursor(ui.CursorPointer).
+				Tooltip(revision.File.Path)
 			if row.Clicked() {
 				row.Focus()
 				view.selected = revision.Hash
@@ -169,10 +184,11 @@ func (a *App) buildRevisionHistory(c *ui.Context, p Palette, view *revisionHisto
 				}
 			})
 			row.Children(func() {
-				ui.Text(kc, revision.Subject).SingleLine().Grow(1).FontSize(11.5).TextColor(p.TextPrimary)
-				ui.Text(kc, revision.File.Path).SingleLine().MaxWidth(230).FontSize(10.5).TextColor(p.TextMuted)
-				ui.Text(kc, entry.ShortHash).FontSize(10.5).TextColor(p.TextMuted)
-				ui.Text(kc, revision.Author).SingleLine().MaxWidth(110).FontSize(10.5).TextColor(p.TextMuted)
+				date := "—"
+				if revision.AuthorUnix != 0 {
+					date = time.Unix(revision.AuthorUnix, 0).Local().Format("2006-01-02 15:04")
+				}
+				columns(kc, revision.Author, date, revision.Subject, entry.ShortHash, false)
 			})
 		}
 	})
@@ -280,6 +296,19 @@ func (a *App) buildGitChangedFiles(c *ui.Context, p Palette, detail gitops.Commi
 	ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, fmt.Sprintf("变更文件 (%d)", len(detail.Files))).FontSize(11).FontWeight(weightSemibold).TextColor(p.TextMuted).Grow(1).SingleLine()
 		i := slices.IndexFunc(detail.Files, func(file gitops.CommitFile) bool { return file.Path == a.gitDetailSelectedPath })
+		menuIconPill(c, p, "git-file-view-options", icoSettings, "视图选项", a.cfg.GitLogDiffPreview, func(m *ui.Menu) {
+			if m.Item("显示差异预览").Checked(a.cfg.GitLogDiffPreview).Chosen() {
+				a.cfg.GitLogDiffPreview = !a.cfg.GitLogDiffPreview
+				if a.win != nil {
+					_ = a.cfg.Save()
+				}
+				if !a.cfg.GitLogDiffPreview {
+					a.clearGitLogPreview()
+				} else if len(detail.Files) > 0 {
+					a.selectGitChangedFile(detail, detail.Files[max(0, i)])
+				}
+			}
+		})
 		if i >= 0 {
 			file := detail.Files[i]
 			toolButton(c, p, "history-show-diff", icoColumns, "查看差异 (⌘D)", false, true, func() {

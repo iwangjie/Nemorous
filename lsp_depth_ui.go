@@ -7,8 +7,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/lsp"
 )
 

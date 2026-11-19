@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/conflict"
 )
@@ -297,6 +297,7 @@ func (a *App) BuildUI(c *ui.Context) {
 		a.buildReviewPicker(c, p)
 		a.buildSelectIn(c, p)
 		a.buildGlobalSearchModal(c, p)
+		a.buildReplaceAllConfirmation(c, p)
 		a.buildBranchSwitchModal(c, p)
 		a.buildSettingsModal(c, p)
 		a.buildUpdateModal(c, p)
@@ -417,6 +418,9 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
 		a.openGlobalSearch()
 	}
+	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyR) {
+		a.openGlobalReplace()
+	}
 	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyA) {
 		a.showCmdPalette = !a.showCmdPalette
 		a.cmdPaletteQuery = ""
@@ -465,7 +469,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if c.Shortcut(ui.Cmd, ui.KeyT) {
 		a.TriggerBatchPull()
 	}
-	if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyZ) {
+	if !(a.editorTab == "file" && a.reviewEditorFocused(c)) && c.Shortcut(ui.Cmd|ui.Alt, ui.KeyZ) {
 		a.rollbackSelectedChange()
 	}
 	if a.activeTab == TabCode {
@@ -489,10 +493,20 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			a.closeWorkingDiffTab()
 		case "commit":
 			a.closeGitCommitDiff()
+		case "compare":
+			a.closeComparison()
+		case "staged":
+			if a.stagedReview != nil {
+				a.closeStagedReview(a.stagedReview)
+			}
 		}
 	}
 	if c.Shortcut(ui.Cmd, ui.KeyS) {
 		switch a.editorTab {
+		case "staged":
+			if a.stagedReview != nil {
+				a.saveStagedReview(a.stagedReview)
+			}
 		case "changes":
 			a.saveDiffMicroEdit()
 		case "file":

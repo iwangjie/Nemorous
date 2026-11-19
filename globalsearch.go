@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,8 +18,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
@@ -33,6 +34,7 @@ const (
 type globalSearchOptions struct {
 	CaseSensitive bool
 	Regex         bool
+	Mask          string
 }
 
 type globalSearchHit struct {
@@ -42,6 +44,8 @@ type globalSearchHit struct {
 	Snippet   string
 	MatchFrom int
 	MatchTo   int
+	lineText  string
+	matchEnd  int
 
 	RepoID   string
 	RepoName string
@@ -88,6 +92,11 @@ func (a *App) openGlobalSearch() {
 	a.openGlobalSearchIn("")
 }
 
+func (a *App) openGlobalReplace() {
+	a.openGlobalSearchIn("")
+	a.globalSearchReplaceMode = true
+}
+
 func (a *App) openDirectorySearch(wf gitops.WorkspaceFile) {
 	if wf = a.normalizeWorkspaceFile(wf); wf.AbsPath != "" {
 		a.openGlobalSearchIn(wf.AbsPath)
@@ -99,6 +108,9 @@ func (a *App) openGlobalSearchIn(directory string) {
 	a.showBranchPicker = false
 	a.showGlobalSearch = true
 	a.globalSearchQuery = ""
+	a.globalSearchReplacement = ""
+	a.globalSearchReplaceMode = false
+	a.globalSearchSelected = nil
 	a.globalSearchDirectory = directory
 	a.globalSearchGroups = nil
 	a.globalSearchTotal = 0
@@ -111,6 +123,7 @@ func (a *App) openGlobalSearchIn(directory string) {
 
 func (a *App) closeGlobalSearch() {
 	a.showGlobalSearch = false
+	a.globalReplacePlan = nil
 	a.cancelGlobalSearch()
 }
 
@@ -131,12 +144,14 @@ func (a *App) scheduleGlobalSearch() {
 	a.globalSearchTotal = 0
 	a.globalSearchErr = ""
 	a.globalSearchPartial = false
+	a.globalSearchSelected = nil
+	a.globalReplacePlan = nil
 
-	query := strings.TrimSpace(a.globalSearchQuery)
+	query := a.globalSearchQuery
 	if query == "" {
 		return
 	}
-	opts := globalSearchOptions{CaseSensitive: a.globalSearchCase, Regex: a.globalSearchRegex}
+	opts := a.globalSearchOptions()
 	if opts.Regex {
 		if _, err := regexp.Compile(query); err != nil {
 			a.globalSearchErr = "正则表达式无效：" + err.Error()
@@ -193,10 +208,65 @@ func (a *App) scheduleGlobalSearch() {
 				total += len(grp.Hits)
 			}
 			a.globalSearchGroups = groups
+			if a.globalSearchReplaceMode && len(groups) > 0 && len(groups[0].Hits) > 0 {
+				hit := groups[0].Hits[0]
+				a.globalSearchSelected = &hit
+			}
 			a.globalSearchTotal = total
 			a.globalSearchPartial = out.Truncated
 		})
 	}()
+}
+
+func (a *App) globalSearchOptions() globalSearchOptions {
+	options := globalSearchOptions{CaseSensitive: a.globalSearchCase, Regex: a.globalSearchRegex}
+	if a.globalSearchUseMask {
+		options.Mask = a.globalSearchMask
+	}
+	return options
+}
+
+type searchFileMask struct {
+	include, exclude []string
+}
+
+func parseSearchFileMask(input string) (searchFileMask, error) {
+	var mask searchFileMask
+	for part := range strings.SplitSeq(input, ",") {
+		part = strings.TrimSpace(part)
+		negative := strings.HasPrefix(part, "!")
+		part = strings.TrimSpace(strings.TrimPrefix(part, "!"))
+		if part == "" {
+			continue
+		}
+		if _, err := path.Match(part, ""); err != nil {
+			return mask, fmt.Errorf("文件掩码 %q 无效：%w", part, err)
+		}
+		if negative {
+			mask.exclude = append(mask.exclude, part)
+		} else {
+			mask.include = append(mask.include, part)
+		}
+	}
+	return mask, nil
+}
+
+func (mask searchFileMask) matches(filename string) bool {
+	filename = filepath.Base(filename)
+	for _, pattern := range mask.exclude {
+		if ok, _ := path.Match(pattern, filename); ok {
+			return false
+		}
+	}
+	if len(mask.include) == 0 {
+		return true
+	}
+	for _, pattern := range mask.include {
+		if ok, _ := path.Match(pattern, filename); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // groupGlobalSearchHits maps absolute paths back to repository-relative files
@@ -354,6 +424,10 @@ func searchWorkspace(ctx context.Context, root string, files []gitops.WorkspaceF
 }
 
 func ripgrepSearch(ctx context.Context, root, query string, opts globalSearchOptions) (globalSearchOutcome, error) {
+	mask, err := parseSearchFileMask(opts.Mask)
+	if err != nil {
+		return globalSearchOutcome{}, err
+	}
 	rg, err := exec.LookPath("rg")
 	if err != nil {
 		return globalSearchOutcome{}, err
@@ -401,27 +475,22 @@ func ripgrepSearch(ctx context.Context, root, query string, opts globalSearchOpt
 		if ev.Type != "match" {
 			continue
 		}
-		lineText := strings.TrimRight(ev.Data.Lines.Text, "\r\n")
-		start, end := 0, 0
-		if len(ev.Data.Submatches) > 0 {
-			start = max(0, ev.Data.Submatches[0].Start)
-			end = max(start, ev.Data.Submatches[0].End)
-		}
-		if start > len(lineText) {
-			start = len(lineText)
-		}
-		if end > len(lineText) {
-			end = len(lineText)
-		}
-		snippet, from, to := searchSnippet(lineText, start, end)
 		abs := ev.Data.Path.Text
+		if !mask.matches(abs) {
+			continue
+		}
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(root, filepath.FromSlash(abs))
 		}
-		out.Hits = append(out.Hits, globalSearchHit{
-			AbsPath: filepath.Clean(abs), Line: ev.Data.LineNumber, Column: start + 1,
-			Snippet: snippet, MatchFrom: from, MatchTo: to,
-		})
+		lineText := strings.TrimSuffix(strings.TrimSuffix(ev.Data.Lines.Text, "\n"), "\r")
+		for _, submatch := range ev.Data.Submatches {
+			start := min(len(lineText), max(0, submatch.Start))
+			end := min(len(lineText), max(start, submatch.End))
+			out.Hits = append(out.Hits, newGlobalSearchHit(filepath.Clean(abs), ev.Data.LineNumber, lineText, start, end))
+			if len(out.Hits) == globalSearchLimit {
+				break
+			}
+		}
 	}
 	if len(out.Hits) >= globalSearchLimit {
 		out.Truncated = true
@@ -452,14 +521,11 @@ func ripgrepSearch(ctx context.Context, root, query string, opts globalSearchOpt
 }
 
 func goSearch(ctx context.Context, files []gitops.WorkspaceFile, query string, opts globalSearchOptions) (globalSearchOutcome, error) {
-	pattern := query
-	if !opts.Regex {
-		pattern = regexp.QuoteMeta(pattern)
+	mask, err := parseSearchFileMask(opts.Mask)
+	if err != nil {
+		return globalSearchOutcome{}, err
 	}
-	if !opts.CaseSensitive {
-		pattern = "(?i)" + pattern
-	}
-	re, err := regexp.Compile(pattern)
+	re, err := globalSearchRegexp(query, opts)
 	if err != nil {
 		return globalSearchOutcome{}, fmt.Errorf("搜索表达式无效：%w", err)
 	}
@@ -502,11 +568,7 @@ func goSearch(ctx context.Context, files []gitops.WorkspaceFile, query string, o
 							stop()
 							return
 						}
-						snippet, from, to := searchSnippet(line, loc[0], loc[1])
-						hits = append(hits, globalSearchHit{
-							AbsPath: abs, Line: idx + 1, Column: loc[0] + 1,
-							Snippet: snippet, MatchFrom: from, MatchTo: to,
-						})
+						hits = append(hits, newGlobalSearchHit(abs, idx+1, line, loc[0], loc[1]))
 						mu.Unlock()
 					}
 				}
@@ -522,7 +584,7 @@ func goSearch(ctx context.Context, files []gitops.WorkspaceFile, query string, o
 				abs = filepath.Join(wf.RepoPath, filepath.FromSlash(wf.RelPath))
 			}
 			abs = filepath.Clean(abs)
-			if abs == "." || seen[abs] {
+			if abs == "." || seen[abs] || !mask.matches(abs) {
 				continue
 			}
 			seen[abs] = true
@@ -541,6 +603,24 @@ func goSearch(ctx context.Context, files []gitops.WorkspaceFile, query string, o
 	truncated := len(hits) >= globalSearchLimit
 	mu.Unlock()
 	return globalSearchOutcome{Hits: hits, Truncated: truncated}, nil
+}
+
+func newGlobalSearchHit(file string, lineNumber int, line string, start, end int) globalSearchHit {
+	snippet, from, to := searchSnippet(line, start, end)
+	return globalSearchHit{
+		AbsPath: file, Line: lineNumber, Column: start + 1, lineText: line, matchEnd: end,
+		Snippet: snippet, MatchFrom: from, MatchTo: to,
+	}
+}
+
+func globalSearchRegexp(query string, opts globalSearchOptions) (*regexp.Regexp, error) {
+	if !opts.Regex {
+		query = regexp.QuoteMeta(query)
+	}
+	if !opts.CaseSensitive {
+		query = "(?i)" + query
+	}
+	return regexp.Compile(query)
 }
 
 // searchSnippet keeps the match visible while limiting very long minified
@@ -590,11 +670,20 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 	openAtBuild := a.showGlobalSearch
 	ui.DialogBase(c, &a.showGlobalSearch, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
-		panel.Width(940).Padding(14).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
+		width := float32(940)
+		if a.win != nil {
+			w, _ := a.win.ContentSize()
+			width = min(width, float32(w)-32)
+		}
+		panel.Width(width).Padding(14).Gap(10).Radius(12).Background(p.Surface).Border(1, p.Border)
 
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			drawIcon(c, icoSearch, 15, p.TextMuted)
-			ui.Text(c, "在文件中查找").FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
+			title, shortcut := "在文件中查找", "⇧⌘F"
+			if a.globalSearchReplaceMode {
+				title, shortcut = "在文件中替换", "⇧⌘R"
+			}
+			ui.Text(c, title).FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
 			scope := "整个工作区"
 			if directory := a.globalSearchDirectory; directory != "" {
 				scope = a.relativeWorkspacePath(directory)
@@ -604,7 +693,7 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 			}
 			ui.Text(c, scope).FontSize(11).TextColor(p.TextMuted).MaxLines(1)
 			ui.Spacer(c)
-			ui.Text(c, "⇧⌘F").FontSize(10.5).TextColor(p.TextMuted)
+			ui.Text(c, shortcut).FontSize(10.5).TextColor(p.TextMuted)
 		})
 
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
@@ -613,7 +702,7 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 			if field.Changed() {
 				a.scheduleGlobalSearch()
 			}
-			if field.Submitted() && len(a.globalSearchGroups) > 0 && len(a.globalSearchGroups[0].Hits) > 0 {
+			if !a.globalSearchReplaceMode && field.Submitted() && len(a.globalSearchGroups) > 0 && len(a.globalSearchGroups[0].Hits) > 0 {
 				a.openGlobalSearchHit(a.globalSearchGroups[0].Hits[0])
 				return
 			}
@@ -647,6 +736,22 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 				a.globalSearchHandle.Focus()
 			})
 			miniBtn(c, p, "关闭", func() { a.closeGlobalSearch() })
+		})
+
+		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+			if a.globalSearchReplaceMode {
+				ui.TextInput(c.Key("global-replacement"), &a.globalSearchReplacement).Placeholder("替换为").Grow(1)
+			} else {
+				ui.Spacer(c).Grow(1)
+			}
+			if ui.Checkbox(c.Key("global-mask-toggle"), &a.globalSearchUseMask, "文件掩码").Changed() {
+				a.scheduleGlobalSearch()
+			}
+			if a.globalSearchUseMask {
+				if ui.TextInput(c.Key("global-mask"), &a.globalSearchMask).Placeholder("*.go, !*_test.go").Width(170).Changed() {
+					a.scheduleGlobalSearch()
+				}
+			}
 		})
 
 		status, statusCol := a.globalSearchStatusText()
@@ -685,8 +790,15 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 					if row.Hovered() {
 						row.Background(p.SurfaceHover)
 					}
+					if hit := a.globalSearchSelected; hit != nil && hit.AbsPath == hitCopy.AbsPath && hit.Line == hitCopy.Line && hit.Column == hitCopy.Column {
+						row.Background(p.AccentSoft)
+					}
 					if row.Clicked() {
-						a.openGlobalSearchHit(hitCopy)
+						if a.globalSearchReplaceMode {
+							a.globalSearchSelected = &hitCopy
+						} else {
+							a.openGlobalSearchHit(hitCopy)
+						}
 					}
 					row.Children(func() {
 						ui.Text(c.Key(hitKey+"-ln"), fmt.Sprintf("%d", hitCopy.Line)).Font("SF Mono, Menlo, monospace").
@@ -710,6 +822,9 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 				}
 			}
 		})
+		if a.globalSearchReplaceMode {
+			a.buildReplaceInFilesActions(c, p)
+		}
 	})
 	if openAtBuild && !a.showGlobalSearch {
 		a.closeGlobalSearch()

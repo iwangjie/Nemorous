@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -149,7 +150,13 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 		}
 		if row.Clicked() {
 			row.Focus()
-			a.gitDetailSelectedPath = fileCopy.Path
+			a.selectGitChangedFile(detail, fileCopy)
+		}
+		if row.Shortcut(0, ui.KeyUp) {
+			a.stepGitChangedFile(detail, fileCopy.Path, -1)
+		}
+		if row.Shortcut(0, ui.KeyDown) {
+			a.stepGitChangedFile(detail, fileCopy.Path, 1)
 		}
 		if row.DoubleClicked() || row.Shortcut(ui.Cmd, ui.KeyD) || row.Shortcut(0, ui.KeyEnter) {
 			a.TriggerGitFileDiff(detail, fileCopy)
@@ -180,5 +187,31 @@ func (a *App) renderGitCommitTree(c *ui.Context, p Palette, detail gitops.Commit
 				ui.Text(kc, fmt.Sprintf("+%d -%d", fileCopy.Added, fileCopy.Deleted)).FontSize(9).TextColor(p.TextMuted).Shrink(0)
 			}
 		})
+	}
+}
+
+func (a *App) selectGitChangedFile(detail gitops.CommitDetail, file gitops.CommitFile) {
+	a.gitDetailSelectedPath = file.Path
+	if !a.cfg.GitLogDiffPreview {
+		return
+	}
+	a.loadGitLogPreview(detail, file)
+}
+
+func (a *App) stepGitChangedFile(detail gitops.CommitDetail, path string, delta int) {
+	var files []gitops.CommitFile
+	var collect func(*gitCommitTreeNode)
+	collect = func(node *gitCommitTreeNode) {
+		for _, dir := range node.dirs {
+			if !a.gitDetailCollapsedDirs[detail.Hash+"::"+dir.relPath] {
+				collect(dir)
+			}
+		}
+		files = append(files, node.files...)
+	}
+	collect(buildGitCommitTree(detail.Files))
+	if i := slices.IndexFunc(files, func(file gitops.CommitFile) bool { return file.Path == path }); i >= 0 && i+delta >= 0 && i+delta < len(files) {
+		a.gitFocusDetailFile = true
+		a.selectGitChangedFile(detail, files[i+delta])
 	}
 }

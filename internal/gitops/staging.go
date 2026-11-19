@@ -86,7 +86,7 @@ func diffText(ctx context.Context, repoPath, rel string, staged bool, zeroContex
 	if zeroContext {
 		args = append(args, "--unified=0")
 	}
-	args = append(args, "--", rel)
+	args = append(args, "--", ":(literal)"+rel)
 	return RunGitRaw(ctx, repoPath, args...)
 }
 
@@ -139,6 +139,26 @@ func UnstageHunks(ctx context.Context, repoPath, rel string, indices []int) erro
 		return err
 	}
 	return applyCached(ctx, repoPath, d.patch(sel), true)
+}
+
+// StageHunkRange applies the zero-context Git hunk with these half-open
+// zero-based line ranges. Matching by range avoids applying another hunk
+// when the editor hides whitespace changes or Git groups lines differently.
+func StageHunkRange(ctx context.Context, repoPath, rel string, staged bool, oldStart, oldEnd, newStart, newEnd int) error {
+	raw, err := diffText(ctx, repoPath, rel, staged, true)
+	if err != nil {
+		return err
+	}
+	d, err := parseRawDiff(raw)
+	if err != nil {
+		return err
+	}
+	for i, h := range d.hunks {
+		if h.changeRange() == (ChangeRange{oldStart, oldEnd, newStart, newEnd}) {
+			return applyCached(ctx, repoPath, d.patch([]int{i}), staged)
+		}
+	}
+	return fmt.Errorf("变更块的范围与 Git 不一致，请使用原始差异核对")
 }
 
 func validHunkIndices(d *rawDiff, indices []int) ([]int, error) {

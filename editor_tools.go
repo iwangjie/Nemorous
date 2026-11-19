@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/gitops"
 	runpkg "github.com/iwangjie/nemorous/internal/run"
@@ -343,7 +343,7 @@ func (a *App) workspaceFileByKey(repoID, relPath string) (gitops.WorkspaceFile, 
 
 // syncEditorAids installs gutter marks (bookmarks and breakpoints) and the
 // editor's context menu before a tab is drawn.
-func (a *App) syncEditorAids(tab *codeTab, p Palette) {
+func (a *App) syncEditorAids(c *ui.Context, tab *codeTab, p Palette) {
 	if tab == nil || tab.state == nil {
 		return
 	}
@@ -367,7 +367,16 @@ func (a *App) syncEditorAids(tab *codeTab, p Palette) {
 		}
 		a.toggleBookmarkLine(tab, line+1)
 	}
+	services := c.Services()
 	tab.state.ContextMenu = func(m *ui.Menu) {
+		if sel := tab.state.Selection(); !sel.Empty() && m.Item("与剪贴板比较").Chosen() {
+			selected := tab.state.Buffer.Slice(sel.Start(), sel.End())
+			name := filepath.Base(tab.file.RelPath)
+			a.openComparison("剪贴板 vs "+name, "剪贴板", name, services.ReadClipboard(), selected, "", tab.file.RelPath)
+		}
+		if tab.state.DiffBase != nil && !tab.state.ReadOnly && m.Item("回滚行").Shortcut(ui.Cmd|ui.Alt, ui.KeyZ).Chosen() {
+			tab.state.Run(editor.RevertHunk)
+		}
 		if m.Item("切换书签").Chosen() {
 			a.toggleBookmarkAtCursor()
 		}

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
@@ -313,6 +313,7 @@ func (a *App) codeFolderSelection(row ui.Element, folder gitops.WorkspaceFile, k
 	if row.Clicked() {
 		row.Focus()
 		a.codeLocatedKey = key
+		a.compareFiles = nil
 	}
 	a.bindTreeCopy(row, folder, false)
 	if row.DoubleClicked() || (row.Focused() && (row.Shortcut(0, ui.KeyEnter) ||
@@ -326,6 +327,7 @@ func (a *App) codeFolderChevron(c *ui.Context, p Palette, row ui.Element, key, n
 	if button.Clicked() {
 		row.Focus()
 		a.codeLocatedKey = key
+		a.compareFiles = nil
 		toggle()
 	}
 	icon := icoChevronRight
@@ -383,6 +385,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		activeFile := a.activeCodeFile()
 		key := wf.RepoID + "::" + wf.RelPath
 		selected := a.codeLocatedKey == key || (a.codeLocatedKey == "" && activeFile != nil && activeFile.RepoID == wf.RepoID && activeFile.RelPath == wf.RelPath)
+		selected = selected || a.comparisonSelectionIndex(wf) >= 0
 		rowBg := p.RailBg
 		textCol := p.TextSecondary
 		if selected {
@@ -406,6 +409,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 			fRow.Background(p.SurfaceHover)
 		}
 		if fRow.DoubleClicked() || (fRow.Focused() && fRow.Shortcut(0, ui.KeyEnter)) {
+			a.selectComparisonFile(wfCopy, false)
 			a.selectCodeFile(wfCopy)
 			if tab := a.activeCodeTab(); tab != nil {
 				tab.viewHandle.Focus()
@@ -413,8 +417,18 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 		} else if fRow.Clicked() {
 			fRow.Focus()
 			a.codeLocatedKey = key
+			a.selectComparisonFile(wfCopy, fRow.ClickModifiers()&ui.Cmd != 0)
+		}
+		if selected && len(a.compareFiles) == 2 && fRow.Shortcut(ui.Cmd, ui.KeyD) {
+			a.compareProjectFiles()
 		}
 		fRow.PopoverMenu(func(m *ui.Menu) {
+			if selected && len(a.compareFiles) == 2 {
+				if m.Item("比较文件").Shortcut(ui.Cmd, ui.KeyD).Chosen() {
+					a.compareProjectFiles()
+				}
+				return
+			}
 			if m.Item("打开源码").Chosen() {
 				a.selectCodeFile(wfCopy)
 			}
@@ -595,6 +609,14 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				}
 			}
 
+			if a.comparison != nil {
+				a.buildComparisonTab(c, p)
+			}
+			if view := a.stagedReview; view != nil {
+				a.buildAuxReviewTab(c, p, "staged", view.title(), view.dirty(), func() {
+					a.closeStagedReview(view)
+				})
+			}
 			if a.gitCommitDiff != nil || a.gitDiffLoading {
 				active := a.editorTab == "commit"
 				kc := c.Key("editor-tab-commit-diff")
@@ -644,7 +666,7 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				}
 			}
 		})
-		if len(a.codeTabs) > 0 || a.diffState != nil || a.gitCommitDiff != nil {
+		if len(a.codeTabs) > 0 || a.diffState != nil || a.gitCommitDiff != nil || a.comparison != nil || a.stagedReview != nil {
 			menuIconPill(c, p, "editor-tabs-menu", icoChevronDown, "全部标签", false, func(m *ui.Menu) {
 				for i, tab := range a.codeTabs {
 					tabIndex := i
@@ -661,6 +683,12 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 					if m.Item("Diff: " + filepath.Base(a.gitDiffPath)).Radio(a.editorTab == "commit").Chosen() {
 						a.editorTab = "commit"
 					}
+				}
+				if a.comparison != nil && m.Item(a.comparison.title).Radio(a.editorTab == "compare").Chosen() {
+					a.editorTab = "compare"
+				}
+				if view := a.stagedReview; view != nil && m.Item(view.title()).Radio(a.editorTab == "staged").Chosen() {
+					a.editorTab = "staged"
 				}
 			})
 		}
@@ -684,6 +712,16 @@ func (a *App) buildEditorContent(c *ui.Context, p Palette) {
 	case "commit":
 		if a.gitCommitDiff != nil || a.gitDiffLoading || a.gitDiffErr != "" {
 			a.buildGitCommitDiffPane(c, p)
+			return
+		}
+	case "compare":
+		if a.comparison != nil {
+			a.buildComparison(c, p)
+			return
+		}
+	case "staged":
+		if a.stagedReview != nil {
+			a.buildStagedReview(c, p)
 			return
 		}
 	}
@@ -834,7 +872,7 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			a.buildPluginEditorView(c, p, editorPlugin.Ref)
 			return
 		}
-		a.syncEditorAids(tab, p)
+		a.syncEditorAids(c, tab, p)
 		if tab.blameAll {
 			ui.Row(c).Grow(1).FillHeight().Children(func() {
 				a.buildCodeBlameGutter(c, p, tab)

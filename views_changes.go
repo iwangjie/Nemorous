@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 	"github.com/iwangjie/nemorous/internal/mani"
 )
@@ -845,6 +845,7 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 	key := cfCopy.Key()
 	isSelected := a.changeTreeSelection != nil && a.changeTreeSelection.file.Key() == key && a.changeTreeSelection.staged == isStaged
 	isChecked := a.checkedChanges[key]
+	_, isPartiallyChecked := a.partialCommitFiles[key]
 
 	rowBg := ui.Transparent
 	if isSelected {
@@ -899,10 +900,14 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 		}
 		if m.Item("只选中此文件").Chosen() {
 			a.checkedChanges = map[string]bool{key: true}
+			a.partialCommitFiles = nil
 			a.selectChangedFileInScope(cfCopy, isStaged)
 		}
 		if m.Item("查看差异").Chosen() {
 			showDiff()
+		}
+		if !cfCopy.Untracked && !cfCopy.Conflicted && m.Item("比较 HEAD、暂存和本地版本").Chosen() {
+			a.openStagedReview(cfCopy)
 		}
 		if m.Item("在文件视图打开").Chosen() {
 			a.selectCodeFile(gitops.WorkspaceFile{
@@ -917,6 +922,7 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 		m.Separator()
 		if m.Item("AI 生成提交说明").Chosen() {
 			a.checkedChanges = map[string]bool{key: true}
+			a.partialCommitFiles = nil
 			a.TriggerGenerateCommitMessage()
 		}
 		if m.Item("聚焦提交框").Chosen() {
@@ -955,13 +961,17 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 			if fChk.ClickModifiers()&ui.Shift != 0 {
 				a.toggleChangeRange(ordered, key)
 			} else {
-				a.checkedChanges[key] = !a.checkedChanges[key]
+				a.setChangeChecked(key, isPartiallyChecked || !isChecked)
 				a.lastCheckedKey = key
 			}
 		}
 		fChk.Children(func() {
 			if isChecked {
-				drawIcon(fkc.Key("chk-ico"), icoCheck, 10, p.AccentText)
+				icon := icoCheck
+				if isPartiallyChecked {
+					icon = icoMinus
+				}
+				drawIcon(fkc.Key("chk-ico"), icon, 10, p.AccentText)
 			}
 		})
 
@@ -1323,6 +1333,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	if state == nil {
 		return
 	}
+	state.Ignore = editor.DiffIgnore(min(a.cfg.DiffIgnoreMode, uint8(editor.DiffIgnoreWhitespaceAndEmptyLines)))
 	hunks := state.Hunks()
 	total := len(hunks)
 	if !opts.loading && *opts.jumpEdge != 0 {
@@ -1344,7 +1355,23 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, cur > 0 || opts.canPrevFile, func() { a.stepDiffHunk(state, -1, opts) })
 		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, cur < total-1 || opts.canNextFile, func() { a.stepDiffHunk(state, 1, opts) })
-		ui.Text(c, fmt.Sprintf("%d/%d", pos, total)).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+		position := fmt.Sprintf("%d/%d", pos, total)
+		if state == a.diffState && a.canChooseCommitHunks() && total > 0 {
+			key := a.selectedChangeFile.Key()
+			included := 0
+			selection, partial := a.partialCommitFiles[key]
+			if partial {
+				for _, hunk := range hunks {
+					if commitHunkIncluded(selection, reviewChangeRange(hunk)) {
+						included++
+					}
+				}
+			} else if a.checkedChanges[key] {
+				included = total
+			}
+			position += fmt.Sprintf(" · 已纳入 %d", included)
+		}
+		ui.Text(c, position).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
 		if opts.source != nil {
 			diffToolButton(c, p, opts.prefix+"-source", icoEdit, "修改 (F4)", false, opts.sourceEnabled, opts.source)
 			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
@@ -1362,6 +1389,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		miniBtn(c.Key(opts.prefix+"-find"), p, "查找", func() {
 			state.Run(editor.Find)
 		})
+		a.buildDiffIgnoreMenu(c.Key(opts.prefix+"-ignore"), p, state)
 		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		if opts.staging && a.selectedChangeFile != nil && a.diffReadError == "" && total > 0 {
 			if a.diffStagedOnly {
@@ -1394,6 +1422,77 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	}
 }
 
+func (a *App) toggleDiffIgnoreOptions(state *editor.DiffState) {
+	a.showDiffIgnoreOptions = !a.showDiffIgnoreOptions || a.diffIgnoreOwner != state
+	a.diffIgnoreCursor = int(state.Ignore)
+	a.diffIgnoreFocus = a.showDiffIgnoreOptions
+	a.diffIgnoreOwner = state
+}
+
+func (a *App) buildDiffIgnoreMenu(c *ui.Context, p Palette, state *editor.DiffState) {
+	modes := [...]string{"不忽略", "忽略首尾空白", "忽略空白", "忽略空白和空行"}
+	mode := min(int(state.Ignore), len(modes)-1)
+	anchor := ui.ButtonBase(c).Padding(3, 7).Shrink(0).Label("忽略差异").
+		Tooltip("忽略差异 (⌘⇧D)").Cursor(ui.CursorPointer)
+	anchor.Children(func() {
+		ui.Text(c, modes[mode]).FontSize(10.5).TextColor(p.TextControl).SingleLine()
+	})
+	if anchor.Clicked() {
+		a.toggleDiffIgnoreOptions(state)
+	}
+	open := a.showDiffIgnoreOptions && a.diffIgnoreOwner == state
+	choose := func(i int) {
+		a.cfg.DiffIgnoreMode = uint8(i)
+		state.Ignore = editor.DiffIgnore(i)
+		open = false
+		state.Focus()
+		if a.win != nil {
+			_ = a.cfg.Save()
+		}
+	}
+	ui.PopoverBase(c, anchor, &open, func(panel ui.Element) {
+		panel.Width(158).Padding(4).Background(p.Surface).Border(1, p.Border).Radius(4).Focusable()
+		if a.diffIgnoreFocus {
+			panel.Focus()
+			a.diffIgnoreFocus = false
+		}
+		if panel.Shortcut(0, ui.KeyDown) {
+			a.diffIgnoreCursor = (a.diffIgnoreCursor + 1) % len(modes)
+		}
+		if panel.Shortcut(0, ui.KeyUp) {
+			a.diffIgnoreCursor = (a.diffIgnoreCursor + len(modes) - 1) % len(modes)
+		}
+		if panel.Shortcut(0, ui.KeyEnter) {
+			choose(a.diffIgnoreCursor)
+		}
+		panel.Children(func() {
+			for i, label := range modes {
+				kc := c.Key(label)
+				item := ui.Row(kc).Padding(5, 8).Gap(6).AlignItems(ui.Center).
+					Focusable().Label(label).Cursor(ui.CursorPointer)
+				if i == a.diffIgnoreCursor || item.Hovered() {
+					item.Background(p.SurfaceHover)
+				}
+				if item.Clicked() {
+					choose(i)
+				}
+				item.Children(func() {
+					ui.Text(kc, label).FontSize(11).TextColor(p.TextPrimary).SingleLine()
+					if i == mode {
+						drawIcon(kc, icoCheck, 9, p.TextMuted)
+					}
+				})
+			}
+		})
+	})
+	if a.diffIgnoreOwner == state {
+		a.showDiffIgnoreOptions = open
+		if !open {
+			a.diffIgnoreOwner = nil
+		}
+	}
+}
+
 // changeParentCheck renders the tri-state checkbox shared by the changes root,
 // repositories and directories. A partial group shows a dash; clicking it
 // selects every child, as IDEA's commit tree does.
@@ -1422,7 +1521,7 @@ func (a *App) changeParentCheck(c *ui.Context, p Palette, key, label string, all
 // setChangeFilesChecked applies one parent checkbox to every child file.
 func (a *App) setChangeFilesChecked(files []gitops.ChangedFile, checked bool) {
 	for _, f := range files {
-		a.checkedChanges[f.Key()] = checked
+		a.setChangeChecked(f.Key(), checked)
 	}
 }
 
@@ -1517,7 +1616,7 @@ func (a *App) toggleChangeRange(ordered []gitops.ChangedFile, targetKey string) 
 		}
 	}
 	if from < 0 || to < 0 || from == to {
-		a.checkedChanges[targetKey] = !a.checkedChanges[targetKey]
+		a.setChangeChecked(targetKey, !a.checkedChanges[targetKey])
 		a.lastCheckedKey = targetKey
 		return
 	}
@@ -1526,7 +1625,7 @@ func (a *App) toggleChangeRange(ordered []gitops.ChangedFile, targetKey string) 
 	}
 	value := !a.checkedChanges[targetKey]
 	for i := from; i <= to; i++ {
-		a.checkedChanges[ordered[i].Key()] = value
+		a.setChangeChecked(ordered[i].Key(), value)
 	}
 	a.lastCheckedKey = targetKey
 }
@@ -1601,7 +1700,8 @@ func (a *App) toggleSelectedChange() {
 		return
 	}
 	key := file.Key()
-	a.checkedChanges[key] = !a.checkedChanges[key]
+	_, partial := a.partialCommitFiles[key]
+	a.setChangeChecked(key, partial || !a.checkedChanges[key])
 	a.lastCheckedKey = key
 }
 
@@ -1654,6 +1754,17 @@ func (a *App) stageDiffHunkAt(idx int, unstage bool) {
 	if idx < 0 || idx >= len(hunks) {
 		return
 	}
+	a.stageDiffHunk(hunks[idx], unstage)
+}
+
+func (a *App) stageDiffHunk(hunk editor.DiffHunk, unstage bool) {
+	if a.diffStageBusy || a.selectedChangeFile == nil || a.diffState == nil {
+		return
+	}
+	if a.workingDiffDirty() {
+		a.showToast("info", "请先保存文件，再操作暂存区")
+		return
+	}
 	cf := *a.selectedChangeFile
 	old, new := reviewBufferText(a.diffState.Old), reviewBufferText(a.diffState.New)
 	a.diffStageBusy = true
@@ -1661,10 +1772,8 @@ func (a *App) stageDiffHunkAt(idx int, unstage bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		err := verifyReviewDiff(ctx, cf, unstage, old, new)
-		if err == nil && unstage {
-			err = gitops.UnstageHunks(ctx, cf.RepoPath, cf.Path, []int{idx})
-		} else if err == nil {
-			err = gitops.StageHunks(ctx, cf.RepoPath, cf.Path, []int{idx})
+		if err == nil {
+			err = gitops.StageHunkRange(ctx, cf.RepoPath, cf.Path, unstage, hunk.OldStart, hunk.OldEnd, hunk.NewStart, hunk.NewEnd)
 		}
 		a.runUI(func() {
 			a.diffStageBusy = false
@@ -1754,7 +1863,7 @@ func (a *App) buildDiffHunkActions(c *ui.Context, bar ui.Element, acts *editor.D
 		if a.diffStagedOnly {
 			label = "取消暂存"
 		}
-		action := func() { a.stageDiffHunkAt(acts.Index, a.diffStagedOnly) }
+		action := func() { a.stageDiffHunk(acts.Hunk, a.diffStagedOnly) }
 		btn := ui.ButtonBase(c).Padding(0, 7).Height(20).Radius(4).Background(p.Accent).Label(label)
 		btn.Children(func() { ui.Text(c, label).FontSize(10).FontWeight(weightMedium).TextColor(p.AccentText) })
 		if btn.Clicked() {

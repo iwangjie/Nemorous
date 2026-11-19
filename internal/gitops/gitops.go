@@ -661,8 +661,9 @@ func commitRepo(ctx context.Context, repoPath string, message string, filesToSta
 type BatchCommitTarget struct {
 	Repo    mani.DiscoveredRepo
 	Files   []string // if non-empty, stage these specific files before committing
-	Message string   // per-repository message; the batch message is used when empty
-	Amend   bool     // rewrite the previous commit instead of adding one
+	Partial []PartialCommitFile
+	Message string // per-repository message; the batch message is used when empty
+	Amend   bool   // rewrite the previous commit instead of adding one
 }
 
 // BatchCommit performs a unified commit across multiple repositories in parallel.
@@ -686,7 +687,13 @@ func BatchCommit(ctx context.Context, targets []BatchCommitTarget, message strin
 			if strings.TrimSpace(target.Message) != "" {
 				repoMessage = target.Message
 			}
-			out, err := commitRepo(ctx, target.Repo.AbsPath, repoMessage, target.Files, target.Amend)
+			var out string
+			var err error
+			if len(target.Partial) != 0 {
+				out, err = commitSelectedRanges(ctx, target, repoMessage)
+			} else {
+				out, err = commitRepo(ctx, target.Repo.AbsPath, repoMessage, target.Files, target.Amend)
+			}
 			if err != nil {
 				results[idx] = OpResult{
 					RepoID:   target.Repo.ID,

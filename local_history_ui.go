@@ -1,11 +1,10 @@
 package main
 
 import (
-	"context"
 	"path/filepath"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/gitops"
 	"github.com/iwangjie/nemorous/internal/localhistory"
@@ -38,7 +37,7 @@ func (a *App) openLocalHistory(repoID, repoPath, relPath string) {
 	a.historyContent = ""
 	a.historyEditor = nil
 	a.historyDiff = nil
-	a.historyDiffMode = false
+	a.historyDiffMode = true
 	a.historyErr = ""
 	a.historyNotice = ""
 	a.historyRestoreConfirm = false
@@ -79,8 +78,11 @@ func (a *App) selectLocalHistoryEntry(id string) {
 			})
 			return
 		}
-		current, _, _ := gitops.ReadRepoFile(context.Background(), repoPath, relPath)
+		current, readErr := gitops.ReadReviewWorktree(repoPath, relPath)
 		a.runUI(func() {
+			if a.historyRepoID != repoID || a.historyRelPath != relPath || a.historySelected != id {
+				return
+			}
 			a.historyLoading = false
 			a.historyContent = entry.Content
 			buf := editor.NewBuffer(entry.Content)
@@ -93,6 +95,10 @@ func (a *App) selectLocalHistoryEntry(id string) {
 			}
 			oldBuf := editor.NewBuffer(entry.Content)
 			newBuf := editor.NewBuffer(current)
+			tab := a.historyOpenCodeTab(repoID, relPath)
+			if tab != nil && !tab.state.ReadOnly {
+				newBuf = tab.state.Buffer
+			}
 			oldBuf.SetLanguage(editor.LanguageFor(relPath))
 			newBuf.SetLanguage(editor.LanguageFor(relPath))
 			a.historyDiff = &editor.DiffState{
@@ -103,8 +109,43 @@ func (a *App) selectLocalHistoryEntry(id string) {
 				Editable: false,
 				Font:     ui.Font{Size: a.cfg.EditorFontSize},
 			}
+			if tab == nil && readErr != nil {
+				return
+			}
+			working := a.historyDiff
+			working.RenderChangeControl = func(c *ui.Context, bar ui.Element, hunk *editor.DiffHunkActions) {
+				bar.Children(func() {
+					button := ui.ButtonBase(c).Size(15, 17).KeepFocus().Label("恢复此变更块").Tooltip("恢复此变更块")
+					button.Children(func() { drawIcon(c, icoChevronRight, 11, a.palette().TextControl) })
+					if !button.Clicked() {
+						return
+					}
+					hunk.Revert()
+					if tab == nil {
+						content := reviewBufferText(working.New)
+						if err := gitops.SaveReviewText(repoPath, relPath, content, gitops.ReviewTextVersion(current)); err != nil {
+							working.New.Undo()
+							a.historyErr = err.Error()
+							return
+						}
+						a.recordLocalHistoryContent(repoID, repoPath, relPath, current, "恢复本地历史变更块")
+						current = content
+						working.New.MarkSaved()
+						a.RefreshAsync()
+					}
+				})
+			}
 		})
 	}()
+}
+
+func (a *App) historyOpenCodeTab(repoID, relPath string) *codeTab {
+	for _, tab := range a.codeTabs {
+		if tab.revision == "" && tab.file.RepoID == repoID && tab.file.RelPath == relPath && !tab.state.ReadOnly {
+			return tab
+		}
+	}
+	return nil
 }
 
 func (a *App) restoreLocalHistoryEntry() {

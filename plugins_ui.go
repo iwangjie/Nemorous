@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/nemorouseditor"
+	"github.com/egoist/mygo/nemorouseditor/markdown"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
-	"github.com/egoist/mygo/ui/markdown"
 	"github.com/iwangjie/nemorous/internal/config"
 	"github.com/iwangjie/nemorous/internal/mani"
 	"github.com/iwangjie/nemorous/internal/plugins"

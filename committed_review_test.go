@@ -6,9 +6,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
@@ -137,7 +138,9 @@ func TestCommittedDiffReviewFromGitLog(t *testing.T) {
 	git("mv", "a.txt", path)
 	write(path, committed)
 	git("add", path)
-	git("commit", "-m", "rename and update")
+	const historyAuthor = "History Reviewer"
+	const historyDate = "2024-04-05T06:07:08Z"
+	git("commit", "-m", "rename and update", "--author", historyAuthor+" <history@example.test>", "--date", historyDate)
 	head := git("rev-parse", "HEAD")
 	write(path, local)
 	files, err := gitops.CommitFiles(t.Context(), repo.AbsPath, head)
@@ -226,6 +229,21 @@ func TestCommittedDiffReviewFromGitLog(t *testing.T) {
 	history := app.gitRevisionHistory
 	if history == nil || app.gitSubTab != "file-history" || len(history.entries) < 2 || history.entries[0].Hash != head || history.entries[1].File.Path != "a.txt" {
 		t.Fatalf("History Up to Here must follow the rename: %+v", history)
+	}
+	when, err := time.Parse(time.RFC3339, historyDate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision := history.entries[0]; revision.Author != historyAuthor || revision.AuthorUnix != when.Unix() {
+		t.Fatalf("file history did not retain the Git author and author date: %+v", revision)
+	}
+	narrowHistory := ui.NewTester(func(c *ui.Context) { app.buildRevisionHistory(c, app.palette(), history) }, 375, 160)
+	narrowHistory.Frame()
+	for _, label := range []string{"作者", "时间", historyAuthor, when.Local().Format("2006-01-02 15:04")} {
+		cell, ok := narrowHistory.Find(label)
+		if !ok || cell.W < 90 || cell.X+cell.W > 375 {
+			t.Fatalf("history column %q is clipped at a narrow width: %+v (found %v)", label, cell, ok)
+		}
 	}
 	click("提交图")
 	click(older.Subject)

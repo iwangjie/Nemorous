@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/nemorouseditor"
+	"github.com/egoist/mygo/nemorouseditor/markdown"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
-	"github.com/egoist/mygo/ui/markdown"
 	"github.com/iwangjie/nemorous/internal/aimerge"
 	"github.com/iwangjie/nemorous/internal/commitmsg"
 	"github.com/iwangjie/nemorous/internal/config"
@@ -152,7 +152,8 @@ type App struct {
 
 	// Navigation & Filter
 	activeTab      NavTab
-	editorTab      string // "file", "changes", "commit", or "" when empty
+	editorTab      string // "file", "changes", "commit", "compare", "staged", or ""
+	stagedReview   *stagedReviewView
 	showGitPanel   bool
 	gitEditorPct   float32
 	logEditorPct   float32
@@ -167,6 +168,9 @@ type App struct {
 	expandedCodeRepos      map[string]bool // "repoID" -> expanded in file tree
 	expandedCodeDirs       map[string]bool // "repoID::dirRelPath" -> expanded in file tree
 	codeLocatedKey         string
+	compareFiles           []gitops.WorkspaceFile
+	comparison             *reviewComparison
+	comparisonSequence     uint64
 	codeRevealKey          string
 	focusProjectTree       bool
 	codeExtraFile          []gitops.WorkspaceFile // one file located beyond the explorer preview
@@ -231,6 +235,7 @@ type App struct {
 	focusChangeTreeFile      bool
 	selectedChangeFile       *gitops.ChangedFile
 	checkedChanges           map[string]bool // ChangeFile.Key() -> selected for batch commit
+	partialCommitFiles       map[string]gitops.PartialCommitFile
 	diffState                *editor.DiffState
 	diffJumpEdge             int // 1: first hunk after a file switch, -1: last hunk
 	diffBoundary             diffNavigationBoundary
@@ -241,6 +246,10 @@ type App struct {
 	workingDiffHandle        ui.Handle
 	commitDiffHandle         ui.Handle
 	diffStagedOnly           bool
+	showDiffIgnoreOptions    bool
+	diffIgnoreFocus          bool
+	diffIgnoreCursor         int
+	diffIgnoreOwner          *editor.DiffState
 	diffEditable             bool
 	diffModified             bool
 	diffStageBusy            bool
@@ -316,6 +325,9 @@ type App struct {
 	gitCenterPct           float32
 	maniContentPct         float32
 	gitDiffOpen            bool
+	gitLogPreview          *gitLogPreview
+	gitLogPreviewHandle    ui.Handle
+	gitLogPreviewTop       float32
 	gitDiffLoading         bool
 	gitDiffRepo            string
 	gitDiffDetail          *gitops.CommitDetail
@@ -679,47 +691,54 @@ type App struct {
 	updateDeferred      bool
 
 	// Modals & Overlays
-	showCmdPalette        bool
-	cmdPaletteQuery       string
-	showGlobalSearch      bool
-	globalSearchQuery     string
-	globalSearchDirectory string
-	globalSearchHandle    ui.Handle
-	globalSearchCase      bool
-	globalSearchRegex     bool
-	globalSearchGroups    []globalSearchGroup
-	globalSearchTotal     int
-	globalSearchRunning   bool
-	globalSearchErr       string
-	globalSearchPartial   bool
-	globalSearchSeq       uint64
-	globalSearchCancel    context.CancelFunc
-	showSettings          bool
-	showBranchModal       bool
-	showBranchPicker      bool
-	branchPickerQuery     string
-	branchPickerRepoID    string
-	branchPickerHandle    ui.Handle
-	showOpLog             bool
-	showLogPanel          bool
-	logTab                string
-	showTerminalPanel     bool
-	terminalEditorPct     float32
-	terminalTitle         string
-	terminalErr           string
-	terminalExited        bool
-	terminalExitCode      int
-	terminalGen           uint64
-	terminal              *terminal.Terminal
-	terminalCommand       []string
-	terminalDirOverride   string
-	terminalTitleOverride string
-	pendingDiscard        *PendingDiscard
-	pendingCodeTabClose   *codeTab
-	pendingCodeTabsClose  []*codeTab
-	pendingUndo           *PendingUndo
-	fileHistory           *FileHistoryState
-	notify                *AppNotification
+	showCmdPalette          bool
+	cmdPaletteQuery         string
+	showGlobalSearch        bool
+	globalSearchQuery       string
+	globalSearchDirectory   string
+	globalSearchHandle      ui.Handle
+	globalSearchCase        bool
+	globalSearchRegex       bool
+	globalSearchUseMask     bool
+	globalSearchMask        string
+	globalSearchReplaceMode bool
+	globalReplaceRunning    bool
+	globalReplacePlan       *replaceAllPlan
+	globalSearchReplacement string
+	globalSearchSelected    *globalSearchHit
+	globalSearchGroups      []globalSearchGroup
+	globalSearchTotal       int
+	globalSearchRunning     bool
+	globalSearchErr         string
+	globalSearchPartial     bool
+	globalSearchSeq         uint64
+	globalSearchCancel      context.CancelFunc
+	showSettings            bool
+	showBranchModal         bool
+	showBranchPicker        bool
+	branchPickerQuery       string
+	branchPickerRepoID      string
+	branchPickerHandle      ui.Handle
+	showOpLog               bool
+	showLogPanel            bool
+	logTab                  string
+	showTerminalPanel       bool
+	terminalEditorPct       float32
+	terminalTitle           string
+	terminalErr             string
+	terminalExited          bool
+	terminalExitCode        int
+	terminalGen             uint64
+	terminal                *terminal.Terminal
+	terminalCommand         []string
+	terminalDirOverride     string
+	terminalTitleOverride   string
+	pendingDiscard          *PendingDiscard
+	pendingCodeTabClose     *codeTab
+	pendingCodeTabsClose    []*codeTab
+	pendingUndo             *PendingUndo
+	fileHistory             *FileHistoryState
+	notify                  *AppNotification
 
 	// Handles for focus & shortcuts
 	rootHandle        ui.Handle
@@ -1407,6 +1426,7 @@ func (a *App) applySnapshot(repos []mani.DiscoveredRepo, maniCfg *mani.Config, s
 	for k := range a.checkedChanges {
 		if _, ok := allValidKeys[k]; !ok {
 			delete(a.checkedChanges, k)
+			delete(a.partialCommitFiles, k)
 		}
 	}
 	a.statusByID = byID
@@ -1456,9 +1476,10 @@ func (a *App) newChangeDiffState(cf gitops.ChangedFile) *editor.DiffState {
 	oldBuf.SetLanguage(lang)
 	newBuf.SetLanguage(lang)
 	return &editor.DiffState{
-		Old:           oldBuf,
-		New:           newBuf,
-		RenderFindBar: renderReviewFindBar,
+		Old:                 oldBuf,
+		New:                 newBuf,
+		RenderFindBar:       renderReviewFindBar,
+		RenderChangeControl: a.buildCommitHunkCheckbox,
 		RenderHunkActions: func(ctx *ui.Context, bar ui.Element, acts *editor.DiffHunkActions) {
 			a.buildDiffHunkActions(ctx, bar, acts)
 		},
@@ -1482,6 +1503,7 @@ func (a *App) newChangeDiffState(cf gitops.ChangedFile) *editor.DiffState {
 func (a *App) resetDiffTabs() {
 	a.closeReviewPicker()
 	a.stopCommitDiffReads()
+	a.clearGitLogPreview()
 	a.gitDiffSeq++
 	a.gitRevisionOpenSeq++
 	if a.gitRevisionHistory != nil {
@@ -1502,6 +1524,7 @@ func (a *App) resetDiffTabs() {
 	a.editorTab = ""
 	a.gitDiffLoading = false
 	a.gitCommitDiff = nil
+	a.stagedReview = nil
 	a.gitDiffDetail = nil
 	a.gitDiffErr = ""
 }
@@ -1550,6 +1573,14 @@ func (a *App) focusDefaultEditor() {
 	if a.gitCommitDiff != nil || a.gitDiffLoading {
 		a.editorTab = "commit"
 		a.gitDiffOpen = true
+		return
+	}
+	if a.comparison != nil {
+		a.editorTab = "compare"
+		return
+	}
+	if a.stagedReview != nil {
+		a.editorTab = "staged"
 		return
 	}
 	a.editorTab = ""
@@ -1740,6 +1771,10 @@ func (a *App) selectCodeFilePreview(wf gitops.WorkspaceFile) {
 func (a *App) selectCodeFileMode(wf gitops.WorkspaceFile, preview bool) {
 	a.rememberCodeLocation()
 	a.codeLocatedKey = ""
+	a.partialCommitFiles = nil
+	a.compareFiles = nil
+	a.comparison = nil
+	a.comparisonSequence++
 	a.gitDiffOpen = false
 	a.editorTab = "file"
 	wf = a.normalizeWorkspaceFile(wf)
@@ -2459,7 +2494,11 @@ func (a *App) commitTargets() []gitops.BatchCommitTarget {
 		for _, f := range byRepo[repoID] {
 			if !seen[f.Path] {
 				seen[f.Path] = true
-				target.Files = append(target.Files, f.Path)
+				if partial, ok := a.partialCommitFiles[f.Key()]; ok {
+					target.Partial = append(target.Partial, partial)
+				} else {
+					target.Files = append(target.Files, f.Path)
+				}
 			}
 		}
 		targets = append(targets, target)
@@ -2597,6 +2636,9 @@ func (a *App) TriggerCommit(pushAfter bool) {
 				for _, file := range target.Files {
 					_ = history.RecordFile(target.Repo.ID, target.Repo.AbsPath, file, "提交")
 				}
+				for _, part := range target.Partial {
+					_ = history.RecordFile(target.Repo.ID, target.Repo.AbsPath, part.File.Path, "提交")
+				}
 			}
 		}
 		okCnt, _, failCnt := countOpResults(res)
@@ -2605,6 +2647,16 @@ func (a *App) TriggerCommit(pushAfter bool) {
 				return
 			}
 			a.setBatchResults(res)
+			for i, result := range res {
+				if result.Status == "OK" {
+					for _, selected := range targets[i].Partial {
+						key := selected.File.Key()
+						if current, ok := a.partialCommitFiles[key]; ok && current.Old == selected.Old && current.New == selected.New {
+							a.setChangeChecked(key, false)
+						}
+					}
+				}
+			}
 			if failCnt == 0 {
 				a.commitMessage = ""
 				a.commitAmend = false

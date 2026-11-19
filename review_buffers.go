@@ -6,17 +6,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/egoist/mygo/ui"
-	"github.com/egoist/mygo/ui/editor"
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
 func reviewBufferText(buffer *editor.Buffer) string {
-	text := buffer.String()
-	if buffer.LineEnding() == "\r\n" {
-		return strings.ReplaceAll(text, "\n", "\r\n")
-	}
-	return text
+	var text strings.Builder
+	_, _ = buffer.Snapshot().WriteTo(&text)
+	return text.String()
 }
 
 func renderReviewFindBar(c *ui.Context, bar ui.Element, find *editor.FindBar) {
@@ -124,7 +122,7 @@ func (a *App) refreshReviewDiff(files map[string]gitops.ChangedFile, first *gito
 	if first != nil && !a.workingDiffClosed {
 		previousEditor, previousGitDiff := a.editorTab, a.gitDiffOpen
 		a.selectChangedFileInScope(*first, first.Staged && !first.Unstaged)
-		if previousEditor == "file" || previousEditor == "commit" {
+		if previousEditor != "" && previousEditor != "changes" {
 			a.editorTab, a.gitDiffOpen = previousEditor, previousGitDiff
 		}
 	}
@@ -190,8 +188,8 @@ func (a *App) writeCodeTab(tab *codeTab, content string) error {
 func (a *App) loadReviewCodeBase(tab *codeTab) {
 	wf := tab.file
 	load := func() {
-		text, err := gitops.ReadReviewBlob(context.Background(), wf.RepoPath, "HEAD:"+filepath.ToSlash(wf.RelPath))
-		if err != nil || text == "" {
+		text, err := gitops.ReadFileRevision(context.Background(), wf.RepoPath, "HEAD", filepath.ToSlash(wf.RelPath))
+		if err != nil {
 			return
 		}
 		base := editor.NewBuffer(text)
@@ -226,16 +224,26 @@ func (a *App) reviewEditorFocused(c *ui.Context) bool {
 func (a *App) registerDiffShortcuts(c *ui.Context) {
 	var diff *editor.DiffState
 	var options func() diffToolbarOptions
-	switch a.editorTab {
-	case "changes":
-		diff, options = a.diffState, a.workingDiffOptions
-	case "commit":
-		diff, options = a.gitCommitDiff, a.commitDiffOptions
+	if a.gitLogPreview != nil && a.gitLogPreviewHandle.FocusWithin(c) {
+		diff, options = a.gitLogPreview.diff, a.gitLogPreviewOptions
+	} else {
+		switch a.editorTab {
+		case "changes":
+			diff, options = a.diffState, a.workingDiffOptions
+		case "commit":
+			diff, options = a.gitCommitDiff, a.commitDiffOptions
+		case "compare":
+			if a.comparison != nil {
+				diff, options = a.comparison.diff, a.comparison.options
+			}
+		}
 	}
 	if diff == nil {
 		return
 	}
 	switch {
+	case c.Shortcut(ui.Cmd|ui.Shift, ui.KeyD):
+		a.toggleDiffIgnoreOptions(diff)
 	case c.Shortcut(ui.Cmd, ui.KeyF):
 		diff.Run(editor.Find)
 	case c.Shortcut(ui.Cmd, ui.KeyG):

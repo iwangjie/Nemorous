@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/egoist/mygo/ui/editor"
+	"github.com/egoist/mygo/nemorouseditor"
 	"github.com/iwangjie/nemorous/internal/config"
 )
 
