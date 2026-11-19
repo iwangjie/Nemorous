@@ -29,6 +29,7 @@ type Config struct {
 	WorkspacePath        string            `json:"workspace_path"`
 	RecentWorkspaces     []string          `json:"recent_workspaces"`
 	Theme                string            `json:"theme"`                 // "light", "dark", "darcula", "system"
+	AppIcon              string            `json:"app_icon,omitempty"`    // "aperture", "slash", "prism", "orbit", "aero"
 	DefaultTargetBranch  string            `json:"default_target_branch"` // e.g. "test", "main"
 	AIAgent              string            `json:"ai_agent"`              // "auto", "omp", "pi", "claude", "codex"
 	Concurrency          int               `json:"concurrency"`           // parallel git workers (default 8)
@@ -75,6 +76,7 @@ func Default() Config {
 		WorkspacePath:       ws,
 		RecentWorkspaces:    recents,
 		Theme:               "light",
+		AppIcon:             "aperture",
 		DefaultTargetBranch: "test",
 		AIAgent:             "auto",
 		Concurrency:         8,

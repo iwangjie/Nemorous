@@ -753,6 +753,45 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 							miniBtn(c, p, "重置", func() { a.ZoomReset() })
 						}
 					})
+					ui.Column(c).Gap(6).Children(func() {
+						ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+							ui.Text(c, "应用图标：").FontSize(12).TextColor(p.TextSecondary)
+							ui.Text(c, "自动跟随系统暗色 / 亮色切换").FontSize(10.5).TextColor(p.TextMuted)
+						})
+						ui.Row(c).Gap(8).Wrap().AlignItems(ui.Center).Children(func() {
+							currentIcon := normalizeAppIcon(a.cfg.AppIcon)
+							for _, choice := range appIconChoices {
+								ch := choice
+								selected := currentIcon == ch.ID
+								kc := c.Key("app-icon-" + ch.ID)
+								bg := p.Surface
+								border := p.BorderSubtle
+								labelColor := p.TextSecondary
+								if selected {
+									bg = p.AccentSoft
+									border = p.Accent
+									labelColor = p.AccentSoftText
+								}
+								card := ui.ButtonBase(kc).Width(84).Padding(6, 6).Gap(3).Radius(8).
+									Background(bg).Border(1, border).Cursor(ui.CursorPointer).
+									Tooltip(ch.Label + " · " + ch.Subtitle).Label("应用图标：" + ch.Label)
+								if !selected && card.Hovered() {
+									card.Background(p.SurfaceHover).Border(1, p.Border)
+								}
+								card.Children(func() {
+									ui.Column(kc).FillWidth().Gap(3).AlignItems(ui.Center).Children(func() {
+										if img := appIconPreviewImage(ch.ID, a.osDark); img != nil {
+											ui.Image(kc.Key("img-"+appIconAssetKey(ch.ID, a.osDark)), img).Size(40, 40)
+										}
+										ui.Text(kc, ch.Label).FontSize(11).FontWeight(weightMedium).TextColor(labelColor)
+									})
+								})
+								if card.Clicked() {
+									a.setAppIcon(ch.ID)
+								}
+							}
+						})
+					})
 					ui.Row(c).Gap(6).Wrap().AlignItems(ui.Center).Children(func() {
 						if ui.Checkbox(c, &a.cfg.FormatOnSave, "保存时自动格式化").Changed() {
 							_ = a.cfg.Save()

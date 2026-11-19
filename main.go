@@ -25,8 +25,10 @@ func main() {
 
 	mygo.App.WhenReady(func() {
 		app.systemDark = mygo.Theme.IsDark()
+		app.osDark = app.systemDark
 		mygo.Theme.OnUpdated(func() {
 			app.systemDark = mygo.Theme.IsDark()
+			app.refreshOSDarkAndAppIcon()
 			if app.win != nil {
 				app.win.Invalidate()
 			}
@@ -54,6 +56,7 @@ func main() {
 		})
 		app.win.OnFocus(func() { app.runUI(func() { app.handleAppForeground() }) })
 		app.win.OnBlur(func() { app.runUI(func() { app.handleAppBackground() }) })
+		app.refreshOSDarkAndAppIcon()
 		app.initPluginManager()
 		if cfg.WorkspacePath != "" {
 			app.LoadWorkspaceAsync(cfg.WorkspacePath)

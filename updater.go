@@ -191,6 +191,7 @@ func (a *App) offerUpdatePrompt(force bool) {
 }
 
 func (a *App) handleAppForeground() {
+	a.refreshOSDarkAndAppIcon()
 	a.cancelIdleUpdate()
 	if a.updatePending == nil {
 		return

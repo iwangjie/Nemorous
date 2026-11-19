@@ -150,12 +150,14 @@ type App struct {
 	cfg config.Config
 
 	// Navigation & Filter
-	activeTab    NavTab
-	editorTab    string // "file", "changes", "commit", or "" when empty
-	showGitPanel bool
-	gitEditorPct float32
-	logEditorPct float32
-	systemDark   bool // effective system appearance when cfg.Theme == "system"
+	activeTab      NavTab
+	editorTab      string // "file", "changes", "commit", or "" when empty
+	showGitPanel   bool
+	gitEditorPct   float32
+	logEditorPct   float32
+	systemDark     bool   // effective system appearance when cfg.Theme == "system"
+	osDark         bool   // OS-level dark appearance for automatic app icon switching
+	appliedIconKey string // last applied "<icon>_<light|dark>" key
 
 	// Collapsible UI States (Progressive Disclosure)
 	showDiffOptions        bool
@@ -726,6 +728,7 @@ type App struct {
 
 func NewApp(cfg config.Config) *App {
 	cfg.Theme = normalizeTheme(cfg.Theme)
+	cfg.AppIcon = normalizeAppIcon(cfg.AppIcon)
 	agentName, agentBin := cfg.ResolvedAIAgent()
 	a := &App{
 		cfg:                    cfg,
