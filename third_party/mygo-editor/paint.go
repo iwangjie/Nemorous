@@ -507,7 +507,7 @@ func (ed *editor) paintLine(p *ui.Painter, r ui.Rect, f *frame, line int, g line
 			ed.ruleRange(p, f, l, row, ox, y, da, dz, c)
 		}
 		v.paintRow(p, l, row, ox, y, &f.colors, link)
-		ed.paintWhitespace(p, f, l, row, ox, y)
+		ed.paintWhitespace(p, &ed.view, l, row, ox, y)
 		ed.paintMarked(p, f, l, row, ox, y)
 		// Diagnostics under the text.
 		for _, d := range ed.diags {
@@ -654,12 +654,11 @@ func (ed *editor) paintGuides(p *ui.Painter, f *frame, line int, ox, y float32, 
 
 // paintWhitespace draws dots for spaces and arrows for tabs where the
 // editor shows whitespace.
-func (ed *editor) paintWhitespace(p *ui.Painter, f *frame, l *lineLayout, row *rowLayout, ox, y float32) {
+func (ed *editor) paintWhitespace(p *ui.Painter, v *view, l *lineLayout, row *rowLayout, ox, y float32) {
 	mode := ed.o.whitespace
 	if mode == WhitespaceNone {
 		return
 	}
-	v := &ed.view
 	ct := ed.theme
 	s := l.text
 	// The row's text alone, and in Selection mode only rows a selection

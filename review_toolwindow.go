@@ -35,6 +35,13 @@ func (a *App) openSelectIn(wf gitops.WorkspaceFile) {
 	}
 }
 
+func (a *App) followOpenedCodeFile(tab *codeTab) {
+	if !a.cfg.ProjectFollowEditor || tab == nil || tab.revision != "" {
+		return
+	}
+	a.selectFileInTree(tab.file, false)
+}
+
 func (a *App) buildSelectIn(c *ui.Context, p Palette) {
 	wf := a.selectInFile
 	if wf == nil {

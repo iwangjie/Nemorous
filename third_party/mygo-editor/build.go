@@ -259,7 +259,14 @@ func (ed *editor) menu(m *ui.Menu) {
 		}
 	}
 	m.Submenu(tx.Selection(), func(m *ui.Menu) {
-		if m.Item(tx.SelectNextOccurrence()).Shortcut(ui.Cmd, ui.KeyD).Chosen() {
+		nextMods, nextKey := ui.Cmd, ui.KeyD
+		for _, binding := range ed.o.bindings {
+			if binding.Command == SelectNext {
+				nextMods, nextKey = binding.Mods, binding.Key
+				break
+			}
+		}
+		if m.Item(tx.SelectNextOccurrence()).Shortcut(nextMods, nextKey).Chosen() {
 			ed.run(SelectNext)
 		}
 		if m.Item(tx.SelectAllOccurrences()).Shortcut(ui.Cmd|ui.Shift, ui.KeyL).Chosen() {

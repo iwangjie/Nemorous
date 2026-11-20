@@ -153,6 +153,7 @@ func (a *App) buildComparison(c *ui.Context, p Palette) {
 				ui.Text(c, title).Padding(5, 10).Grow(1).SingleLine().FontSize(11).TextColor(p.TextMuted)
 			}
 		})
+		a.bindDiffKeymap(v.diff)
 		editor.DiffView(c, v.diff).Grow(1).FillWidth()
 	})
 }

@@ -36,8 +36,10 @@ type Config struct {
 	DiffSideBySide       bool              `json:"diff_side_by_side"`
 	DiffInlineMode       string            `json:"diff_inline_mode"` // "word", "char", "none"
 	DiffIgnoreMode       uint8             `json:"diff_ignore_mode,omitempty"`
+	DiffShowWhitespaces  bool              `json:"diff_show_whitespaces,omitempty"`
 	EditorFontSize       float32           `json:"editor_font_size"`
 	EditorSoftWrap       bool              `json:"editor_soft_wrap"`
+	ProjectFollowEditor  bool              `json:"project_follow_editor,omitempty"`
 	Zoom                 float32           `json:"zoom,omitempty"` // global UI zoom scaling factor (default 1.0)
 	NavShowLabels        bool              `json:"nav_show_labels"`
 	ChangeDiffPreview    bool              `json:"change_diff_preview,omitempty"`
@@ -65,6 +67,15 @@ type Config struct {
 	HiddenRepos          []string          `json:"hidden_repos,omitempty"`
 	LSPEnabled           bool              `json:"lsp_enabled"`
 	LSPServers           map[string]string `json:"lsp_servers,omitempty"`
+
+	KeyboardShortcuts map[string][]KeyStroke `json:"keyboard_shortcuts,omitempty"`
+}
+
+// KeyStroke stores an application shortcut. A zero Key with a modifier
+// represents two taps of that modifier.
+type KeyStroke struct {
+	Modifiers uint8  `json:"modifiers"`
+	Key       uint16 `json:"key"`
 }
 
 // Default returns a sensible default configuration.

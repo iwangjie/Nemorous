@@ -97,18 +97,27 @@ func reviewEditorGoToLineKey() ui.Key {
 	return ui.KeyG
 }
 
+func reviewCodeBindings() []editor.Binding {
+	bindings := []editor.Binding{{Mods: ui.Cmd, Key: reviewEditorGoToLineKey(), Command: editor.GoToLine}}
+	if runtime.GOOS == "darwin" {
+		bindings = append(bindings, editor.Binding{Mods: ui.Ctrl, Key: ui.KeyG, Command: editor.SelectNext})
+	}
+	return bindings
+}
+
 func (a *App) openReviewLocation(loc reviewLocation) {
 	a.activeTab = TabCode
 	a.selectCodeFile(loc.file)
 	if tab := a.activeCodeTab(); tab != nil {
+		state := a.activeCodeEditor()
 		if loc.pos.Line >= 0 {
 			if _, ok := a.editorPluginForFile(tab.file.AbsPath); ok {
 				a.setPluginEditorTextMode(tab.file.RepoID, tab.file.RelPath, true)
 			}
-			tab.state.GoTo(loc.pos)
-			tab.state.ScrollTo(loc.pos.Line)
+			state.GoTo(loc.pos)
+			state.ScrollTo(loc.pos.Line)
 		}
-		tab.viewHandle.Focus()
+		a.activeCodeViewHandle(tab).Focus()
 	}
 }
 
@@ -120,7 +129,7 @@ func (a *App) rememberCodeLocation() {
 	if tab == nil || tab.state == nil || tab.revision != "" {
 		return
 	}
-	loc := reviewLocation{file: tab.file, pos: tab.state.CursorPos()}
+	loc := reviewLocation{file: tab.file, pos: a.activeCodeEditor().CursorPos()}
 	for i, previous := range a.recentCode {
 		if previous.file.AbsPath == loc.file.AbsPath && previous.pos.Line == loc.pos.Line {
 			copy(a.recentCode[1:i+1], a.recentCode[:i])
@@ -141,21 +150,102 @@ const (
 	reviewGoToFile reviewPickerMode = iota
 	reviewRecentFiles
 	reviewRecentLocations
+	reviewSearchEverywhere
 )
+
+type modifierTap struct {
+	mod             ui.Modifiers
+	pressed, tapped time.Time
+}
+
+func modifierKey(code ui.KeyCode) ui.Modifiers {
+	switch code {
+	case ui.CodeShiftLeft, ui.CodeShiftRight:
+		return ui.Shift
+	case ui.CodeControlLeft, ui.CodeControlRight:
+		return ui.Ctrl
+	case ui.CodeAltLeft, ui.CodeAltRight:
+		return ui.Alt
+	case ui.CodeSuperLeft, ui.CodeSuperRight:
+		return ui.Super
+	}
+	return 0
+}
+
+func (t *modifierTap) input(ev ui.InputEvent, mod ui.Modifiers) bool {
+	const tapWindow = 450 * time.Millisecond
+	switch ev.Kind {
+	case ui.InputKeyDown:
+		if mod == 0 || ev.Mods != mod || !t.pressed.IsZero() || ev.Repeat {
+			*t = modifierTap{}
+		} else {
+			if t.mod != mod {
+				*t = modifierTap{mod: mod}
+			}
+			t.pressed = ev.Time
+		}
+	case ui.InputKeyUp:
+		if mod == 0 || t.mod != mod {
+			return false
+		}
+		pressed := t.pressed
+		t.pressed = time.Time{}
+		if ev.Mods != 0 || pressed.IsZero() || ev.Time.Sub(pressed) > tapWindow {
+			*t = modifierTap{}
+			return false
+		}
+		if !t.tapped.IsZero() && pressed.Sub(t.tapped) <= tapWindow {
+			*t = modifierTap{}
+			return true
+		}
+		t.tapped = ev.Time
+	case ui.InputPointerDown, ui.InputText, ui.InputCommand:
+		*t = modifierTap{}
+	}
+	return false
+}
+
+func (a *App) observeSearchGesture(ev ui.InputEvent) {
+	if a.overlayOpen() {
+		a.resetSearchGesture()
+		return
+	}
+	mod := modifierKey(ev.Code)
+	if a.searchGesture.input(ev, mod) && slices.Contains(a.shortcuts(keySearchEverywhere), stroke(mod, ui.KeyUnknown)) {
+		a.openReviewPicker(reviewSearchEverywhere)
+	}
+}
+
+func (a *App) resetSearchGesture() {
+	a.searchGesture = modifierTap{}
+}
 
 func (a *App) openReviewPicker(mode reviewPickerMode) {
 	a.closeReviewPicker()
 	a.rememberCodeLocation()
 	a.reviewPickerOpen = true
 	a.reviewPickerMode = mode
+	selection, restore := a.searchSelection()
+	a.reviewPickerReturnFocus = restore
 	a.reviewPickerQuery = ""
+	if mode == reviewGoToFile || mode == reviewSearchEverywhere {
+		a.reviewPickerQuery = singleLineSearchSelection(selection)
+	}
+	if a.reviewPickerQuery != "" {
+		a.reviewPickerQueryHandle.SelectAll()
+	}
 	a.reviewPickerResultKey = "\x00"
 	a.reviewPickerSelection = 0
+	a.searchOnlyFiles = false
 }
 
 func (a *App) closeReviewPicker() {
 	a.reviewPickerOpen = false
 	a.cancelReviewPickerSearch()
+	if restore := a.reviewPickerReturnFocus; restore != nil {
+		a.reviewPickerReturnFocus = nil
+		restore()
+	}
 }
 
 func (a *App) cancelReviewPickerSearch() {
@@ -189,7 +279,16 @@ func (a *App) reviewPickerResults(query string) []reviewLocation {
 	a.reviewPickerResultKey = query
 	a.cancelReviewPickerSearch()
 	out := a.reviewPickerMatches[:0]
-	if a.reviewPickerMode == reviewGoToFile {
+	if a.reviewPickerMode == reviewSearchEverywhere && query == "" {
+		for _, loc := range a.recentCode {
+			if a.relativeWorkspacePath(loc.file.AbsPath) != "" && !slices.ContainsFunc(out, func(other reviewLocation) bool {
+				return other.file.AbsPath == loc.file.AbsPath
+			}) {
+				loc.pos = editor.Pos{Line: -1}
+				out = append(out, loc)
+			}
+		}
+	} else if a.reviewPickerMode == reviewGoToFile || a.reviewPickerMode == reviewSearchEverywhere {
 		name, pos := parseReviewLocation(query)
 		if relative, ok := strings.CutPrefix(name, "~/"); ok {
 			if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -285,6 +384,7 @@ func (a *App) searchBeyondFilePreview(query, name string, pos editor.Pos, limit 
 }
 
 func (a *App) buildReviewPicker(c *ui.Context, p Palette) {
+	open := a.reviewPickerOpen
 	ui.DialogBase(c.Key("review-picker"), &a.reviewPickerOpen, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(20, 22, 30, 0.36))
 		panel.Width(650).Padding(14).Gap(8).Radius(10).Background(p.Surface).Border(1, p.Border)
@@ -295,8 +395,20 @@ func (a *App) buildReviewPicker(c *ui.Context, p Palette) {
 		} else if a.reviewPickerMode == reviewRecentLocations {
 			title, placeholder = "最近位置", "筛选文件或路径"
 		}
-		modalHeader(c, p, icoSearch, title, "", nil, a.closeReviewPicker)
-		field := ui.SearchField(c.Key("review-picker-query"), &a.reviewPickerQuery).Placeholder(placeholder).AutoFocus().FillWidth()
+		if a.reviewPickerMode == reviewSearchEverywhere {
+			if c.Shortcut(0, ui.KeyTab) || c.Shortcut(ui.Shift, ui.KeyTab) {
+				a.searchOnlyFiles = !a.searchOnlyFiles
+			}
+			ui.Row(c).AlignItems(ui.Center).Gap(6).Children(func() {
+				for i, label := range []string{"全部", "文件"} {
+					files := i == 1
+					pill(c.Key(label), p, label, a.searchOnlyFiles == files, func() { a.searchOnlyFiles = files })
+				}
+			})
+		} else {
+			modalHeader(c, p, icoSearch, title, "", nil, a.closeReviewPicker)
+		}
+		field := ui.TextInput(c.Key("review-picker-query"), &a.reviewPickerQuery).Search().Bind(&a.reviewPickerQueryHandle).Placeholder(placeholder).AutoFocus().FillWidth()
 		scrollSelected := field.Changed()
 		if scrollSelected {
 			a.reviewPickerSelection = 0
@@ -313,6 +425,7 @@ func (a *App) buildReviewPicker(c *ui.Context, p Palette) {
 		}
 		a.reviewPickerSelection = max(0, min(a.reviewPickerSelection, last))
 		open := func(loc reviewLocation) {
+			a.reviewPickerReturnFocus = nil
 			a.closeReviewPicker()
 			a.openReviewLocation(loc)
 		}
@@ -353,7 +466,7 @@ func (a *App) buildReviewPicker(c *ui.Context, p Palette) {
 			}
 		})
 	})
-	if !a.reviewPickerOpen && a.reviewPickerCancel != nil {
+	if open && !a.reviewPickerOpen {
 		a.closeReviewPicker()
 	}
 }

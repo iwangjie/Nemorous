@@ -1,6 +1,7 @@
 package editor
 
 import (
+	"strings"
 	"unicode/utf8"
 
 	"github.com/egoist/mygo/internal/l10n"
@@ -155,7 +156,13 @@ func DefaultFindBar(c *ui.Context, bar ui.Element, f *FindBar) {
 			Padding(0, t.Space(0.5), 0, 0).Background(t.Background).Radius(t.Radius - 2)
 		var in ui.Element
 		box.Children(func() {
-			in = input(ui.TextInputBase(c, value).Grow(1).Placeholder(placeholder).Padding(t.Space(1), t.Space(2)).
+			text := ui.TextInputBase
+			if value == f.Query() && strings.Contains(*value, "\n") {
+				text = func(c *ui.Context, value *string) ui.Element {
+					return ui.TextAreaBase(c, value).Height(t.Space(8))
+				}
+			}
+			in = input(text(c, value).Grow(1).Placeholder(placeholder).Padding(t.Space(1), t.Space(2)).
 				FontSize(t.FontSize - 1).Label(placeholder).FocusRing(false).Invalid(invalid))
 			if size > 0 && inside != nil {
 				inside()

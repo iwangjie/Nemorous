@@ -526,19 +526,21 @@ func TestReviewFilePickerFindsBeyondPreview(t *testing.T) {
 	if _, ok := app.workspacePreviewFileByKey(repo.ID, filepath.Base(target)); ok {
 		t.Fatal("file should be beyond the initial preview")
 	}
-	app.openReviewPicker(reviewGoToFile)
-	if files := app.reviewPickerResults("zz agent file.txt:2"); len(files) != 0 {
-		t.Fatalf("cached results should be empty, got %v", files)
+	for _, mode := range []reviewPickerMode{reviewGoToFile, reviewSearchEverywhere} {
+		app.openReviewPicker(mode)
+		if files := app.reviewPickerResults("zz agent file.txt:2"); len(files) != 0 {
+			t.Fatalf("cached results should be empty, got %v", files)
+		}
+		waitApp(t, "on-demand file search", func() bool {
+			app.uiMu.Lock()
+			defer app.uiMu.Unlock()
+			return app.reviewPickerCancel == nil
+		})
+		if files := app.reviewPickerMatches; len(files) != 1 || files[0].file.AbsPath != target || files[0].pos.Line != 1 {
+			t.Fatalf("unexpected file search results: %v", files)
+		}
+		app.closeReviewPicker()
 	}
-	waitApp(t, "on-demand file search", func() bool {
-		app.uiMu.Lock()
-		defer app.uiMu.Unlock()
-		return app.reviewPickerCancel == nil
-	})
-	if files := app.reviewPickerMatches; len(files) != 1 || files[0].file.AbsPath != target || files[0].pos.Line != 1 {
-		t.Fatalf("unexpected file search results: %v", files)
-	}
-	app.closeReviewPicker()
 	app.locateFileInTree(app.reviewPickerMatches[0].file)
 	if app.codeRevealKey == "" || len(app.codeExtraFile) != 1 || app.codeExtraFile[0].AbsPath != target {
 		t.Fatal("a file outside the preview should still be locatable in the tree")

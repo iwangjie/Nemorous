@@ -143,6 +143,7 @@ func (a *App) buildRevisionPreview(c *ui.Context, p Palette, view *revisionPrevi
 			view.diff.Wrap = a.cfg.EditorSoftWrap
 			a.buildDiffToolbar(c, p, view.diff, opts)
 			ui.Text(c, title).FillWidth().Padding(3, 8).FontSize(10.5).TextColor(p.TextMuted).SingleLine().Tooltip(title)
+			a.bindDiffKeymap(view.diff)
 			editor.DiffView(c, view.diff).Bind(handle).Grow(1).FillWidth()
 		}
 	})

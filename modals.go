@@ -291,10 +291,10 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 				})
 			}
 
-			addEntry("act-global-search", "操作", "在文件中查找", "⇧⌘F · 跨仓库搜索文件内容", p.Accent, func() {
+			addEntry("act-global-search", "操作", "在文件中查找", a.shortcutLabel("跨仓库搜索文件内容", keyFindInFiles), p.Accent, func() {
 				a.openGlobalSearch()
 			})
-			addEntry("act-branch", "操作", "切换或新建分支 / 管理分支组合", "⌘B · 支持多项目同时切换与记住分支组合", p.Accent, func() {
+			addEntry("act-branch", "操作", "切换或新建分支 / 管理分支组合", a.shortcutLabel("支持多项目同时切换与记住分支组合", keyBranches), p.Accent, func() {
 				a.openBranchSwitchModal()
 			})
 			addEntry("act-pull", "操作", "拉取全部仓库更新 (Pull)", "自动跳过有未提交改动的仓库", p.Accent, func() {
@@ -312,19 +312,19 @@ func (a *App) buildCommandPaletteModal(c *ui.Context, p Palette) {
 			addEntry("act-merge", "操作", "发版合并到 "+a.mergeTargetBranch, "在 Git 面板内直接选择仓库合并", p.Purple, func() {
 				a.openReleaseMerge()
 			})
-			addEntry("act-refresh", "操作", "刷新仓库状态", "⌘R", p.Accent, func() {
+			addEntry("act-refresh", "操作", "刷新仓库状态", a.shortcutHint(keyRefresh), p.Accent, func() {
 				a.RefreshAsync()
 			})
 			addEntry("act-theme", "操作", "外观主题", "明亮 / 暗色 / Darcula / 跟随系统", p.Amber, func() {
 				a.showSettings = true
 			})
-			addEntry("act-zoom-in", "视图", "放大界面 (Zoom In)", "⌘+ · 界面缩放 +10%", p.Accent, func() {
+			addEntry("act-zoom-in", "视图", "放大界面 (Zoom In)", a.shortcutLabel("界面缩放 +10%", keyZoomIn), p.Accent, func() {
 				a.ZoomIn()
 			})
-			addEntry("act-zoom-out", "视图", "缩小界面 (Zoom Out)", "⌘- · 界面缩放 -10%", p.Accent, func() {
+			addEntry("act-zoom-out", "视图", "缩小界面 (Zoom Out)", a.shortcutLabel("界面缩放 -10%", keyZoomOut), p.Accent, func() {
 				a.ZoomOut()
 			})
-			addEntry("act-zoom-reset", "视图", "重置界面缩放", "⌘0 · 恢复 100% 原始尺寸", p.Accent, func() {
+			addEntry("act-zoom-reset", "视图", "重置界面缩放", a.shortcutLabel("恢复 100% 原始尺寸", keyZoomReset), p.Accent, func() {
 				a.ZoomReset()
 			})
 
@@ -671,6 +671,11 @@ func (a *App) buildSettingsModal(c *ui.Context, p Palette) {
 
 		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
 			ui.Column(c).FillWidth().Gap(12).Padding(0, 2).Children(func() {
+				ui.Row(c.Key("keymap-entry")).FillWidth().Padding(12).Radius(8).Background(p.RailBg).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "键盘映射").FontSize(12.5).FontWeight(weightSemibold).Grow(1)
+					miniBtn(c.Key("open-keymap"), p, "配置快捷键…", a.openKeymapSettings)
+				})
+
 				// Section 1: Workspace Directory
 				ui.Column(c).Padding(12).Gap(8).Radius(8).Background(p.RailBg).Border(1, p.BorderSubtle).Children(func() {
 					ui.Text(c, "工作区目录").FontSize(12.5).FontWeight(weightSemibold).TextColor(p.TextPrimary)

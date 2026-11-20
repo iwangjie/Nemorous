@@ -872,13 +872,13 @@ func (a *App) buildChangeFileRowMode(c *ui.Context, p Palette, section string, c
 		if fRow.Shortcut(ui.Cmd, ui.KeyD) || fRow.Shortcut(0, ui.KeyEnter) {
 			showDiff()
 		}
-		if fRow.Shortcut(0, ui.KeyF4) || fRow.Shortcut(ui.Cmd, ui.KeyDown) {
+		if a.shortcutOn(fRow, keyJumpToSource) {
 			a.openDiffSourceAtCaret(changedWorkspaceFile(cfCopy), nil)
 		}
-		if fRow.Shortcut(ui.Alt, ui.KeyF1) {
+		if a.shortcutOn(fRow, keySelectIn) {
 			a.openSelectIn(changedWorkspaceFile(cfCopy))
 		}
-		if fRow.Shortcut(ui.Cmd|ui.Alt, ui.KeyZ) {
+		if a.shortcutOn(fRow, keyRollback) {
 			a.confirmChangeRollback(&cfCopy)
 		}
 	}
@@ -1104,7 +1104,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 					iconPill(c, p, icoCode, "浏览代码文件", false, func() {
 						a.activeTab = TabCode
 					})
-					iconPill(c, p, icoBranch, "切换分支 (⌘B)", false, func() {
+					iconPill(c, p, icoBranch, a.shortcutLabel("切换分支", keyBranches), false, func() {
 						a.openBranchSwitchModal()
 					})
 				})
@@ -1188,7 +1188,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 				})
 
 				if isDirty {
-					pill(c, p, "保存 (⌘S)", true, func() {
+					pill(c, p, a.shortcutLabel("保存", keySave), true, func() {
 						a.saveDiffMicroEdit()
 					})
 				}
@@ -1256,6 +1256,7 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 			emptyState(c, p, icoColumns, "正在读取差异…", "")
 			return
 		}
+		a.bindDiffKeymap(a.diffState)
 		editor.DiffView(c, a.diffState).Bind(&a.workingDiffHandle).Grow(1).FillWidth()
 	})
 }
@@ -1335,6 +1336,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		return
 	}
 	state.Ignore = editor.DiffIgnore(min(a.cfg.DiffIgnoreMode, uint8(editor.DiffIgnoreWhitespaceAndEmptyLines)))
+	state.ShowWhitespaces = a.cfg.DiffShowWhitespaces
 	hunks := state.Hunks()
 	total := len(hunks)
 	if !opts.loading && *opts.jumpEdge != 0 {
@@ -1384,7 +1386,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		}
 		ui.Text(c, position).FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
 		if opts.source != nil {
-			diffToolButton(c, p, opts.prefix+"-source", icoEdit, "修改 (F4)", false, opts.sourceEnabled, opts.source)
+			diffToolButton(c, p, opts.prefix+"-source", icoEdit, a.shortcutLabel("修改", keyJumpToSource), false, opts.sourceEnabled, opts.source)
 			ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		}
 		foldLabel := "展开未改动"
@@ -1396,6 +1398,7 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 			state.Run(editor.Find)
 		})
 		a.buildDiffIgnoreMenu(c.Key(opts.prefix+"-ignore"), p, state, false)
+		a.buildDiffDisplaySettings(c, p, state, opts.prefix)
 		if opts.moveFile == nil {
 			return
 		}
@@ -1432,15 +1435,28 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 }
 
 func (a *App) buildFileHistoryDiffControls(c *ui.Context, p Palette, state *editor.DiffState, opts diffToolbarOptions, total int) {
-	diffToolButton(c, p, opts.prefix+"-source", icoEdit, "跳转到源码 (F4)", false, opts.sourceEnabled, opts.source)
+	diffToolButton(c, p, opts.prefix+"-source", icoEdit, a.shortcutLabel("跳转到源码", keyJumpToSource), false, opts.sourceEnabled, opts.source)
 	a.buildDiffIgnoreMenu(c.Key(opts.prefix+"-ignore"), p, state, true)
 	foldLabel := "展开未改动"
 	if state.ExpandUnchanged {
 		foldLabel = "折叠未改动"
 	}
 	diffToolButton(c, p, opts.prefix+"-fold", icoCollapseUnchanged, foldLabel, !state.ExpandUnchanged, true, func() { toggleDiffUnchanged(state) })
+	a.buildDiffDisplaySettings(c, p, state, opts.prefix)
 	ui.Spacer(c)
 	ui.Text(c, fmt.Sprintf("%d 处差异", total)).SingleLine().FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+}
+
+func (a *App) buildDiffDisplaySettings(c *ui.Context, p Palette, state *editor.DiffState, prefix string) {
+	menuIconAction(c, p, prefix+"-settings", icoSettings, "差异设置", false, func(m *ui.Menu) {
+		if m.Item("显示空白字符").Checked(state.ShowWhitespaces).Chosen() {
+			a.cfg.DiffShowWhitespaces = !state.ShowWhitespaces
+			state.ShowWhitespaces = a.cfg.DiffShowWhitespaces
+			if a.win != nil {
+				_ = a.cfg.Save()
+			}
+		}
+	})
 }
 
 func toggleDiffUnchanged(state *editor.DiffState) {
@@ -1461,7 +1477,7 @@ func (a *App) buildDiffIgnoreMenu(c *ui.Context, p Palette, state *editor.DiffSt
 	modes := [...]string{"不忽略", "忽略首尾空白", "忽略空白", "忽略空白和空行"}
 	mode := min(int(state.Ignore), len(modes)-1)
 	anchor := ui.ButtonBase(c).Padding(3, 7).Shrink(0).Label("忽略差异").
-		Tooltip("忽略差异 (⌘⇧D)").Cursor(ui.CursorPointer)
+		Tooltip(a.shortcutLabel("忽略差异", keyDiffIgnore)).Cursor(ui.CursorPointer)
 	if showChevron {
 		anchor.AlignItems(ui.Center).Gap(4)
 	}

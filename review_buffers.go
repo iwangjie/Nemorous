@@ -211,7 +211,7 @@ func (a *App) reviewEditorFocused(c *ui.Context) bool {
 	switch a.editorTab {
 	case "file":
 		if tab := a.activeCodeTab(); tab != nil {
-			return tab.viewHandle.FocusWithin(c)
+			return a.activeCodeViewHandle(tab).FocusWithin(c)
 		}
 	case "changes":
 		return a.workingDiffHandle.FocusWithin(c)
@@ -246,23 +246,23 @@ func (a *App) registerDiffShortcuts(c *ui.Context) {
 		return
 	}
 	switch {
-	case c.Shortcut(ui.Cmd|ui.Shift, ui.KeyD):
+	case a.shortcut(c, keyDiffIgnore):
 		a.toggleDiffIgnoreOptions(diff)
-	case c.Shortcut(ui.Cmd, ui.KeyF):
+	case a.shortcut(c, keyFind):
 		diff.Run(editor.Find)
-	case ui.Cmd == ui.Super && c.Shortcut(ui.Cmd, ui.KeyG):
+	case a.shortcut(c, keyFindNext):
 		diff.Run(editor.FindNext)
-	case ui.Cmd == ui.Super && c.Shortcut(ui.Cmd|ui.Shift, ui.KeyG):
+	case a.shortcut(c, keyFindPrevious):
 		diff.Run(editor.FindPrevious)
-	case c.Shortcut(0, ui.KeyF7):
+	case a.shortcut(c, keyNextDifference):
 		a.stepDiffHunk(diff, 1, options())
-	case c.Shortcut(ui.Shift, ui.KeyF7):
+	case a.shortcut(c, keyPrevDifference):
 		a.stepDiffHunk(diff, -1, options())
-	case c.Shortcut(ui.Alt, ui.KeyLeft):
+	case a.shortcut(c, keyPrevDiffFile):
 		if move := options().moveFile; move != nil {
 			move(-1)
 		}
-	case c.Shortcut(ui.Alt, ui.KeyRight):
+	case a.shortcut(c, keyNextDiffFile):
 		if move := options().moveFile; move != nil {
 			move(1)
 		}

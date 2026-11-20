@@ -1501,14 +1501,35 @@ func (a *App) loadCommittedDiff(detail gitops.CommitDetail, file gitops.CommitFi
 	font := ui.Font{Size: a.cfg.EditorFontSize}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	a.gitDiffCancel = cancel
+	var currentText *string
+	if after == "" {
+		wf := a.normalizeWorkspaceFile(committedFile(detail, file.Path))
+		for _, tab := range a.codeTabs {
+			if tab.file.AbsPath == wf.AbsPath && tab.revision == "" && tab.dirty() {
+				text := reviewBufferText(tab.state.Buffer)
+				currentText = &text
+				break
+			}
+		}
+	}
 	load := func() {
 		defer cancel()
 		var oldText, newText string
 		var err error
 		if after == "" {
-			oldText, err = gitops.ReadFileRevision(ctx, detail.RepoPath, before, file.Path)
+			oldPath := file.OldPath
+			if oldPath == "" {
+				oldPath = file.Path
+			}
+			if file.Status != "D" {
+				oldText, err = gitops.ReadFileRevision(ctx, detail.RepoPath, before, oldPath)
+			}
 			if err == nil {
-				newText, err = gitops.ReadReviewWorktree(detail.RepoPath, file.Path)
+				if currentText != nil {
+					newText = *currentText
+				} else {
+					newText, err = gitops.ReadReviewWorktree(detail.RepoPath, file.Path)
+				}
 			}
 		} else {
 			oldText, newText, err = gitops.RevisionFileVersions(ctx, detail.RepoPath, before, after, file)

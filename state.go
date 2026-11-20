@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -151,42 +152,50 @@ type App struct {
 	cfg config.Config
 
 	// Navigation & Filter
-	activeTab      NavTab
-	editorTab      string // "file", "changes", "commit", "compare", "staged", or ""
-	stagedReview   *stagedReviewView
-	showGitPanel   bool
-	gitEditorPct   float32
-	logEditorPct   float32
-	systemDark     bool   // effective system appearance when cfg.Theme == "system"
-	osDark         bool   // OS-level dark appearance for automatic app icon switching
-	appliedIconKey string // last applied "<icon>_<light|dark>" key
+	activeTab          NavTab
+	codeEditorSplit    *codeEditorSplit
+	fileRevisionPicker *fileRevisionPicker
+	historyAffected    *affectedCommitView
+	editorTab          string // "file", "changes", "commit", "compare", "staged", or ""
+	stagedReview       *stagedReviewView
+	showGitPanel       bool
+	gitEditorPct       float32
+	logEditorPct       float32
+	systemDark         bool   // effective system appearance when cfg.Theme == "system"
+	osDark             bool   // OS-level dark appearance for automatic app icon switching
+	appliedIconKey     string // last applied "<icon>_<light|dark>" key
 
 	// Collapsible UI States (Progressive Disclosure)
-	showDiffOptions        bool
-	showCodeOptions        bool
-	showMergeCheckDetails  bool
-	expandedCodeRepos      map[string]bool // "repoID" -> expanded in file tree
-	expandedCodeDirs       map[string]bool // "repoID::dirRelPath" -> expanded in file tree
-	codeLocatedKey         string
-	compareFiles           []gitops.WorkspaceFile
-	comparison             *reviewComparison
-	comparisonSequence     uint64
-	codeRevealKey          string
-	focusProjectTree       bool
-	codeExtraFile          []gitops.WorkspaceFile // one file located beyond the explorer preview
-	reviewReturn           *reviewReturnLocation
-	reviewSaveConflict     *reviewSaveConflict
-	reviewPickerOpen       bool
-	reviewPickerMode       reviewPickerMode
-	reviewPickerQuery      string
-	reviewPickerResultKey  string
-	reviewPickerMatches    []reviewLocation
-	reviewPickerSelection  int
-	selectInFile           *gitops.WorkspaceFile
-	reviewPickerCancel     context.CancelFunc
-	reviewPickerGeneration uint64
-	recentCode             []reviewLocation
-	codeRootCollapsed      bool // workspace root row collapse state
+	showDiffOptions         bool
+	showCodeOptions         bool
+	showMergeCheckDetails   bool
+	expandedCodeRepos       map[string]bool // "repoID" -> expanded in file tree
+	expandedCodeDirs        map[string]bool // "repoID::dirRelPath" -> expanded in file tree
+	codeLocatedKey          string
+	compareFiles            []gitops.WorkspaceFile
+	comparison              *reviewComparison
+	comparisonSequence      uint64
+	codeRevealKey           string
+	focusProjectTree        bool
+	codeExtraFile           []gitops.WorkspaceFile // one file located beyond the explorer preview
+	reviewReturn            *reviewReturnLocation
+	reviewSaveConflict      *reviewSaveConflict
+	reviewPickerOpen        bool
+	searchGesture           modifierTap
+	searchOnlyFiles         bool
+	reviewSwitcher          *reviewSwitcher
+	reviewPickerMode        reviewPickerMode
+	reviewPickerQuery       string
+	reviewPickerQueryHandle ui.Handle
+	reviewPickerReturnFocus func()
+	reviewPickerResultKey   string
+	reviewPickerMatches     []reviewLocation
+	reviewPickerSelection   int
+	selectInFile            *gitops.WorkspaceFile
+	reviewPickerCancel      context.CancelFunc
+	reviewPickerGeneration  uint64
+	recentCode              []reviewLocation
+	codeRootCollapsed       bool // workspace root row collapse state
 
 	// Resizable Split Widths (in DIPs)
 	changesSplit float32
@@ -695,6 +704,7 @@ type App struct {
 	cmdPaletteQuery         string
 	showGlobalSearch        bool
 	globalSearchQuery       string
+	globalSearchReturnFocus func()
 	globalSearchDirectory   string
 	globalSearchHandle      ui.Handle
 	globalSearchCase        bool
@@ -707,6 +717,9 @@ type App struct {
 	globalSearchReplacement string
 	globalSearchSelected    *globalSearchHit
 	globalSearchGroups      []globalSearchGroup
+	findResults             *findResultsView
+	showFindPanel           bool
+	findEditorPct           float32
 	globalSearchTotal       int
 	globalSearchRunning     bool
 	globalSearchErr         string
@@ -714,6 +727,11 @@ type App struct {
 	globalSearchSeq         uint64
 	globalSearchCancel      context.CancelFunc
 	showSettings            bool
+	keymap                  *keymapSettings
+	keymapNativeEditMenu    *mygo.MenuItem
+	keymapHints             map[shortcutAction]string
+	keymapBindings          []editor.Binding
+	keymapDiffBindings      []editor.Binding
 	showBranchModal         bool
 	showBranchPicker        bool
 	branchPickerQuery       string
@@ -974,7 +992,7 @@ func (a *App) setBatchResults(res []gitops.OpResult) {
 
 // overlayOpen reports whether a dialog owns the keyboard.
 func (a *App) overlayOpen() bool {
-	return a.selectInFile != nil || a.reviewSaveConflict != nil || a.reviewPickerOpen || a.showCmdPalette || a.showGlobalSearch || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
+	return a.keymap != nil || a.selectInFile != nil || a.reviewSaveConflict != nil || a.reviewPickerOpen || a.fileRevisionPicker != nil || a.showCmdPalette || a.showGlobalSearch || a.showSettings || a.showBranchModal || a.showBranchPicker || a.showOpLog ||
 		a.pendingDiscard != nil || a.pendingUndo != nil || a.fileHistory != nil || a.pendingCodeTabClose != nil ||
 		len(a.pendingCodeTabsClose) > 0 || a.showManiResult || a.updateShowDialog || a.showPluginMarket ||
 		a.showGitOps || a.showConflict || a.showLocalHistory || a.showStructure || a.showTodos ||
@@ -1501,6 +1519,10 @@ func (a *App) newChangeDiffState(cf gitops.ChangedFile) *editor.DiffState {
 
 // resetDiffTabs drops the current diff when the workspace changes.
 func (a *App) resetDiffTabs() {
+	a.findResults, a.showFindPanel = nil, false
+	a.codeEditorSplit = nil
+	a.reviewSwitcher = nil
+	a.closeFileRevisionPicker()
 	a.closeReviewPicker()
 	a.stopCommitDiffReads()
 	a.clearGitLogPreview()
@@ -1530,6 +1552,7 @@ func (a *App) resetDiffTabs() {
 // file (or the welcome view), leaving diff tabs available in the shared tab
 // strip instead of keeping a diff in front of the file tree.
 func (a *App) setPrimaryTab(tab NavTab) {
+	a.closeHistoryAffected()
 	a.activeTab = tab
 	switch tab {
 	case TabCode:
@@ -1713,6 +1736,9 @@ func (a *App) activeCodeFile() *gitops.WorkspaceFile {
 // activeCodeEditor returns the editor state of the active tab.
 func (a *App) activeCodeEditor() *editor.State {
 	if tab := a.activeCodeTab(); tab != nil {
+		if split := a.codeEditorSplit; split != nil && split.activeRight && split.left == tab && split.right == tab && split.sharedView != nil {
+			return split.sharedView
+		}
 		return tab.state
 	}
 	return nil
@@ -1780,7 +1806,7 @@ func (a *App) selectCodeFileMode(wf gitops.WorkspaceFile, preview bool) {
 			if !preview {
 				tab.preview = false
 			}
-			a.codeTabIdx = i
+			a.selectCodeTabInGroup(i)
 			a.revealCodeFile(wf)
 			a.refreshVisibleCodeFile(nil)
 			return
@@ -1817,13 +1843,13 @@ func (a *App) selectCodeFileMode(wf gitops.WorkspaceFile, preview bool) {
 			ReadOnly:      err != nil,
 			SoftWrap:      a.cfg.EditorSoftWrap,
 			Font:          ui.Font{Size: a.cfg.EditorFontSize},
-			Bindings:      []editor.Binding{{Mods: ui.Cmd, Key: reviewEditorGoToLineKey(), Command: editor.GoToLine}},
+			Bindings:      reviewCodeBindings(),
 			RenderFindBar: renderReviewFindBar,
 		},
 	}
 	a.wireCodeBlame(tab)
 	a.codeTabs = append(a.codeTabs, tab)
-	a.codeTabIdx = len(a.codeTabs) - 1
+	a.selectCodeTabInGroup(len(a.codeTabs) - 1)
 	if err == nil {
 		a.recordLocalHistoryContent(wf.RepoID, wf.RepoPath, wf.RelPath, curTxt, "打开")
 		a.loadReviewCodeBase(tab)
@@ -1839,7 +1865,7 @@ func (a *App) activateCodeTab(i int) {
 		return
 	}
 	a.rememberCodeLocation()
-	a.codeTabIdx = i
+	a.selectCodeTabInGroup(i)
 	a.editorTab = "file"
 	a.gitDiffOpen = false
 	if a.codeTabs[i].revision != "" {
@@ -1962,6 +1988,14 @@ func (a *App) closeCodeTab(tab *codeTab) {
 		}
 		if i == a.codeTabIdx {
 			a.rememberCodeLocation()
+		}
+		if split := a.codeEditorSplit; split != nil {
+			if split.left == tab || split.right == tab {
+				a.codeEditorSplit = nil
+			} else {
+				split.leftTabs = slices.DeleteFunc(split.leftTabs, func(other *codeTab) bool { return other == tab })
+				split.rightTabs = slices.DeleteFunc(split.rightTabs, func(other *codeTab) bool { return other == tab })
+			}
 		}
 		a.codeTabs = append(a.codeTabs[:i], a.codeTabs[i+1:]...)
 		switch {

@@ -19,7 +19,7 @@ func (a *App) activeReviewFile() (gitops.WorkspaceFile, int) {
 	switch a.editorTab {
 	case "file":
 		if tab := a.activeCodeTab(); tab != nil {
-			return tab.file, tab.state.CursorPos().Line + 1
+			return tab.file, a.activeCodeEditor().CursorPos().Line + 1
 		}
 	case "changes":
 		if a.selectedChangeFile != nil && a.diffState != nil {
@@ -84,7 +84,7 @@ func (a *App) bindTreeCopy(row ui.Element, wf gitops.WorkspaceFile, copyDisplayP
 	if row.Shortcut(ui.Cmd, ui.KeyC) {
 		a.pendingClipboard = a.treeCopyText(wf, copyDisplayPath)
 	}
-	if row.Shortcut(ui.Cmd|ui.Shift, ui.KeyC) {
+	if a.shortcutOn(row, keyCopyAbsolute) {
 		a.pendingClipboard = a.normalizeWorkspaceFile(wf).AbsPath
 	}
 }
@@ -156,25 +156,35 @@ func (a *App) treeLocationMenu(m *ui.Menu, wf gitops.WorkspaceFile, directory bo
 }
 
 func (a *App) locateFileInTree(wf gitops.WorkspaceFile) {
+	if a.selectFileInTree(wf, true) {
+		a.activeTab = TabCode
+	}
+}
+
+func (a *App) selectFileInTree(wf gitops.WorkspaceFile, reportMissing bool) bool {
 	wf = a.normalizeWorkspaceFile(wf)
 	if _, ok := a.workspacePreviewFileByKey(wf.RepoID, wf.RelPath); !ok {
 		st, inWorkspace := a.statusByID[wf.RepoID]
 		if !inWorkspace || wf.RepoPath != st.Repo.AbsPath || !filepath.IsLocal(wf.RelPath) || filepath.Join(wf.RepoPath, wf.RelPath) != wf.AbsPath {
-			a.showToast("info", "文件不在当前工作区文件树中")
-			return
+			if reportMissing {
+				a.showToast("info", "文件不在当前工作区文件树中")
+			}
+			return false
 		}
 		if info, err := os.Lstat(wf.AbsPath); err != nil || info.IsDir() {
-			a.showToast("info", "当前工作区中没有此文件")
-			return
+			if reportMissing {
+				a.showToast("info", "当前工作区中没有此文件")
+			}
+			return false
 		}
 		wf.IsRoot = st.Repo.IsRoot
 		a.codeExtraFile = []gitops.WorkspaceFile{wf}
 		a.codeGroupsKey = ""
 		clear(a.codeTreeCache)
 	}
-	a.activeTab = TabCode
 	a.codeFilterQuery = ""
 	a.revealCodeFile(wf)
 	a.codeLocatedKey = wf.RepoID + "::" + wf.RelPath
 	a.codeRevealKey = a.codeLocatedKey
+	return true
 }

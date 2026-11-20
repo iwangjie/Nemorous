@@ -53,6 +53,8 @@ type DiffState struct {
 	// NoLineNumbers the gutter without numbers.
 	NoBackground  bool
 	NoLineNumbers bool
+	// ShowWhitespaces marks spaces and tabs without changing the comparison.
+	ShowWhitespaces bool
 	// Wrap wraps long lines rather than scrolling them sideways.
 	Wrap bool
 	// FitContent makes the viewer as high as its lines, as a file of a
@@ -550,6 +552,14 @@ func (d *DiffState) ActiveSide() DiffSide {
 	return DiffNew
 }
 
+// Focused reports whether the active diff editor holds focus.
+func (d *DiffState) Focused() bool { return d.editorOf(d.ActiveSide()).focused }
+
+// SelectedText returns the selected text in the active editor.
+func (d *DiffState) SelectedText() string {
+	return d.editorOf(d.ActiveSide()).selectedText()
+}
+
 // Cursor returns the offset of the newest caret of the active side, in
 // its text.
 func (d *DiffState) Cursor() int {
@@ -624,6 +634,9 @@ func (d *DiffState) sideOptions(old bool) options {
 	o.scrollMargin = defaultScrollMargin
 	if d.NoLineNumbers {
 		o.lineNumbers = LineNumbersOff
+	}
+	if d.ShowWhitespaces {
+		o.whitespace = WhitespaceAll
 	}
 	o.diffSide = diffNewSide
 	if old {

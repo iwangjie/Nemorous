@@ -33,11 +33,21 @@ func main() {
 				app.win.Invalidate()
 			}
 		})
+		app.keymapNativeEditMenu = &mygo.MenuItem{Role: mygo.RoleEditMenu}
 		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{
 			{Role: mygo.RoleAppMenu},
-			{Role: mygo.RoleEditMenu},
+			app.keymapNativeEditMenu,
+			{Label: "Git", Submenu: []*mygo.MenuItem{{Label: "选中的文件", Submenu: []*mygo.MenuItem{
+				{Label: "查看历史", Click: func(*mygo.MenuItem, *mygo.Window) {
+					app.runUI(func() { app.showWorkingFileHistory(app.selectedGitFile()) })
+				}},
+				{Label: "与修订版本比较…", Click: func(*mygo.MenuItem, *mygo.Window) {
+					app.runUI(func() { app.openFileRevisionPicker(app.selectedGitFile()) })
+				}},
+			}}}},
 			{Role: mygo.RoleWindowMenu},
 		}))
+		app.syncNativeEditorShortcuts()
 		app.win = mygo.NewWindow(mygo.WindowOptions{
 			Title:         "Nemorous",
 			Width:         1440,
@@ -214,9 +224,14 @@ func (a *App) BuildUI(c *ui.Context) {
 	if a.cfg.Zoom >= 0.5 && a.cfg.Zoom <= 3.0 {
 		c.SetZoom(a.cfg.Zoom)
 	}
+	a.syncCodeSplitFocus(c)
 	a.registerShortcuts(c)
 
-	ui.Column(c).Bind(&a.rootHandle).Fill().Background(p.AppBg).TextColor(p.TextPrimary).Children(func() {
+	root := ui.Column(c).Bind(&a.rootHandle).Focusable().FocusRing(false).ObserveInput(a.observeReviewInput).Fill().Background(p.AppBg).TextColor(p.TextPrimary)
+	if a.editorTab != "file" {
+		root.AutoFocus()
+	}
+	root.Children(func() {
 		a.buildTopHeaderBar(c, p)
 
 		// IDEA-style layout: left tree | editor above the bottom Git tool window.
@@ -232,7 +247,9 @@ func (a *App) BuildUI(c *ui.Context) {
 						}
 						ui.Column(c).FillHeight().Children(editor)
 					}
-					if a.activeTab == TabCode {
+					if a.historyAffected != nil {
+						ui.Split(c, &a.changesSplit, func() { a.buildHistoryAffected(c, p) }, center).Fill()
+					} else if a.activeTab == TabCode {
 						ui.Split(c, &a.codeSplit,
 							func() { a.buildCodeLeftPane(c, p) },
 							center,
@@ -279,6 +296,11 @@ func (a *App) BuildUI(c *ui.Context) {
 						func() { ui.Column(c).FillHeight().Children(workArea) },
 						func() { a.buildGitView(c, p) },
 					).Fill()
+				} else if a.showFindPanel && a.findResults != nil {
+					ui.SplitVerticalPercent(c, &a.findEditorPct,
+						func() { ui.Column(c).FillHeight().Children(workArea) },
+						func() { a.buildFindResults(c, p) },
+					).Fill()
 				} else {
 					workArea()
 				}
@@ -295,11 +317,14 @@ func (a *App) BuildUI(c *ui.Context) {
 		// Modals & Dialogs
 		a.buildCommandPaletteModal(c, p)
 		a.buildReviewPicker(c, p)
+		a.buildReviewSwitcher(c, p)
+		a.buildFileRevisionPicker(c, p)
 		a.buildSelectIn(c, p)
 		a.buildGlobalSearchModal(c, p)
 		a.buildReplaceAllConfirmation(c, p)
 		a.buildBranchSwitchModal(c, p)
 		a.buildSettingsModal(c, p)
+		a.buildKeymapSettings(c, p)
 		a.buildUpdateModal(c, p)
 		a.buildDiscardConfirmModal(c, p)
 		a.buildCodeTabCloseModal(c, p)
@@ -329,6 +354,12 @@ func (a *App) BuildUI(c *ui.Context) {
 }
 
 func (a *App) registerShortcuts(c *ui.Context) {
+	if a.registerSwitcher(c) {
+		return
+	}
+	if (a.searchGesture != modifierTap{}) && (!c.WindowActive() || a.overlayOpen()) {
+		a.resetSearchGesture()
+	}
 	if a.showConflict {
 		if c.Shortcut(ui.Alt, ui.KeyLeft) {
 			a.conflictNav(-1)
@@ -345,7 +376,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		if c.Shortcut(ui.Alt, ui.Key3) {
 			a.conflictApplyCurrent(conflict.Both)
 		}
-		if c.Shortcut(ui.Cmd, ui.KeyS) {
+		if a.shortcut(c, keySave) {
 			a.saveConflictFile()
 		}
 		if c.Shortcut(ui.Cmd, ui.KeyEnter) && len(a.conflictFiles) == 0 {
@@ -356,13 +387,13 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		}
 	}
 	// Global window zoom shortcuts (Cmd +, Cmd -, Cmd Shift 0).
-	if c.Shortcut(ui.Cmd, ui.KeyEqual) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyEqual) {
+	if a.shortcut(c, keyZoomIn) {
 		a.ZoomIn()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyMinus) {
+	if a.shortcut(c, keyZoomOut) {
 		a.ZoomOut()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.Key0) {
+	if a.shortcut(c, keyZoomReset) {
 		a.ZoomReset()
 	}
 
@@ -370,9 +401,9 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if a.overlayOpen() {
 		return
 	}
-	copyAbsolute := c.Shortcut(ui.Cmd|ui.Shift, ui.KeyC)
-	copyLocation := c.Shortcut(ui.Cmd|ui.Alt|ui.Shift, ui.KeyC)
-	locateFile := c.Shortcut(ui.Alt, ui.KeyF1)
+	copyAbsolute := a.shortcut(c, keyCopyAbsolute)
+	copyLocation := a.shortcut(c, keyCopyReference)
+	locateFile := a.shortcut(c, keySelectIn)
 	if copyAbsolute || copyLocation || locateFile {
 		if wf, line := a.activeReviewFile(); wf.RelPath != "" {
 			switch {
@@ -388,7 +419,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	history := a.gitRevisionHistory
 	historyListFocused := history != nil && history.listHandle.FocusWithin(c)
 	historyPreviewFocused := history != nil && history.previewHandle.FocusWithin(c)
-	if c.Shortcut(0, ui.KeyF4) || c.Shortcut(ui.Cmd, ui.KeyDown) {
+	if a.shortcut(c, keyJumpToSource) {
 		if historyPreviewFocused && history.preview != nil {
 			if opts := a.historyDiffOptions(history); opts.sourceEnabled {
 				opts.source()
@@ -400,37 +431,40 @@ func (a *App) registerShortcuts(c *ui.Context) {
 	if !a.textFocusActive(c) && !a.showTerminalPanel {
 		a.registerDiffShortcuts(c)
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyB) {
+	if a.shortcut(c, keyBookmark) {
 		a.toggleBookmarkAtCursor()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyO) {
+	if a.shortcut(c, keySearchEverywhere) {
+		a.openReviewPicker(reviewSearchEverywhere)
+	}
+	if a.shortcut(c, keyGoToFile) {
 		a.openReviewPicker(reviewGoToFile)
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyE) {
+	if a.shortcut(c, keyRecentFiles) {
 		a.openReviewPicker(reviewRecentFiles)
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyE) {
+	if a.shortcut(c, keyRecentLocations) {
 		a.openReviewPicker(reviewRecentLocations)
 	}
-	if (c.Shortcut(ui.Cmd, ui.KeyBracketLeft) || c.Shortcut(ui.Cmd|ui.Alt, ui.KeyLeft)) && a.editorTab == "file" {
+	if (a.shortcut(c, keyBack)) && a.editorTab == "file" {
 		a.returnToReview()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyBracketRight) || c.Shortcut(ui.Cmd|ui.Alt, ui.KeyRight) {
+	if a.shortcut(c, keyForward) {
 		a.forwardToReviewSource()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyF12) {
+	if a.shortcut(c, keyStructure) {
 		a.openStructure()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyT) {
+	if a.shortcut(c, keyTodos) {
 		a.openTodos()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyF) {
+	if a.shortcut(c, keyFindInFiles) {
 		a.openGlobalSearch()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyR) {
+	if a.shortcut(c, keyReplaceInFiles) {
 		a.openGlobalReplace()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyP) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyA) {
+	if a.shortcut(c, keyActions) {
 		a.showCmdPalette = !a.showCmdPalette
 		a.cmdPaletteQuery = ""
 		if a.showCmdPalette {
@@ -438,61 +472,62 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		}
 	}
 	if len(a.codeTabs) > 0 {
-		if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyBracketLeft) || c.Shortcut(ui.Cmd|ui.Shift, ui.KeyBracketRight) {
+		previous := a.shortcut(c, keyPreviousTab)
+		if previous || a.shortcut(c, keyNextTab) {
 			delta := 1
-			if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyBracketLeft) {
+			if previous {
 				delta = -1
 			}
 			a.activeTab = TabCode
 			a.activateCodeTab((a.codeTabIdx + delta + len(a.codeTabs)) % len(a.codeTabs))
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyComma) {
+	if a.shortcut(c, keyOpenSettings) {
 		a.showSettings = !a.showSettings
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyB) {
+	if a.shortcut(c, keyBranches) {
 		if a.showBranchModal {
 			a.showBranchModal = false
 		} else {
 			a.openBranchSwitchModal()
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyR) {
+	if a.shortcut(c, keyReplace) {
 		if tab := a.activeCodeTab(); a.editorTab == "file" && tab != nil && !tab.state.ReadOnly && a.reviewEditorFocused(c) {
-			tab.state.Run(editor.FindReplace)
+			a.activeCodeEditor().Run(editor.FindReplace)
 		} else if a.editorTab == "changes" && a.diffState != nil && a.diffEditable && a.reviewEditorFocused(c) {
 			a.diffState.Run(editor.FindReplace)
 		}
 	}
-	if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyY) {
+	if a.shortcut(c, keyRefresh) {
 		a.RefreshAsync()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyK) {
+	if a.shortcut(c, keyGitCommit) {
 		a.setPrimaryTab(TabChanges)
 		a.gitDiffOpen = false
 		a.commitInputHandle.Focus()
 	}
-	if c.Shortcut(ui.Cmd|ui.Shift, ui.KeyK) {
+	if a.shortcut(c, keyPush) {
 		a.TriggerPushAllAhead()
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyT) {
+	if a.shortcut(c, keyPull) {
 		a.TriggerBatchPull()
 	}
-	if !(a.editorTab == "file" && a.reviewEditorFocused(c)) && c.Shortcut(ui.Cmd|ui.Alt, ui.KeyZ) {
+	if !(a.editorTab == "file" && a.reviewEditorFocused(c)) && a.shortcut(c, keyRollback) {
 		a.rollbackSelectedChange()
 	}
 	if a.activeTab == TabCode {
-		if c.Shortcut(ui.Alt, ui.KeyF7) {
+		if a.shortcut(c, keyFindUsages) {
 			a.openLSPReferences()
 		}
-		if c.Shortcut(ui.Alt, ui.KeyEnter) {
+		if a.shortcut(c, keyContextActions) {
 			a.openLSPCodeActions()
 		}
-		if c.Shortcut(ui.Cmd|ui.Alt, ui.KeyL) {
+		if a.shortcut(c, keyFormat) {
 			a.triggerLSPFormat()
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyW) {
+	if a.shortcut(c, keyCloseTab) {
 		switch a.editorTab {
 		case "file":
 			if a.activeCodeTab() != nil {
@@ -510,7 +545,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			}
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.KeyS) {
+	if a.shortcut(c, keySave) {
 		switch a.editorTab {
 		case "staged":
 			if a.stagedReview != nil {
@@ -553,18 +588,18 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			}
 		}
 	}
-	if c.Shortcut(ui.Cmd, ui.Key0) {
+	if a.shortcut(c, keyCommitWindow) {
 		a.focusCommitToolWindow()
 	}
-	if c.Shortcut(ui.Cmd, ui.Key1) {
+	if a.shortcut(c, keyProject) {
 		a.focusProjectToolWindow()
 	}
-	if c.Shortcut(ui.Cmd, ui.Key9) {
+	if a.shortcut(c, keyGitWindow) {
 		a.showLogPanel = false
 		a.showTerminalPanel = false
 		a.showGitPanel = !a.showGitPanel
 	}
-	if c.Shortcut(ui.Cmd, ui.Key4) && a.maniAvailable() {
+	if a.shortcut(c, keyManiWindow) && a.maniAvailable() {
 		a.showManiPanel = !a.showManiPanel
 	}
 }
@@ -710,6 +745,15 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 		toolRow("nav-terminal", icoTerminal, "终端", a.showTerminalPanel, func() {
 			a.toggleTerminalPanel()
 		})
+		if a.findResults != nil {
+			toolRow("nav-find", icoSearch, "查找结果", a.showFindPanel, func() {
+				if a.showFindPanel && !a.showGitPanel && !a.showTerminalPanel && !a.showLogPanel && !a.showRunPanel {
+					a.showFindPanel = false
+				} else {
+					a.showFindResults()
+				}
+			})
+		}
 		toolRow("nav-run", icoPlay, "运行", a.showRunPanel, func() {
 			a.showGitPanel = false
 			a.showLogPanel = false
@@ -760,7 +804,7 @@ func (a *App) buildVerticalNav(c *ui.Context, p Palette) {
 		themeBtn.Children(func() {
 			drawIcon(themeKc, themeIcon, 15, p.TextControl)
 		})
-		utility("nav-settings", icoSettings, "设置 (⌘,)", a.showSettings, func() {
+		utility("nav-settings", icoSettings, a.shortcutLabel("设置", keyOpenSettings), a.showSettings, func() {
 			a.showSettings = true
 		})
 	})
@@ -854,6 +898,9 @@ func (a *App) buildTopHeaderBar(c *ui.Context, p Palette) {
 				a.updatePromptedFor = up.Version
 			})
 		}
+		iconAction(c, p, "top-search-everywhere", icoSearch, a.shortcutLabel("随处搜索", keySearchEverywhere), a.reviewPickerOpen && a.reviewPickerMode == reviewSearchEverywhere, func() {
+			a.openReviewPicker(reviewSearchEverywhere)
+		})
 	})
 }
 
@@ -877,7 +924,15 @@ func (a *App) buildStatusBar(c *ui.Context, p Palette) {
 					a.showOpLog = true
 				})
 			}
-			hint := "⌘0 Commit · ⌘1 Project · ⌘9 Git · ⌘4 Mani · ⇧⌘F 全局搜索 · ⌘B 分支 · ⌘Enter 提交"
+			hint := strings.Join([]string{
+				a.shortcutLabel("Commit", keyCommitWindow),
+				a.shortcutLabel("Project", keyProject),
+				a.shortcutLabel("Git", keyGitWindow),
+				a.shortcutLabel("Mani", keyManiWindow),
+				a.shortcutLabel("全局搜索", keyFindInFiles),
+				a.shortcutLabel("分支", keyBranches),
+				"⌘Enter 提交",
+			}, " · ")
 			if a.activeTab == TabChanges {
 				hint = "↑↓ 选择 · 空格勾选 · S/U 暂存 · ⌘Enter 提交"
 			}

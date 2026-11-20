@@ -52,7 +52,7 @@ func (f *finder) show(ed *editor, replace bool) {
 	}
 	// The selection, or the word at the caret, seeds the query.
 	p := ed.primary()
-	if !p.empty() && ed.view.text.LineOf(p.start()) == ed.view.text.LineOf(p.end()) {
+	if !p.empty() {
 		f.query = ed.slice(p.start(), p.end())
 	} else if p.empty() {
 		if a, z := wordAt(ed.view.text, p.head, ed.wordChars()); z > a && f.query == "" {

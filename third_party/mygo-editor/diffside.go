@@ -260,6 +260,9 @@ func (s *diffSide) paintDeleted(p *ui.Painter, ed *editor, b *block, r ui.Rect) 
 					}
 				}
 				ov.paintRow(p, l, row, ox, ry, &cc, nil)
+				if d.ShowWhitespaces {
+					ed.paintWhitespace(p, ov, l, row, ox, ry)
+				}
 			}
 		}
 	})

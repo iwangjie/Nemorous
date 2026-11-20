@@ -29,6 +29,7 @@ var (
 	icoPush = mustSVG(`<svg viewBox="0 0 24 24"><path d="M12 19V5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m5 12 7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
 
 	icoCollapseUnchanged = mustSVG(`<svg viewBox="0 0 24 24"><path d="m7 5 5 5 5-5M7 19l5-5 5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
+	icoAffectedFiles     = mustSVG(`<svg viewBox="0 0 24 24"><path d="M4 5h15M4 10h11M4 15h6m10-3-4 4 4 4m-4-4h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
 
 	icoCheck = mustSVG(`<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`)
 

@@ -369,6 +369,7 @@ func (a *App) syncEditorAids(c *ui.Context, tab *codeTab, p Palette) {
 	}
 	services := c.Services()
 	tab.state.ContextMenu = func(m *ui.Menu) {
+		a.gitFileContextMenu(m, tab.file)
 		if sel := tab.state.Selection(); !sel.Empty() && m.Item("与剪贴板比较").Chosen() {
 			selected := tab.state.Buffer.Slice(sel.Start(), sel.End())
 			name := filepath.Base(tab.file.RelPath)

@@ -202,6 +202,17 @@ func (a *App) buildCodeLeftPane(c *ui.Context, p Palette) {
 	ui.Column(c).Fill().Padding(8).Gap(6).Background(p.RailBg).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.SearchField(c.Key("code-search"), &a.codeFilterQuery).Bind(&a.codeFilterHandle).Placeholder("搜索文件名或路径...").Grow(1)
+			menuIconAction(c, p, "project-options", icoMore, "Project 选项", false, func(m *ui.Menu) {
+				m.Submenu("行为", func(behavior *ui.Menu) {
+					if behavior.Item("始终选中打开的文件").Checked(a.cfg.ProjectFollowEditor).Chosen() {
+						a.cfg.ProjectFollowEditor = !a.cfg.ProjectFollowEditor
+						a.followOpenedCodeFile(a.activeCodeTab())
+						if a.win != nil {
+							_ = a.cfg.Save()
+						}
+					}
+				})
+			})
 			if len(a.expandedCodeRepos) > 0 {
 				miniBtn(c, p, "全部收起", func() {
 					a.expandedCodeRepos = make(map[string]bool)
@@ -435,6 +446,7 @@ func (a *App) renderCodeTreeNode(c *ui.Context, p Palette, repoID string, node *
 			if m.Item("预览").Chosen() {
 				a.selectCodeFilePreview(wfCopy)
 			}
+			a.gitFileContextMenu(m, wfCopy)
 			a.fileLocationMenu(m, wfCopy, false, 0)
 		})
 		fRow.Children(func() {
@@ -462,16 +474,16 @@ func (a *App) buildCodeWelcome(c *ui.Context, p Palette) {
 			})
 		}
 
-		shortcutRow("search", "搜索文件", "⇧⌘O", func() {
+		shortcutRow("search", "搜索文件", a.shortcutHint(keyGoToFile), func() {
 			a.openReviewPicker(reviewGoToFile)
 		})
-		shortcutRow("find", "全局查找", "⇧⌘F", func() {
+		shortcutRow("find", "全局查找", a.shortcutHint(keyFindInFiles), func() {
 			a.openGlobalSearch()
 		})
-		shortcutRow("branch", "切换分支", "⌘B", func() {
+		shortcutRow("branch", "切换分支", a.shortcutHint(keyBranches), func() {
 			a.openBranchSwitchModal()
 		})
-		shortcutRow("cmd", "命令面板", "⇧⌘P", func() {
+		shortcutRow("cmd", "命令面板", a.shortcutHint(keyActions), func() {
 			a.showCmdPalette = true
 			a.cmdInputHandle.Focus()
 		})
@@ -490,6 +502,9 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 		ui.ScrollHorizontal(c).Height(34).Grow(1).Children(func() {
 			for i, tab := range a.codeTabs {
+				if a.codeEditorSplit != nil && a.editorTab == "file" {
+					break
+				}
 				tabIndex := i
 				tabCopy := tab
 				active := a.editorTab == "file" && i == a.codeTabIdx
@@ -506,6 +521,12 @@ func (a *App) buildEditorTabBar(c *ui.Context, p Palette) {
 				row.PopoverMenu(func(m *ui.Menu) {
 					a.fileLocationMenu(m, tabCopy.file, false, tabCopy.state.CursorPos().Line+1)
 					m.Separator()
+					if a.codeEditorSplit == nil && m.Item("向右拆分").Chosen() {
+						a.splitCodeEditorRight(tabIndex)
+					}
+					if a.codeEditorSplit != nil && m.Item("取消所有拆分").Chosen() {
+						a.unsplitCodeEditor()
+					}
 					if m.Item("关闭").Chosen() {
 						a.requestCloseCodeTab(tabCopy)
 					}
@@ -701,7 +722,11 @@ func (a *App) buildEditorContent(c *ui.Context, p Palette) {
 	switch a.editorTab {
 	case "file":
 		if a.activeCodeTab() != nil {
-			a.buildCodeRightPane(c, p)
+			if a.codeEditorSplit != nil {
+				a.buildSplitCodeEditor(c, p)
+			} else {
+				a.buildCodeRightPane(c, p)
+			}
 			return
 		}
 	case "changes":
@@ -739,6 +764,7 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 			a.buildCodeWelcome(c, p)
 			return
 		}
+		a.bindCodeKeymap(tab.state)
 		if tab.revision != "" {
 			editor.View(c, tab.state).Bind(&tab.viewHandle).Grow(1).FillWidth()
 			return
@@ -796,7 +822,7 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 					})
 				}
 				if isModified {
-					pill(c, p, "保存 (⌘S)", true, func() {
+					pill(c, p, a.shortcutLabel("保存", keySave), true, func() {
 						a.saveCodeMicroEdit()
 					})
 				}
@@ -809,13 +835,13 @@ func (a *App) buildCodeRightPane(c *ui.Context, p Palette) {
 							a.lspRenameErr = ""
 						})
 						menuIconPill(c, p, "lsp-actions", icoSparkles, "LSP", false, func(m *ui.Menu) {
-							if m.Item("查找引用 (⌥F7)").Chosen() {
+							if m.Item(a.shortcutLabel("查找引用", keyFindUsages)).Chosen() {
 								a.openLSPReferences()
 							}
 							if m.Item("快速修复 (⌥↩)").Chosen() {
 								a.openLSPCodeActions()
 							}
-							if m.Item("LSP 格式化 (⌘⌥L)").Chosen() {
+							if m.Item(a.shortcutLabel("LSP 格式化", keyFormat)).Chosen() {
 								a.triggerLSPFormat()
 							}
 							if m.Item(fmt.Sprintf("Problems (%d)", tab.lspDiagErrors+tab.lspDiagWarns)).Chosen() {

@@ -139,7 +139,7 @@ func (a *App) buildStagedReview(c *ui.Context, p Palette) {
 			BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, view.file.Path).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine().Grow(1)
 			if view.dirty() {
-				miniBtn(c.Key("save-index"), p, "保存暂存版本 (⌘S)", func() { a.saveStagedReview(view) })
+				miniBtn(c.Key("save-index"), p, a.shortcutLabel("保存暂存版本", keySave), func() { a.saveStagedReview(view) })
 			}
 		})
 		if view.err != "" {
@@ -149,6 +149,9 @@ func (a *App) buildStagedReview(c *ui.Context, p Palette) {
 			ui.Spinner(c).Size(14, 14).Label("读取文件版本")
 		}
 		if view.state != nil {
+			for _, state := range view.state.Versions {
+				a.bindCodeKeymap(state)
+			}
 			editor.ThreeWayView(c.Key("staged-three-way"), view.state, [3]string{"HEAD", "暂存版本", "本地版本"}).Grow(1).FillWidth()
 		}
 	})

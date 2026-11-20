@@ -86,45 +86,53 @@ type ripgrepEvent struct {
 	} `json:"data"`
 }
 
-// openGlobalSearch resets the find-in-files session and focuses its query
-// field. The actual search starts after the user types.
 func (a *App) openGlobalSearch() {
-	a.openGlobalSearchIn("")
+	selection, restore := a.searchSelection()
+	a.openGlobalSearchIn("", selection, false, restore)
 }
 
 func (a *App) openGlobalReplace() {
-	a.openGlobalSearchIn("")
-	a.globalSearchReplaceMode = true
+	selection, restore := a.searchSelection()
+	a.openGlobalSearchIn("", singleLineSearchSelection(selection), true, restore)
 }
 
 func (a *App) openDirectorySearch(wf gitops.WorkspaceFile) {
 	if wf = a.normalizeWorkspaceFile(wf); wf.AbsPath != "" {
-		a.openGlobalSearchIn(wf.AbsPath)
+		a.openGlobalSearchIn(wf.AbsPath, "", false, nil)
 	}
 }
 
-func (a *App) openGlobalSearchIn(directory string) {
+func (a *App) openGlobalSearchIn(directory, query string, replace bool, restoreFocus func()) {
 	a.showCmdPalette = false
 	a.showBranchPicker = false
 	a.showGlobalSearch = true
-	a.globalSearchQuery = ""
+	a.globalSearchQuery = query
+	a.globalSearchReturnFocus = restoreFocus
 	a.globalSearchReplacement = ""
-	a.globalSearchReplaceMode = false
+	a.globalSearchReplaceMode = replace
 	a.globalSearchSelected = nil
 	a.globalSearchDirectory = directory
 	a.globalSearchGroups = nil
 	a.globalSearchTotal = 0
-	a.globalSearchRunning = false
 	a.globalSearchErr = ""
 	a.globalSearchPartial = false
 	a.cancelGlobalSearch()
-	a.globalSearchHandle.Focus()
+	if query != "" {
+		a.globalSearchHandle.SelectAll()
+		a.scheduleGlobalSearch()
+	} else {
+		a.globalSearchHandle.Focus()
+	}
 }
 
 func (a *App) closeGlobalSearch() {
 	a.showGlobalSearch = false
 	a.globalReplacePlan = nil
 	a.cancelGlobalSearch()
+	if restore := a.globalSearchReturnFocus; restore != nil {
+		a.globalSearchReturnFocus = nil
+		restore()
+	}
 }
 
 func (a *App) cancelGlobalSearch() {
@@ -384,6 +392,7 @@ func searchMonogram(name string) string {
 // openGlobalSearchHit opens the matching file and scrolls the editor to the
 // exact line. The tab is reused when already open, preserving unsaved edits.
 func (a *App) openGlobalSearchHit(hit globalSearchHit) {
+	a.globalSearchReturnFocus = nil
 	a.closeGlobalSearch()
 	if hit.AbsPath == "" {
 		return
@@ -442,7 +451,12 @@ func ripgrepSearch(ctx context.Context, root, query string, opts globalSearchOpt
 	} else {
 		args = append(args, "--ignore-case")
 	}
-	if !opts.Regex {
+	if strings.Contains(query, "\n") {
+		args = append(args, "--multiline", "--crlf")
+		if !opts.Regex {
+			query = multilineLiteralPattern(query)
+		}
+	} else if !opts.Regex {
 		args = append(args, "--fixed-strings")
 	}
 	args = append(args, "--regexp", query, ".")
@@ -482,11 +496,11 @@ func ripgrepSearch(ctx context.Context, root, query string, opts globalSearchOpt
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(root, filepath.FromSlash(abs))
 		}
-		lineText := strings.TrimSuffix(strings.TrimSuffix(ev.Data.Lines.Text, "\n"), "\r")
 		for _, submatch := range ev.Data.Submatches {
-			start := min(len(lineText), max(0, submatch.Start))
-			end := min(len(lineText), max(start, submatch.End))
-			out.Hits = append(out.Hits, newGlobalSearchHit(filepath.Clean(abs), ev.Data.LineNumber, lineText, start, end))
+			text := ev.Data.Lines.Text
+			start := min(len(text), max(0, submatch.Start))
+			end := min(len(text), max(start, submatch.End))
+			out.Hits = append(out.Hits, globalSearchSpan(filepath.Clean(abs), ev.Data.LineNumber, text, start, end))
 			if len(out.Hits) == globalSearchLimit {
 				break
 			}
@@ -558,18 +572,31 @@ func goSearch(ctx context.Context, files []gitops.WorkspaceFile, query string, o
 				if readErr != nil || bytes.IndexByte(data, 0) >= 0 {
 					continue
 				}
-				lines := strings.Split(string(data), "\n")
-				for idx, line := range lines {
-					line = strings.TrimSuffix(line, "\r")
-					for _, loc := range re.FindAllStringIndex(line, globalSearchPerFile) {
-						mu.Lock()
-						if len(hits) >= globalSearchLimit {
-							mu.Unlock()
-							stop()
+				text := string(data)
+				appendHit := func(hit globalSearchHit) bool {
+					mu.Lock()
+					defer mu.Unlock()
+					if len(hits) >= globalSearchLimit {
+						stop()
+						return false
+					}
+					hits = append(hits, hit)
+					return true
+				}
+				if strings.Contains(query, "\n") {
+					for _, loc := range re.FindAllStringIndex(text, globalSearchPerFile) {
+						if !appendHit(globalSearchSpan(abs, 1, text, loc[0], loc[1])) {
 							return
 						}
-						hits = append(hits, newGlobalSearchHit(abs, idx+1, line, loc[0], loc[1]))
-						mu.Unlock()
+					}
+					continue
+				}
+				for idx, line := range strings.Split(text, "\n") {
+					line = strings.TrimSuffix(line, "\r")
+					for _, loc := range re.FindAllStringIndex(line, globalSearchPerFile) {
+						if !appendHit(newGlobalSearchHit(abs, idx+1, line, loc[0], loc[1])) {
+							return
+						}
 					}
 				}
 			}
@@ -605,6 +632,19 @@ func goSearch(ctx context.Context, files []gitops.WorkspaceFile, query string, o
 	return globalSearchOutcome{Hits: hits, Truncated: truncated}, nil
 }
 
+// The result still points to the first matched line in a multiline hit.
+func globalSearchSpan(file string, firstLine int, text string, start, end int) globalSearchHit {
+	startLine := strings.LastIndexByte(text[:start], '\n') + 1
+	line, _, _ := strings.Cut(text[startLine:], "\n")
+	line = strings.TrimSuffix(line, "\r")
+	return newGlobalSearchHit(file, firstLine+strings.Count(text[:startLine], "\n"), line, min(len(line), start-startLine), min(len(line), end-startLine))
+}
+
+func multilineLiteralPattern(query string) string {
+	query = strings.ReplaceAll(query, "\r\n", "\n")
+	return strings.ReplaceAll(regexp.QuoteMeta(query), "\n", `\r?\n`)
+}
+
 func newGlobalSearchHit(file string, lineNumber int, line string, start, end int) globalSearchHit {
 	snippet, from, to := searchSnippet(line, start, end)
 	return globalSearchHit{
@@ -615,7 +655,7 @@ func newGlobalSearchHit(file string, lineNumber int, line string, start, end int
 
 func globalSearchRegexp(query string, opts globalSearchOptions) (*regexp.Regexp, error) {
 	if !opts.Regex {
-		query = regexp.QuoteMeta(query)
+		query = multilineLiteralPattern(query)
 	}
 	if !opts.CaseSensitive {
 		query = "(?i)" + query
@@ -679,9 +719,9 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			drawIcon(c, icoSearch, 15, p.TextMuted)
-			title, shortcut := "在文件中查找", "⇧⌘F"
+			title, shortcut := "在文件中查找", a.shortcutHint(keyFindInFiles)
 			if a.globalSearchReplaceMode {
-				title, shortcut = "在文件中替换", "⇧⌘R"
+				title, shortcut = "在文件中替换", a.shortcutHint(keyReplaceInFiles)
 			}
 			ui.Text(c, title).FontSize(14).FontWeight(weightBold).TextColor(p.TextPrimary)
 			scope := "整个工作区"
@@ -697,7 +737,14 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 		})
 
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			field := ui.SearchField(c.Key("global-search-q"), &a.globalSearchQuery).
+			kc := c.Key("global-search-q")
+			queryInput := ui.TextInput
+			if strings.Contains(a.globalSearchQuery, "\n") {
+				queryInput = func(c *ui.Context, query *string) ui.Element {
+					return ui.TextArea(c, query).Height(60)
+				}
+			}
+			field := queryInput(kc, &a.globalSearchQuery).Search().
 				Bind(&a.globalSearchHandle).Placeholder("搜索文件内容，支持正则与大小写…").AutoFocus().Grow(1)
 			if field.Changed() {
 				a.scheduleGlobalSearch()
@@ -771,63 +818,118 @@ func (a *App) buildGlobalSearchModal(c *ui.Context, p Palette) {
 		})
 
 		ui.Scroll(c).MaxHeight(470).Grow(1).Gap(2).Children(func() {
-			for _, grp := range a.globalSearchGroups {
-				grpCopy := grp
-				badge := repoBadgeColors(grpCopy.ColorIdx, p.IsDark)
-				headerKc := c.Key("gs-file-" + grpCopy.RepoID + "-" + grpCopy.RelPath)
-				ui.Row(headerKc).Height(26).Padding(0, 8).Gap(6).AlignItems(ui.Center).Children(func() {
-					badgeBox(headerKc, grpCopy.Monogram, badge.Text, badge.Bg, ui.Color{}, 9, true)
-					ui.Text(headerKc, grpCopy.RepoName).FontSize(11).TextColor(p.TextMuted)
-					ui.Text(headerKc, grpCopy.RelPath).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine().Grow(1)
-					ui.Text(headerKc, fmt.Sprintf("%d", len(grpCopy.Hits))).FontSize(10.5).TextColor(p.TextMuted)
-				})
-				for hitIdx, hit := range grpCopy.Hits {
-					hitCopy := hit
-					hitKey := fmt.Sprintf("gs-hit-%s-%s-%d-%d", grpCopy.RepoID, grpCopy.RelPath, hitIdx, hitCopy.Line)
-					kc := c.Key(hitKey)
-					row := ui.Row(kc).Height(25).Padding(0, 8, 0, 28).Gap(8).Radius(4).
-						Cursor(ui.CursorPointer).AlignItems(ui.Center).Tooltip(fmt.Sprintf("%s:%d", grpCopy.RelPath, hitCopy.Line))
-					if row.Hovered() {
-						row.Background(p.SurfaceHover)
-					}
-					if hit := a.globalSearchSelected; hit != nil && hit.AbsPath == hitCopy.AbsPath && hit.Line == hitCopy.Line && hit.Column == hitCopy.Column {
-						row.Background(p.AccentSoft)
-					}
-					if row.Clicked() {
-						if a.globalSearchReplaceMode {
-							a.globalSearchSelected = &hitCopy
-						} else {
-							a.openGlobalSearchHit(hitCopy)
-						}
-					}
-					row.Children(func() {
-						ui.Text(c.Key(hitKey+"-ln"), fmt.Sprintf("%d", hitCopy.Line)).Font("SF Mono, Menlo, monospace").
-							FontSize(10.5).TextColor(p.TextMuted).Width(40)
-						ui.Row(c.Key(hitKey + "-code")).Gap(0).Grow(1).AlignItems(ui.Center).Children(func() {
-							before, match, after := splitSearchSnippet(hitCopy)
-							if before != "" {
-								ui.Text(c.Key(hitKey+"-before"), before).Font("SF Mono, Menlo, monospace").FontSize(11.5).
-									TextColor(p.TextSecondary).SingleLine()
-							}
-							if match != "" {
-								ui.Text(c.Key(hitKey+"-match"), match).Font("SF Mono, Menlo, monospace").FontSize(11.5).
-									FontWeight(weightSemibold).TextColor(p.Accent).SingleLine()
-							}
-							if after != "" {
-								ui.Text(c.Key(hitKey+"-after"), after).Font("SF Mono, Menlo, monospace").FontSize(11.5).
-									TextColor(p.TextSecondary).SingleLine()
-							}
-						})
-					})
+			a.buildGlobalSearchRows(c, p, a.globalSearchGroups, a.globalSearchSelected, false, func(hit globalSearchHit) {
+				if a.globalSearchReplaceMode {
+					a.globalSearchSelected = &hit
+				} else {
+					a.openGlobalSearchHit(hit)
 				}
-			}
+			})
 		})
 		if a.globalSearchReplaceMode {
 			a.buildReplaceInFilesActions(c, p)
+		} else {
+			ui.Row(c).Justify(ui.End).Children(func() {
+				button := ui.Button(c.Key("open-in-find"), "在查找窗口中打开").Disabled(len(a.globalSearchGroups) == 0 || a.globalSearchRunning)
+				if button.Clicked() {
+					a.sendSearchToFindResults()
+				}
+			})
 		}
 	})
 	if openAtBuild && !a.showGlobalSearch {
 		a.closeGlobalSearch()
+	}
+}
+
+type findResultsView struct {
+	query    string
+	groups   []globalSearchGroup
+	selected *globalSearchHit
+}
+
+func (a *App) showFindResults() {
+	a.showGitPanel, a.showTerminalPanel, a.showRunPanel, a.showLogPanel = false, false, false, false
+	a.showFindPanel = true
+	if a.findEditorPct == 0 {
+		a.findEditorPct = 65
+	}
+}
+
+func (a *App) sendSearchToFindResults() {
+	a.findResults = &findResultsView{query: a.globalSearchQuery, groups: a.globalSearchGroups}
+	a.closeGlobalSearch()
+	a.showFindResults()
+}
+
+func (a *App) buildFindResults(c *ui.Context, p Palette) {
+	view := a.findResults
+	ui.Column(c.Key("find-results")).Fill().Clip().Background(p.Surface).Children(func() {
+		ui.Row(c).Height(36).Padding(0, 10).Gap(8).AlignItems(ui.Center).Background(p.RailBg).Children(func() {
+			ui.Text(c, "查找："+view.query).SingleLine().Grow(1)
+			toolButton(c, p, "hide-find-results", icoClose, "隐藏查找结果", false, true, func() { a.showFindPanel = false })
+		})
+		ui.Scroll(c).Grow(1).FillWidth().Children(func() {
+			a.buildGlobalSearchRows(c, p, view.groups, view.selected, true, a.openGlobalSearchHit)
+		})
+	})
+}
+
+func (a *App) buildGlobalSearchRows(c *ui.Context, p Palette, groups []globalSearchGroup, selected *globalSearchHit, docked bool, open func(globalSearchHit)) {
+	for _, grp := range groups {
+		grpCopy := grp
+		badge := repoBadgeColors(grpCopy.ColorIdx, p.IsDark)
+		headerKc := c.Key("gs-file-" + grpCopy.RepoID + "-" + grpCopy.RelPath)
+		ui.Row(headerKc).Height(26).Padding(0, 8).Gap(6).AlignItems(ui.Center).Children(func() {
+			badgeBox(headerKc, grpCopy.Monogram, badge.Text, badge.Bg, ui.Color{}, 9, true)
+			ui.Text(headerKc, grpCopy.RepoName).FontSize(11).TextColor(p.TextMuted)
+			ui.Text(headerKc, grpCopy.RelPath).FontSize(12).FontWeight(weightSemibold).TextColor(p.TextPrimary).SingleLine().Grow(1)
+			ui.Text(headerKc, fmt.Sprintf("%d", len(grpCopy.Hits))).FontSize(10.5).TextColor(p.TextMuted)
+		})
+		for hitIdx, hit := range grpCopy.Hits {
+			hitCopy := hit
+			hitKey := fmt.Sprintf("gs-hit-%s-%s-%d-%d", grpCopy.RepoID, grpCopy.RelPath, hitIdx, hitCopy.Line)
+			kc := c.Key(hitKey)
+			row := ui.Row(kc).Height(25).Padding(0, 8, 0, 28).Gap(8).Radius(4).
+				Cursor(ui.CursorPointer).AlignItems(ui.Center).Tooltip(fmt.Sprintf("%s:%d", grpCopy.RelPath, hitCopy.Line))
+			if row.Hovered() {
+				row.Background(p.SurfaceHover)
+			}
+			if hit := selected; hit != nil && hit.AbsPath == hitCopy.AbsPath && hit.Line == hitCopy.Line && hit.Column == hitCopy.Column {
+				row.Background(p.AccentSoft)
+			}
+			if docked {
+				row.Focusable()
+				if row.Clicked() {
+					row.Focus()
+					a.findResults.selected = &hitCopy
+				}
+				if row.DoubleClicked() || row.Shortcut(0, ui.KeyEnter) {
+					open(hitCopy)
+				}
+			} else if row.Clicked() {
+				open(hitCopy)
+			}
+			row.Children(func() {
+				ui.Text(c.Key(hitKey+"-ln"), fmt.Sprintf("%d", hitCopy.Line)).Font("SF Mono, Menlo, monospace").
+					FontSize(10.5).TextColor(p.TextMuted).Width(40)
+				ui.Row(c.Key(hitKey + "-code")).Gap(0).Grow(1).AlignItems(ui.Center).Children(func() {
+					before, match, after := splitSearchSnippet(hitCopy)
+					if before != "" {
+						ui.Text(c.Key(hitKey+"-before"), before).Font("SF Mono, Menlo, monospace").FontSize(11.5).
+							TextColor(p.TextSecondary).SingleLine()
+					}
+					if match != "" {
+						ui.Text(c.Key(hitKey+"-match"), match).Font("SF Mono, Menlo, monospace").FontSize(11.5).
+							FontWeight(weightSemibold).TextColor(p.Accent).SingleLine()
+					}
+					if after != "" {
+						ui.Text(c.Key(hitKey+"-after"), after).Font("SF Mono, Menlo, monospace").FontSize(11.5).
+							TextColor(p.TextSecondary).SingleLine()
+					}
+				})
+			})
+		}
 	}
 }
 

@@ -107,12 +107,55 @@ func commitDiffBase(detail gitops.CommitDetail) string {
 	return detail.Hash + "^"
 }
 
+func (a *App) showWorkingFileHistory(wf gitops.WorkspaceFile) {
+	wf = a.normalizeWorkspaceFile(wf)
+	if wf.RepoPath == "" || wf.RelPath == "" {
+		return
+	}
+	a.openHistoryUpToHere(gitops.CommitDetail{CommitEntry: gitops.CommitEntry{
+		Hash: "HEAD", RepoID: wf.RepoID, RepoName: wf.RepoName, RepoPath: wf.RepoPath,
+	}}, gitops.CommitFile{Path: wf.RelPath})
+}
+
+func (a *App) gitFileContextMenu(m *ui.Menu, wf gitops.WorkspaceFile) {
+	if wf.RepoPath == "" || wf.RelPath == "" {
+		return
+	}
+	m.Submenu("Git", func(git *ui.Menu) {
+		if git.Item("查看历史").Chosen() {
+			a.showWorkingFileHistory(wf)
+		}
+		if git.Item("与修订版本比较…").Chosen() {
+			a.openFileRevisionPicker(wf)
+		}
+	})
+}
+
+func (a *App) selectedGitFile() gitops.WorkspaceFile {
+	if a.activeTab == TabCode && len(a.compareFiles) == 1 {
+		file := a.compareFiles[0]
+		if a.codeLocatedKey == file.RepoID+"::"+file.RelPath {
+			return file
+		}
+	}
+	if a.editorTab == "file" {
+		if tab := a.activeCodeTab(); tab != nil {
+			return tab.file
+		}
+	}
+	if a.activeTab == TabChanges && a.selectedChangeFile != nil {
+		return changedWorkspaceFile(*a.selectedChangeFile)
+	}
+	return gitops.WorkspaceFile{}
+}
+
 func (a *App) openHistoryUpToHere(detail gitops.CommitDetail, file gitops.CommitFile) {
 	a.closeRevisionHistory()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	view := &revisionHistory{entry: detail.CommitEntry, path: file.Path, leftPct: 38, focusList: true, loading: true, cancel: cancel}
 	a.gitRevisionHistory = view
 	a.gitSubTab = "file-history"
+	a.showRunPanel, a.showTerminalPanel, a.showLogPanel = false, false, false
 	a.showGitPanel = true
 	load := func() {
 		defer cancel()
@@ -135,6 +178,7 @@ func (a *App) openHistoryUpToHere(detail gitops.CommitDetail, file gitops.Commit
 }
 
 func (a *App) closeRevisionHistory() {
+	a.closeHistoryAffected()
 	if view := a.gitRevisionHistory; view != nil {
 		view.cancel()
 		a.clearRevisionPreview(&view.preview)
@@ -209,7 +253,18 @@ func fileHistoryDate(unix int64, now time.Time) string {
 }
 
 func (a *App) buildRevisionList(c *ui.Context, p Palette, view *revisionHistory) {
-	list := ui.Scroll(c).Fill().Focusable().Label("文件提交历史").Bind(&view.listHandle)
+	ui.Column(c).Fill().Clip().Children(func() {
+		ui.Row(c).Height(30).Padding(0, 6).AlignItems(ui.Center).Background(p.RailBg).Children(func() {
+			toolButton(c, p, "file-history-affected", icoAffectedFiles, "显示所有受影响的文件", false, true, func() {
+				a.openHistoryAffected(view.selectedDetail())
+			})
+		})
+		a.buildRevisionRows(c, p, view)
+	})
+}
+
+func (a *App) buildRevisionRows(c *ui.Context, p Palette, view *revisionHistory) {
+	list := ui.Scroll(c).Grow(1).FillWidth().Focusable().Label("文件提交历史").Bind(&view.listHandle)
 	if view.focusList {
 		list.Focus()
 		view.focusList = false
@@ -478,6 +533,7 @@ func (a *App) buildHistoricalDiffEditor(c *ui.Context, p Palette) {
 			a.buildRevisionBlame(c, p, diff, editor.DiffOld)
 		}
 		ui.Box(c).Grow(1).FillHeight().Children(func() {
+			a.bindDiffKeymap(diff)
 			editor.DiffView(c, diff).Bind(&a.commitDiffHandle).Fill().Label("提交差异")
 			// The editor owns its text context menu. Limit annotation hit targets
 			// to the leading strip of each line-number gutter.
