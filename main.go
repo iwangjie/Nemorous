@@ -385,8 +385,17 @@ func (a *App) registerShortcuts(c *ui.Context) {
 			}
 		}
 	}
-	if (c.Shortcut(0, ui.KeyF4) || c.Shortcut(ui.Cmd, ui.KeyDown)) && (a.editorTab == "changes" || a.editorTab == "commit") {
-		a.openCurrentDiffSource()
+	history := a.gitRevisionHistory
+	historyListFocused := history != nil && history.listHandle.FocusWithin(c)
+	historyPreviewFocused := history != nil && history.previewHandle.FocusWithin(c)
+	if c.Shortcut(0, ui.KeyF4) || c.Shortcut(ui.Cmd, ui.KeyDown) {
+		if historyPreviewFocused && history.preview != nil {
+			if opts := a.historyDiffOptions(history); opts.sourceEnabled {
+				opts.source()
+			}
+		} else if !historyListFocused {
+			a.openCurrentDiffSource()
+		}
 	}
 	if !a.textFocusActive(c) && !a.showTerminalPanel {
 		a.registerDiffShortcuts(c)
@@ -526,7 +535,7 @@ func (a *App) registerShortcuts(c *ui.Context) {
 		} else if c.Shortcut(ui.Cmd, ui.KeyEnter) {
 			a.TriggerCommit(false)
 		}
-		if !terminalFocused && !a.textFocusActive(c) && !a.reviewEditorFocused(c) {
+		if !terminalFocused && !historyListFocused && !historyPreviewFocused && !a.textFocusActive(c) && !a.reviewEditorFocused(c) {
 			if c.Shortcut(0, ui.KeyDown) {
 				a.moveChangeSelection(1, true)
 			}

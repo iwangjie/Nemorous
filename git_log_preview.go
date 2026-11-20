@@ -10,7 +10,7 @@ import (
 	"github.com/iwangjie/nemorous/internal/gitops"
 )
 
-type gitLogPreview struct {
+type revisionPreview struct {
 	detail   gitops.CommitDetail
 	file     gitops.CommitFile
 	cancel   context.CancelFunc
@@ -22,19 +22,32 @@ type gitLogPreview struct {
 }
 
 func (a *App) loadGitLogPreview(detail gitops.CommitDetail, file gitops.CommitFile) {
-	if current := a.gitLogPreview; current != nil && current.detail.Hash == detail.Hash &&
-		current.detail.BaseRevision == detail.BaseRevision && current.detail.RepoPath == detail.RepoPath && current.file.Path == file.Path {
+	a.loadRevisionPreview(&a.gitLogPreview, detail, file)
+}
+
+func (a *App) loadRevisionPreview(slot **revisionPreview, detail gitops.CommitDetail, file gitops.CommitFile) {
+	base := commitDiffBase(detail)
+	if current := *slot; current != nil && current.detail.Hash == detail.Hash &&
+		commitDiffBase(current.detail) == base && current.detail.RepoPath == detail.RepoPath && current.file == file {
 		return
 	}
-	a.clearGitLogPreview()
+	a.clearRevisionPreview(slot)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	view := &gitLogPreview{detail: detail, file: file, cancel: cancel, loading: true}
-	a.gitLogPreview = view
+	view := &revisionPreview{detail: detail, file: file, cancel: cancel, loading: true}
+	*slot = view
+	if previous := a.gitCommitDiff; previous != nil && a.gitDiffAfter == detail.Hash &&
+		a.gitDiffBefore == base && a.gitDiffPath == file.Path && a.gitDiffOldPath == file.OldPath &&
+		a.gitDiffDetail != nil && a.gitDiffDetail.RepoPath == detail.RepoPath {
+		cancel()
+		view.loading = false
+		view.diff = a.newRevisionPreviewDiff(previous.Old, previous.New)
+		return
+	}
 	load := func() {
 		defer cancel()
-		old, next, err := gitops.RevisionFileVersions(ctx, detail.RepoPath, commitDiffBase(detail), detail.Hash, file)
+		old, next, err := gitops.RevisionFileVersions(ctx, detail.RepoPath, base, detail.Hash, file)
 		apply := func() {
-			if a.gitLogPreview != view {
+			if *slot != view {
 				return
 			}
 			view.loading = false
@@ -42,17 +55,11 @@ func (a *App) loadGitLogPreview(detail gitops.CommitDetail, file gitops.CommitFi
 				view.err = err.Error()
 				return
 			}
-			if previous := a.gitCommitDiff; previous != nil && a.gitDiffHash == detail.Hash &&
-				a.gitDiffPath == file.Path && a.gitDiffAfter == detail.Hash && a.gitDiffDetail != nil &&
-				a.gitDiffDetail.RepoPath == detail.RepoPath && a.gitDiffDetail.BaseRevision == detail.BaseRevision {
-				view.diff = a.newGitLogPreviewDiff(previous.Old, previous.New)
-			} else {
-				left, right := editor.NewBuffer(old), editor.NewBuffer(next)
-				lang := editor.LanguageFor(file.Path)
-				left.SetLanguage(lang)
-				right.SetLanguage(lang)
-				view.diff = a.newGitLogPreviewDiff(left, right)
-			}
+			left, right := editor.NewBuffer(old), editor.NewBuffer(next)
+			lang := editor.LanguageFor(file.Path)
+			left.SetLanguage(lang)
+			right.SetLanguage(lang)
+			view.diff = a.newRevisionPreviewDiff(left, right)
 		}
 		if a.win == nil {
 			apply()
@@ -67,7 +74,7 @@ func (a *App) loadGitLogPreview(detail gitops.CommitDetail, file gitops.CommitFi
 	}
 }
 
-func (a *App) newGitLogPreviewDiff(old, next *editor.Buffer) *editor.DiffState {
+func (a *App) newRevisionPreviewDiff(old, next *editor.Buffer) *editor.DiffState {
 	return &editor.DiffState{
 		Old: old, New: next, LineSelection: true, Font: ui.Font{Size: a.cfg.EditorFontSize},
 		Layout: diffLayout(a.cfg.DiffSideBySide), Inline: parseInlineMode(a.cfg.DiffInlineMode),
@@ -77,9 +84,18 @@ func (a *App) newGitLogPreviewDiff(old, next *editor.Buffer) *editor.DiffState {
 }
 
 func (a *App) clearGitLogPreview() {
-	if a.gitLogPreview != nil {
-		a.gitLogPreview.cancel()
-		a.gitLogPreview = nil
+	a.clearRevisionPreview(&a.gitLogPreview)
+}
+
+func (a *App) clearRevisionPreview(slot **revisionPreview) {
+	if view := *slot; view != nil {
+		view.cancel()
+		if view.diff != nil && a.diffIgnoreOwner == view.diff {
+			a.diffIgnoreOwner = nil
+			a.showDiffIgnoreOptions = false
+			a.diffIgnoreFocus = false
+		}
+		*slot = nil
 	}
 }
 
@@ -105,11 +121,18 @@ func (a *App) gitLogPreviewOptions() diffToolbarOptions {
 }
 
 func (a *App) buildGitLogPreview(c *ui.Context, p Palette) {
-	ui.Column(c).Fill().Clip().Background(p.Surface).Children(func() {
-		view := a.gitLogPreview
-		switch {
-		case view == nil:
+	if a.gitLogPreview == nil {
+		ui.Column(c).Fill().Clip().Background(p.Surface).Children(func() {
 			emptyState(c, p, icoColumns, "选择变更文件查看差异", "")
+		})
+		return
+	}
+	a.buildRevisionPreview(c, p, a.gitLogPreview, &a.gitLogPreviewHandle, a.gitLogPreviewOptions(), a.gitLogPreview.file.Path)
+}
+
+func (a *App) buildRevisionPreview(c *ui.Context, p Palette, view *revisionPreview, handle *ui.Handle, opts diffToolbarOptions, title string) {
+	ui.Column(c).Fill().Clip().Background(p.Surface).Children(func() {
+		switch {
 		case view.loading:
 			emptyState(c, p, icoColumns, "正在加载提交差异…", "")
 		case view.err != "":
@@ -118,9 +141,9 @@ func (a *App) buildGitLogPreview(c *ui.Context, p Palette) {
 			view.diff.Layout = diffLayout(a.cfg.DiffSideBySide)
 			view.diff.Inline = parseInlineMode(a.cfg.DiffInlineMode)
 			view.diff.Wrap = a.cfg.EditorSoftWrap
-			a.buildDiffToolbar(c, p, view.diff, a.gitLogPreviewOptions())
-			ui.Text(c, view.file.Path).Padding(3, 8).FontSize(10.5).TextColor(p.TextMuted).SingleLine()
-			editor.DiffView(c, view.diff).Bind(&a.gitLogPreviewHandle).Grow(1).FillWidth()
+			a.buildDiffToolbar(c, p, view.diff, opts)
+			ui.Text(c, title).FillWidth().Padding(3, 8).FontSize(10.5).TextColor(p.TextMuted).SingleLine().Tooltip(title)
+			editor.DiffView(c, view.diff).Bind(handle).Grow(1).FillWidth()
 		}
 	})
 }

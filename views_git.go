@@ -83,8 +83,7 @@ func (a *App) buildGitView(c *ui.Context, p Palette) {
 			if history := a.gitRevisionHistory; history != nil {
 				gitTab("file-history", "历史："+filepath.Base(history.path), icoLog)
 				toolButton(c, p, "close-file-history", icoClose, "关闭文件历史", false, true, func() {
-					history.cancel()
-					a.gitRevisionHistory = nil
+					a.closeRevisionHistory()
 					a.gitSubTab = "history"
 				})
 			}

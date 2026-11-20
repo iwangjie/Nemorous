@@ -207,13 +207,14 @@ func parseRevisionPaths(out string) []CommitFile {
 type FileRevision struct {
 	CommitInfo
 	AuthorUnix int64
+	Parent     string
 	File       CommitFile
 }
 
 // FileHistoryAtRevision follows the file backwards from the selected commit.
 // Its paths are the paths in those commits, including renames.
 func FileHistoryAtRevision(ctx context.Context, repoPath, revision, path string) ([]FileRevision, error) {
-	const format = "%x1e%H%x1f%s%x1f%cr%x1f%at%x1f%an%x00"
+	const format = "%x1e%H%x1f%P%x1f%s%x1f%cr%x1f%at%x1f%an%x00"
 	out, err := RunGitRaw(ctx, repoPath, "log", "--follow", "--find-renames", "-n", "100", "-z", "--name-status", "--pretty=format:"+format, revision, "--", ":(literal)"+path)
 	if err != nil {
 		return nil, err
@@ -221,14 +222,16 @@ func FileHistoryAtRevision(ctx context.Context, repoPath, revision, path string)
 	var entries []FileRevision
 	for _, record := range strings.Split(out, "\x1e") {
 		meta, names, _ := strings.Cut(record, "\x00")
-		parts := strings.SplitN(meta, "\x1f", 5)
-		if len(parts) != 5 {
+		parts := strings.SplitN(meta, "\x1f", 6)
+		if len(parts) != 6 {
 			continue
 		}
+		parent, _, _ := strings.Cut(parts[1], " ")
 		for _, file := range parseRevisionPaths(names) {
 			entries = append(entries, FileRevision{
-				CommitInfo: CommitInfo{Hash: parts[0], Subject: parts[1], RelTime: parts[2], Author: parts[4]},
-				AuthorUnix: parseInt64(parts[3]),
+				CommitInfo: CommitInfo{Hash: parts[0], Subject: parts[2], RelTime: parts[3], Author: parts[5]},
+				AuthorUnix: parseInt64(parts[4]),
+				Parent:     parent,
 				File:       file,
 			})
 			break

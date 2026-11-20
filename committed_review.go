@@ -16,13 +16,18 @@ import (
 )
 
 type revisionHistory struct {
-	entry    gitops.CommitEntry
-	path     string
-	entries  []gitops.FileRevision
-	selected string
-	loading  bool
-	err      string
-	cancel   context.CancelFunc
+	entry         gitops.CommitEntry
+	path          string
+	entries       []gitops.FileRevision
+	selected      int
+	leftPct       float32
+	focusList     bool
+	loading       bool
+	err           string
+	cancel        context.CancelFunc
+	listHandle    ui.Handle
+	preview       *revisionPreview
+	previewHandle ui.Handle
 }
 
 func codeTabTitle(tab *codeTab) string {
@@ -103,11 +108,9 @@ func commitDiffBase(detail gitops.CommitDetail) string {
 }
 
 func (a *App) openHistoryUpToHere(detail gitops.CommitDetail, file gitops.CommitFile) {
-	if a.gitRevisionHistory != nil {
-		a.gitRevisionHistory.cancel()
-	}
+	a.closeRevisionHistory()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	view := &revisionHistory{entry: detail.CommitEntry, path: file.Path, loading: true, cancel: cancel}
+	view := &revisionHistory{entry: detail.CommitEntry, path: file.Path, leftPct: 38, focusList: true, loading: true, cancel: cancel}
 	a.gitRevisionHistory = view
 	a.gitSubTab = "file-history"
 	a.showGitPanel = true
@@ -131,6 +134,37 @@ func (a *App) openHistoryUpToHere(detail gitops.CommitDetail, file gitops.Commit
 	}
 }
 
+func (a *App) closeRevisionHistory() {
+	if view := a.gitRevisionHistory; view != nil {
+		view.cancel()
+		a.clearRevisionPreview(&view.preview)
+		a.gitRevisionHistory = nil
+	}
+}
+
+func (view *revisionHistory) selectedDetail() gitops.CommitDetail {
+	revision := view.entries[view.selected]
+	entry := gitops.CommitEntry{
+		RepoID: view.entry.RepoID, RepoName: view.entry.RepoName, RepoPath: view.entry.RepoPath,
+		Hash: revision.Hash, ShortHash: shortRevision(revision.Hash), Subject: revision.Subject,
+		Author: revision.Author, AuthorUnix: revision.AuthorUnix,
+	}
+	if revision.Parent != "" {
+		entry.Parents = []string{revision.Parent}
+	}
+	return gitops.CommitDetail{CommitEntry: entry, Files: []gitops.CommitFile{revision.File}}
+}
+
+func (a *App) historyDiffOptions(view *revisionHistory) diffToolbarOptions {
+	preview := view.preview
+	return diffToolbarOptions{
+		prefix: "file-history-preview", boundary: &preview.boundary, jumpEdge: &preview.edge, loading: preview.loading,
+		source:         func() { a.openDiffSourceAtCaret(committedFile(preview.detail, preview.file.Path), preview.diff) },
+		sourceEnabled:  preview.diff != nil && preview.file.Status != "D",
+		historyPreview: true,
+	}
+}
+
 func (a *App) buildRevisionHistory(c *ui.Context, p Palette, view *revisionHistory) {
 	if view.loading || view.err != "" || len(view.entries) == 0 {
 		label := "没有历史提交"
@@ -142,53 +176,95 @@ func (a *App) buildRevisionHistory(c *ui.Context, p Palette, view *revisionHisto
 		emptyState(c, p, icoLog, label, "")
 		return
 	}
-	columns := func(kc *ui.Context, author, date, subject, hash string, header bool) {
-		color := p.TextPrimary
-		if header {
-			color = p.TextMuted
+	ui.SplitPercent(c.Key("file-history-split"), &view.leftPct, func() {
+		a.buildRevisionList(c.Key("file-history-list"), p, view)
+	}, func() {
+		if old := view.preview; old == nil || old.detail.Hash != view.entries[view.selected].Hash {
+			detail := view.selectedDetail()
+			a.loadRevisionPreview(&view.preview, detail, detail.Files[0])
+			view.preview.edge = 1
 		}
-		ui.Text(kc, author).Width(110).Shrink(0).SingleLine().FontSize(11).TextColor(color).Tooltip(author)
-		ui.Text(kc, date).Width(106).Shrink(0).SingleLine().FontSize(11).TextColor(color)
-		ui.Text(kc, subject).MinWidth(0).Grow(1).SingleLine().FontSize(11.5).TextColor(color).Tooltip(subject)
-		ui.Text(kc, hash).Width(62).Shrink(0).SingleLine().FontSize(10.5).TextColor(p.TextMuted)
+		detail, file := view.preview.detail, view.preview.file
+		label := detail.ShortHash
+		if len(detail.Parents) > 0 && file.Status != "A" {
+			label = shortRevision(detail.Parents[0]) + " → " + label
+		}
+		a.buildRevisionPreview(c.Key("file-history-preview"), p, view.preview, &view.previewHandle, a.historyDiffOptions(view), label+"  ·  "+file.Path)
+	}).Grow(1).Fill()
+}
+
+func fileHistoryDate(unix int64, now time.Time) string {
+	if unix == 0 {
+		return "—"
 	}
-	ui.Row(c.Key("file-history-columns")).Height(24).FillWidth().Padding(0, 10).Gap(8).AlignItems(ui.Center).
-		Background(p.RailBg).Children(func() {
-		columns(c, "作者", "时间", "提交说明", "哈希", true)
-	})
-	ui.Scroll(c).Grow(1).FillWidth().Children(func() {
-		for _, revision := range view.entries {
+	when := time.Unix(unix, 0).In(now.Location())
+	switch when.Format(time.DateOnly) {
+	case now.Format(time.DateOnly):
+		return when.Format("今天 15:04")
+	case now.AddDate(0, 0, -1).Format(time.DateOnly):
+		return when.Format("昨天 15:04")
+	default:
+		return when.Format("2006-01-02 15:04")
+	}
+}
+
+func (a *App) buildRevisionList(c *ui.Context, p Palette, view *revisionHistory) {
+	list := ui.Scroll(c).Fill().Focusable().Label("文件提交历史").Bind(&view.listHandle)
+	if view.focusList {
+		list.Focus()
+		view.focusList = false
+	}
+	previous := view.selected
+	switch {
+	case list.Shortcut(0, ui.KeyUp):
+		view.selected = max(0, previous-1)
+	case list.Shortcut(0, ui.KeyDown):
+		view.selected = min(len(view.entries)-1, previous+1)
+	case list.Shortcut(ui.Cmd, ui.KeyD):
+		detail := view.selectedDetail()
+		a.TriggerGitFileDiff(detail, detail.Files[0])
+	}
+	now := time.Now()
+	list.Children(func() {
+		for i, revision := range view.entries {
 			kc := c.Key("file-revision-" + revision.Hash)
-			entry := view.entry
-			entry.Hash, entry.ShortHash, entry.Parents = revision.Hash, shortRevision(revision.Hash), nil
-			detail := gitops.CommitDetail{CommitEntry: entry, Files: []gitops.CommitFile{revision.File}}
-			row := ui.Row(kc).Height(26).FillWidth().Padding(0, 10).Gap(8).AlignItems(ui.Center).Focusable().Cursor(ui.CursorPointer).
-				Tooltip(revision.File.Path)
+			row := ui.Row(kc).Height(26).FillWidth().Padding(0, 8).Gap(6).AlignItems(ui.Center).Clip().Cursor(ui.CursorPointer)
 			if row.Clicked() {
-				row.Focus()
-				view.selected = revision.Hash
+				list.Focus()
+				view.selected = i
 			}
-			if row.DoubleClicked() || row.Shortcut(ui.Cmd, ui.KeyD) {
-				view.selected = revision.Hash
+			if row.DoubleClicked() {
+				view.selected = i
+				detail := view.selectedDetail()
 				a.TriggerGitFileDiff(detail, revision.File)
 			}
-			if view.selected == revision.Hash || row.Hovered() {
-				row.Background(p.ActiveRowBg)
+			if view.selected == i {
+				row.Background(p.ActiveRowBg).Selected(true)
+				if previous != i {
+					row.ScrollIntoView()
+				}
+			} else if row.Hovered() {
+				row.Background(p.SurfaceHover)
 			}
 			row.PopoverMenu(func(m *ui.Menu) {
 				if m.Item("查看差异").Chosen() {
-					a.TriggerGitFileDiff(detail, revision.File)
+					view.selected = i
+					a.TriggerGitFileDiff(view.selectedDetail(), revision.File)
 				}
 				if m.Item("打开仓库版本").Chosen() {
-					a.openRepositoryVersion(detail, revision.File)
+					view.selected = i
+					a.openRepositoryVersion(view.selectedDetail(), revision.File)
 				}
 			})
 			row.Children(func() {
-				date := "—"
+				date := fileHistoryDate(revision.AuthorUnix, now)
+				fullDate := date
 				if revision.AuthorUnix != 0 {
-					date = time.Unix(revision.AuthorUnix, 0).Local().Format("2006-01-02 15:04")
+					fullDate = time.Unix(revision.AuthorUnix, 0).In(now.Location()).Format("2006-01-02 15:04")
 				}
-				columns(kc, revision.Author, date, revision.Subject, entry.ShortHash, false)
+				ui.Text(kc, revision.Author).Grow(.28).MaxWidth(110).MinWidth(0).SingleLine().FontSize(11).TextColor(p.TextPrimary).Tooltip(revision.Author)
+				ui.Text(kc, date).Grow(.30).MaxWidth(104).MinWidth(0).SingleLine().FontSize(11).TextColor(p.TextPrimary).Tooltip(fullDate)
+				ui.Text(kc, revision.Subject).Grow(.42).MinWidth(0).SingleLine().FontSize(11.5).TextColor(p.TextPrimary).Tooltip(revision.Subject)
 			})
 		}
 	})

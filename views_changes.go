@@ -1264,16 +1264,17 @@ func (a *App) buildDiffRightPane(c *ui.Context, p Palette) {
 // file arrows move: the changes view edits and walks the working tree, while a
 // commit diff opens the file and walks the commit's changed paths.
 type diffToolbarOptions struct {
-	prefix        string
-	staging       bool
-	source        func()
-	sourceEnabled bool
-	moveFile      func(int) bool
-	canPrevFile   bool
-	canNextFile   bool
-	jumpEdge      *int
-	boundary      *diffNavigationBoundary
-	loading       bool
+	prefix         string
+	staging        bool
+	source         func()
+	sourceEnabled  bool
+	moveFile       func(int) bool
+	canPrevFile    bool
+	canNextFile    bool
+	jumpEdge       *int
+	boundary       *diffNavigationBoundary
+	loading        bool
+	historyPreview bool
 }
 
 type diffNavigationBoundary struct {
@@ -1351,10 +1352,20 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	if pos < 0 {
 		pos = 0
 	}
-	ui.Row(c).Height(30).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
-		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center).Children(func() {
+	bar := ui.Row(c).FillWidth().Padding(0, 10).Gap(2).Background(p.RailBg).
+		BorderWidth(0, 0, 1, 0).BorderColor(p.Border).AlignItems(ui.Center)
+	if opts.historyPreview {
+		bar.Wrap().MinHeight(30).Padding(2, 6)
+	} else {
+		bar.Height(30)
+	}
+	bar.Children(func() {
 		diffToolButton(c, p, opts.prefix+"-prev", icoPush, "上一个差异", false, cur > 0 || opts.canPrevFile, func() { a.stepDiffHunk(state, -1, opts) })
 		diffToolButton(c, p, opts.prefix+"-next", icoPull, "下一个差异", false, cur < total-1 || opts.canNextFile, func() { a.stepDiffHunk(state, 1, opts) })
+		if opts.historyPreview {
+			a.buildFileHistoryDiffControls(c, p, state, opts, total)
+			return
+		}
 		position := fmt.Sprintf("%d/%d", pos, total)
 		if state == a.diffState && a.canChooseCommitHunks() && total > 0 {
 			key := a.selectedChangeFile.Key()
@@ -1380,16 +1391,14 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 		if state.ExpandUnchanged {
 			foldLabel = "折叠未改动"
 		}
-		miniBtn(c.Key(opts.prefix+"-fold"), p, foldLabel, func() {
-			state.ExpandUnchanged = !state.ExpandUnchanged
-			if !state.ExpandUnchanged {
-				state.CollapseAll()
-			}
-		})
+		miniBtn(c.Key(opts.prefix+"-fold"), p, foldLabel, func() { toggleDiffUnchanged(state) })
 		miniBtn(c.Key(opts.prefix+"-find"), p, "查找", func() {
 			state.Run(editor.Find)
 		})
-		a.buildDiffIgnoreMenu(c.Key(opts.prefix+"-ignore"), p, state)
+		a.buildDiffIgnoreMenu(c.Key(opts.prefix+"-ignore"), p, state, false)
+		if opts.moveFile == nil {
+			return
+		}
 		ui.Box(c).Width(1).Height(16).Background(p.Border).MarginX(4)
 		if opts.staging && a.selectedChangeFile != nil && a.diffReadError == "" && total > 0 {
 			if a.diffStagedOnly {
@@ -1422,6 +1431,25 @@ func (a *App) buildDiffToolbar(c *ui.Context, p Palette, state *editor.DiffState
 	}
 }
 
+func (a *App) buildFileHistoryDiffControls(c *ui.Context, p Palette, state *editor.DiffState, opts diffToolbarOptions, total int) {
+	diffToolButton(c, p, opts.prefix+"-source", icoEdit, "跳转到源码 (F4)", false, opts.sourceEnabled, opts.source)
+	a.buildDiffIgnoreMenu(c.Key(opts.prefix+"-ignore"), p, state, true)
+	foldLabel := "展开未改动"
+	if state.ExpandUnchanged {
+		foldLabel = "折叠未改动"
+	}
+	diffToolButton(c, p, opts.prefix+"-fold", icoCollapseUnchanged, foldLabel, !state.ExpandUnchanged, true, func() { toggleDiffUnchanged(state) })
+	ui.Spacer(c)
+	ui.Text(c, fmt.Sprintf("%d 处差异", total)).SingleLine().FontSize(10.5).TextColor(p.TextMuted).Padding(0, 4).Shrink(0)
+}
+
+func toggleDiffUnchanged(state *editor.DiffState) {
+	state.ExpandUnchanged = !state.ExpandUnchanged
+	if !state.ExpandUnchanged {
+		state.CollapseAll()
+	}
+}
+
 func (a *App) toggleDiffIgnoreOptions(state *editor.DiffState) {
 	a.showDiffIgnoreOptions = !a.showDiffIgnoreOptions || a.diffIgnoreOwner != state
 	a.diffIgnoreCursor = int(state.Ignore)
@@ -1429,13 +1457,19 @@ func (a *App) toggleDiffIgnoreOptions(state *editor.DiffState) {
 	a.diffIgnoreOwner = state
 }
 
-func (a *App) buildDiffIgnoreMenu(c *ui.Context, p Palette, state *editor.DiffState) {
+func (a *App) buildDiffIgnoreMenu(c *ui.Context, p Palette, state *editor.DiffState, showChevron bool) {
 	modes := [...]string{"不忽略", "忽略首尾空白", "忽略空白", "忽略空白和空行"}
 	mode := min(int(state.Ignore), len(modes)-1)
 	anchor := ui.ButtonBase(c).Padding(3, 7).Shrink(0).Label("忽略差异").
 		Tooltip("忽略差异 (⌘⇧D)").Cursor(ui.CursorPointer)
+	if showChevron {
+		anchor.AlignItems(ui.Center).Gap(4)
+	}
 	anchor.Children(func() {
 		ui.Text(c, modes[mode]).FontSize(10.5).TextColor(p.TextControl).SingleLine()
+		if showChevron {
+			drawIcon(c, icoChevronDown, 10, p.TextMuted)
+		}
 	})
 	if anchor.Clicked() {
 		a.toggleDiffIgnoreOptions(state)

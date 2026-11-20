@@ -123,19 +123,20 @@ func TestCommittedDiffReviewFromGitLog(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	const path = "renamed 文档.txt"
+	const beforePath, path = "original review.txt", "renamed 文档.txt"
 	old := "original\n" + strings.Repeat("context retained across revisions\n", 6)
 	committed := strings.Replace(old, "original", "committed", 1)
 	local := strings.Replace(committed, "committed", "local", 1)
-	write("a.txt", old)
-	git("add", "a.txt")
+	previousHead := git("rev-parse", "HEAD")
+	write(beforePath, old)
+	git("add", beforePath)
 	git("commit", "-m", "before rename")
 	base := git("rev-parse", "HEAD")
 	write("b.txt", "changed in an intervening commit\n")
 	git("add", "b.txt")
 	git("commit", "-m", "intervening file change")
 	parent := git("rev-parse", "HEAD")
-	git("mv", "a.txt", path)
+	git("mv", beforePath, path)
 	write(path, committed)
 	git("add", path)
 	const historyAuthor = "History Reviewer"
@@ -144,7 +145,7 @@ func TestCommittedDiffReviewFromGitLog(t *testing.T) {
 	head := git("rev-parse", "HEAD")
 	write(path, local)
 	files, err := gitops.CommitFiles(t.Context(), repo.AbsPath, head)
-	if err != nil || len(files) != 1 || files[0].Status != "R" || files[0].OldPath != "a.txt" || files[0].Path != path {
+	if err != nil || len(files) != 1 || files[0].Status != "R" || files[0].OldPath != beforePath || files[0].Path != path {
 		t.Fatalf("unexpected changed file data %+v (%v)", files, err)
 	}
 	newer := gitops.CommitEntry{Hash: head, ShortHash: head[:8], Parents: []string{parent}, RepoID: repo.ID, RepoName: repo.Name, RepoPath: repo.AbsPath, Subject: "rename and update", AuthorUnix: 2}
@@ -227,7 +228,7 @@ func TestCommittedDiffReviewFromGitLog(t *testing.T) {
 	}
 	item("查看截至此处的历史")
 	history := app.gitRevisionHistory
-	if history == nil || app.gitSubTab != "file-history" || len(history.entries) < 2 || history.entries[0].Hash != head || history.entries[1].File.Path != "a.txt" {
+	if history == nil || app.gitSubTab != "file-history" || len(history.entries) < 2 || history.entries[0].Hash != head || history.entries[1].File.Path != beforePath {
 		t.Fatalf("History Up to Here must follow the rename: %+v", history)
 	}
 	when, err := time.Parse(time.RFC3339, historyDate)
@@ -237,13 +238,66 @@ func TestCommittedDiffReviewFromGitLog(t *testing.T) {
 	if revision := history.entries[0]; revision.Author != historyAuthor || revision.AuthorUnix != when.Unix() {
 		t.Fatalf("file history did not retain the Git author and author date: %+v", revision)
 	}
-	narrowHistory := ui.NewTester(func(c *ui.Context) { app.buildRevisionHistory(c, app.palette(), history) }, 375, 160)
-	narrowHistory.Frame()
-	for _, label := range []string{"作者", "时间", historyAuthor, when.Local().Format("2006-01-02 15:04")} {
-		cell, ok := narrowHistory.Find(label)
-		if !ok || cell.W < 90 || cell.X+cell.W > 375 {
-			t.Fatalf("history column %q is clipped at a narrow width: %+v (found %v)", label, cell, ok)
+	preview := func(before, after, oldText, newText string) {
+		t.Helper()
+		pv := history.preview
+		if pv == nil || pv.diff == nil || commitDiffBase(pv.detail) != before || pv.detail.Hash != after ||
+			pv.diff.Old.String() != oldText || pv.diff.New.String() != newText {
+			t.Fatalf("file history did not preview %s → %s: %+v", before, after, pv)
 		}
+	}
+	preview(parent, head, old, committed)
+	standalone := app.gitCommitDiff
+	click("before rename")
+	preview(previousHead, base, "", old)
+	tt.Key(0, ui.KeyUp)
+	preview(parent, head, old, committed)
+	tt.Key(0, ui.KeyDown)
+	preview(previousHead, base, "", old)
+	if app.gitCommitDiff != standalone {
+		t.Fatal("selecting a file revision must update the docked preview in place")
+	}
+	tt.Key(ui.Cmd, ui.KeyD)
+	if diff := app.gitCommitDiff; diff == nil || diff.New.String() != old || diff.Old.String() != "" {
+		t.Fatal("Cmd+D must open the selected revision in the standalone diff")
+	}
+	tt.Key(0, ui.KeyUp)
+	previewTitle := shortRevision(parent) + " → " + shortRevision(head) + "  ·  " + path
+	previewHeader, ok := tt.Find(previewTitle)
+	if !ok {
+		t.Fatal("missing the selected revision preview")
+	}
+	tt.ClickAt(previewHeader.X+previewHeader.W*0.75, previewHeader.Y+previewHeader.H+12)
+	tt.Key(ui.Cmd, ui.KeyF)
+	if find, ok := tt.Find("Find"); !ok || find.Y < previewHeader.Y {
+		t.Fatalf("Cmd+F must open search inside the history preview: %+v (found %v)", find, ok)
+	}
+	tt.Key(0, ui.KeyEscape)
+	narrowHistory := ui.NewTester(func(c *ui.Context) { app.buildRevisionHistory(c, app.palette(), history) }, 375, 240)
+	narrowHistory.Frame()
+	labels := []string{historyAuthor, when.Local().Format("2006-01-02 15:04"), newer.Subject}
+	lastX := float32(0)
+	for _, label := range labels {
+		cell, ok := narrowHistory.Find(label)
+		if !ok || cell.W < 20 || cell.X < lastX || cell.X+cell.W >= 150 || cell.H > 26 {
+			t.Fatalf("history column %q lost its place at a narrow width: %+v (found %v)", label, cell, ok)
+		}
+		lastX = cell.X + cell.W
+	}
+	for _, label := range []string{"上一个差异", "下一个差异", "跳转到源码 (F4)", "展开未改动", "忽略差异", "1 处差异"} {
+		control, ok := narrowHistory.Find(label)
+		if !ok || control.W == 0 || control.X < 140 || control.X+control.W > 375 {
+			t.Fatalf("preview control %q is clipped at a narrow width: %+v (found %v)", label, control, ok)
+		}
+	}
+	if narrowHistory.HasText("查找") {
+		t.Fatal("the history toolbar should leave search to Cmd+F")
+	}
+	if err := narrowHistory.Click("展开未改动"); err != nil || !history.preview.diff.ExpandUnchanged {
+		t.Fatalf("expand icon must show unchanged lines: %v", err)
+	}
+	if err := narrowHistory.Click("折叠未改动"); err != nil || history.preview.diff.ExpandUnchanged {
+		t.Fatalf("collapse icon must fold unchanged lines: %v", err)
 	}
 	click("提交图")
 	click(older.Subject)

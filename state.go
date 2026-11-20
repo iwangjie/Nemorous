@@ -325,7 +325,7 @@ type App struct {
 	gitCenterPct           float32
 	maniContentPct         float32
 	gitDiffOpen            bool
-	gitLogPreview          *gitLogPreview
+	gitLogPreview          *revisionPreview
 	gitLogPreviewHandle    ui.Handle
 	gitLogPreviewTop       float32
 	gitDiffLoading         bool
@@ -1506,10 +1506,7 @@ func (a *App) resetDiffTabs() {
 	a.clearGitLogPreview()
 	a.gitDiffSeq++
 	a.gitRevisionOpenSeq++
-	if a.gitRevisionHistory != nil {
-		a.gitRevisionHistory.cancel()
-		a.gitRevisionHistory = nil
-	}
+	a.closeRevisionHistory()
 	a.gitSelectedPair = nil
 	a.gitFocusDetailFile = false
 	a.codeExtraFile = nil

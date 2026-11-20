@@ -224,7 +224,11 @@ func (a *App) reviewEditorFocused(c *ui.Context) bool {
 func (a *App) registerDiffShortcuts(c *ui.Context) {
 	var diff *editor.DiffState
 	var options func() diffToolbarOptions
-	if a.gitLogPreview != nil && a.gitLogPreviewHandle.FocusWithin(c) {
+	history := a.gitRevisionHistory
+	if history != nil && history.preview != nil && history.previewHandle.FocusWithin(c) {
+		diff = history.preview.diff
+		options = func() diffToolbarOptions { return a.historyDiffOptions(history) }
+	} else if a.gitLogPreview != nil && a.gitLogPreviewHandle.FocusWithin(c) {
 		diff, options = a.gitLogPreview.diff, a.gitLogPreviewOptions
 	} else {
 		switch a.editorTab {
@@ -255,8 +259,12 @@ func (a *App) registerDiffShortcuts(c *ui.Context) {
 	case c.Shortcut(ui.Shift, ui.KeyF7):
 		a.stepDiffHunk(diff, -1, options())
 	case c.Shortcut(ui.Alt, ui.KeyLeft):
-		options().moveFile(-1)
+		if move := options().moveFile; move != nil {
+			move(-1)
+		}
 	case c.Shortcut(ui.Alt, ui.KeyRight):
-		options().moveFile(1)
+		if move := options().moveFile; move != nil {
+			move(1)
+		}
 	}
 }
