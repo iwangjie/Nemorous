@@ -221,7 +221,7 @@ func TestReviewThreeWayAndLocalHistoryControls(t *testing.T) {
 	}
 	index.Buffer.Edit(editor.Edit{Start: 0, End: 6, Text: "index"})
 	tt.Frame()
-	if err := tt.Click("保存暂存版本 (⌘S)"); err != nil {
+	if err := tt.Click(app.shortcutLabel("保存暂存版本", keySave)); err != nil {
 		t.Fatal(err)
 	}
 	waitAppUI(t, app, "staged edit", func() bool { return !view.saving && !view.dirty() })
