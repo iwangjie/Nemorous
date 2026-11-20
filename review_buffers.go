@@ -250,9 +250,9 @@ func (a *App) registerDiffShortcuts(c *ui.Context) {
 		a.toggleDiffIgnoreOptions(diff)
 	case c.Shortcut(ui.Cmd, ui.KeyF):
 		diff.Run(editor.Find)
-	case c.Shortcut(ui.Cmd, ui.KeyG):
+	case ui.Cmd == ui.Super && c.Shortcut(ui.Cmd, ui.KeyG):
 		diff.Run(editor.FindNext)
-	case c.Shortcut(ui.Cmd|ui.Shift, ui.KeyG):
+	case ui.Cmd == ui.Super && c.Shortcut(ui.Cmd|ui.Shift, ui.KeyG):
 		diff.Run(editor.FindPrevious)
 	case c.Shortcut(0, ui.KeyF7):
 		a.stepDiffHunk(diff, 1, options())
