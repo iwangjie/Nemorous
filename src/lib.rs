@@ -3,6 +3,7 @@ pub mod diff_model;
 pub mod git;
 pub mod local_history;
 pub mod paths;
+pub mod search;
 pub mod state;
 pub mod theme;
 pub mod ui;
