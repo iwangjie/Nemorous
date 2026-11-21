@@ -16,7 +16,7 @@ use crate::git::{
     self, ChangedFile, CommitDiffData, CommitEntry, CommitFileEntry, LineEnding, RepoInfo,
     RepoStatus, ReviewChangeData, ReviewVersion, SaveReviewOutcome, StashEntry, WorkspaceFile,
 };
-use crate::local_history::{LocalHistoryStore, SnapshotMeta};
+use crate::local_history::LocalHistoryStore;
 use crate::paths::{
     self, basename, display_path, expand_tilde, nearest_existing_path, parent_dir_display,
     parse_file_location, path_with_line_reference, relative_slash_path,
@@ -233,16 +233,6 @@ pub struct ToastItem {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalHistoryModal {
-    pub repo_id: String,
-    pub rel_path: String,
-    pub abs_path: String,
-    pub entries: Vec<SnapshotMeta>,
-    pub selected_id: Option<String>,
-    pub preview_text: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct FileRevisionHistory {
     pub repo: RepoInfo,
     pub rel_path: String,
@@ -347,7 +337,6 @@ pub struct AppState {
     pub goto_line_input: String,
     pub picker_open: Option<PickerKind>,
     pub picker_query: String,
-    pub local_history_modal: Option<LocalHistoryModal>,
     pub stash_modal_open: bool,
     pub toast: Option<ToastItem>,
     pub next_toast_id: u64,
@@ -428,7 +417,6 @@ impl Default for AppState {
             goto_line_input: String::new(),
             picker_open: None,
             picker_query: String::new(),
-            local_history_modal: None,
             stash_modal_open: false,
             toast: None,
             next_toast_id: 1,
@@ -3409,7 +3397,7 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
 
 /// 统一关闭最顶层弹窗（或查找条），并恢复焦点与原生编辑器焦点。
 pub fn close_active_modal() {
-    if crate::ui::content_search::intercept_close() {
+    if crate::ui::content_search::intercept_close() || crate::history_runtime::intercept_close() {
         return;
     }
     set_text_input_focused(false);
@@ -3419,11 +3407,12 @@ pub fn close_active_modal() {
     let navigation_closed = crate::ui::navigation_picker::close_active();
     let revision_closed = crate::ui::revision_picker::close_active();
     let keymap_closed = crate::ui::keymap_settings::close_active();
+    let history_closed = crate::history_runtime::close_active();
     let editor_tool_closed = crate::ui::editor_tools::close_active();
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed {
+        if editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;
@@ -3436,9 +3425,6 @@ pub fn close_active_modal() {
             closed_modal = true;
         } else if s.picker_open.is_some() {
             s.picker_open = None;
-            closed_modal = true;
-        } else if s.local_history_modal.is_some() {
-            s.local_history_modal = None;
             closed_modal = true;
         } else if s.stash_modal_open {
             s.stash_modal_open = false;
@@ -3869,49 +3855,7 @@ pub fn stage_selected_change_sync(stage: bool) {
 }
 
 pub fn open_local_history_for_active() {
-    let info = app_signal().with_untracked(|s| match s.editor_tab {
-        EditorTabKind::File => s.code_tabs.get(s.active_code_tab_idx).map(|t| {
-            (
-                t.file.repo_id.clone(),
-                t.file.rel_path.clone(),
-                t.file.abs_path.clone(),
-            )
-        }),
-        EditorTabKind::WorkingDiff => s.working_diff.as_ref().map(|w| {
-            (
-                w.file.repo_id.clone(),
-                w.file.path.clone(),
-                w.file.abs_path(),
-            )
-        }),
-        _ => None,
-    });
-    let Some((repo_id, rel_path, abs_path)) = info else {
-        show_toast("info", "请先打开一个文件");
-        return;
-    };
-    let store = LocalHistoryStore::default_store();
-    let entries = store.list(&repo_id, &rel_path).unwrap_or_default();
-    let (selected_id, preview_text) = if let Some(first) = entries.first() {
-        let text = store
-            .read_content(&repo_id, &rel_path, &first.id)
-            .map(|b| String::from_utf8_lossy(&b).to_string())
-            .unwrap_or_default();
-        (Some(first.id.clone()), text)
-    } else {
-        (None, String::new())
-    };
-    app_signal().update(|s| {
-        s.local_history_modal = Some(LocalHistoryModal {
-            repo_id,
-            rel_path,
-            abs_path,
-            entries,
-            selected_id,
-            preview_text,
-        });
-        enter_modal_focus(s);
-    });
+    crate::history_runtime::open_active();
 }
 
 pub fn open_file_revision_history(repo: RepoInfo, rev: String, rel_path: String) {

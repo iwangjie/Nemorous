@@ -609,6 +609,61 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_local_history_restores_old_format_one_hunk_and_full_snapshot() {
+    use sha1::{Digest, Sha1};
+
+    let _guard = lock_env();
+    let fx = Fixture::new("legacy-local-history");
+    let file = fx.repo_dir.join("README.md");
+    let original = "new-a\nmiddle\nunchanged\nnew-z\n";
+    let snapshot = "old-a\nmiddle\nunchanged\nold-z\n";
+    fs::write(&file, original).unwrap();
+
+    let bucket = fx.root.join("localhistory")
+        .join(format!("{:x}", Sha1::digest(b"sample-repo")))
+        .join(format!("{:x}", Sha1::digest(b"README.md")));
+    fs::create_dir_all(&bucket).unwrap();
+    let id = "01700000000000000000";
+    let legacy_content = bucket.join(format!("{id}.txt"));
+    fs::write(&legacy_content, snapshot).unwrap();
+    fs::write(bucket.join(format!("{id}.json")), serde_json::json!({
+        "id": id,
+        "repoId": "sample-repo",
+        "path": "README.md",
+        "at": "2026-11-20T16:00:00.123+08:00",
+        "reason": "旧版快照",
+        "size": snapshot.len()
+    }).to_string()).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "README.md").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.press("id:code-history-btn").unwrap();
+    app.wait_for("旧版快照").unwrap();
+    app.wait_for("id:local-history-restore-hunk").unwrap();
+    app.press("id:local-history-restore-hunk").unwrap();
+    app.wait_for("已在编辑器恢复此变更块").unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), original);
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:local-history-modal", Duration::from_secs(2)).unwrap();
+    app.press("old-a").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("old-a\nmiddle\nunchanged\nnew-z\n"));
+
+    app.press("id:code-history-btn").unwrap();
+    app.wait_for("id:local-history-restore-all").unwrap();
+    app.press("id:local-history-restore-all").unwrap();
+    app.wait_for("覆盖当前文件？").unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), original);
+    app.press("id:local-history-confirm-restore").unwrap();
+    app.wait_for("已恢复本地历史").unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), snapshot);
+    assert_eq!(fs::read_to_string(&legacy_content).unwrap(), snapshot);
+}
+
+#[test]
 fn ui_rebind_shortcuts_rejects_conflicts_and_survives_restart() {
     let _guard = lock_env();
     let fx = Fixture::new("keymap-settings");

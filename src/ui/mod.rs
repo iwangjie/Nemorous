@@ -5,6 +5,7 @@ pub mod content_search;
 pub(crate) mod comparison;
 mod replacement_flow;
 mod key_gestures;
+mod local_history_view;
 pub(crate) mod keymap_settings;
 pub(crate) mod navigation_picker;
 mod split_code_view;
@@ -287,7 +288,6 @@ fn setup_shortcuts() {
                 || s.dirty_close.is_some()
                 || s.goto_line_open
                 || s.picker_open.is_some()
-                || s.local_history_modal.is_some()
                 || s.stash_modal_open
                 || s.diff_find_open
                 || s.code_find_open
@@ -1085,5 +1085,6 @@ pub fn shell() -> impl IntoElement {
         .child(navigation_picker::modal_layer())
         .child(revision_picker::modal_layer())
         .child(keymap_settings::modal_layer())
+        .child(local_history_view::modal_layer())
         .child(modals::modals_layer())
 }

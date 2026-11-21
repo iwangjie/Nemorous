@@ -1,7 +1,6 @@
 use nsh_base::{Editor, editor, input};
 use nsh_core::prelude::*;
 
-use crate::local_history::LocalHistoryStore;
 use crate::paths::basename;
 use crate::state::{
     self, EditorTabKind, FocusZone, NavTarget, PickerKind, accept_disk_version_in_conflict,
@@ -67,9 +66,6 @@ pub fn modals_layer() -> impl IntoElement {
                 s.dirty_close.as_ref().map(|d| d.dirty_titles.clone()),
                 s.goto_line_open,
                 s.picker_open,
-                s.local_history_modal
-                    .as_ref()
-                    .map(|h| (h.rel_path.clone(), h.selected_id.clone())),
                 s.stash_modal_open,
             )
         })
@@ -78,14 +74,13 @@ pub fn modals_layer() -> impl IntoElement {
     dynamic(move || {
         let _gate = modal_gate.get();
         let p = current_palette();
-        let (conflict, dirty_close, goto_open, picker, local_hist, stash_open) =
+        let (conflict, dirty_close, goto_open, picker, stash_open) =
             app_signal().with_untracked(|s| {
                 (
                     s.save_conflict.clone(),
                     s.dirty_close.clone(),
                     s.goto_line_open,
                     s.picker_open,
-                    s.local_history_modal.clone(),
                     s.stash_modal_open,
                 )
             });
@@ -612,108 +607,6 @@ pub fn modals_layer() -> impl IntoElement {
                             ),
                     )
                     .child(scroll().flex_1().child(list_view)),
-            )
-            .into_element();
-        }
-
-        // 5. 本地历史查看弹窗
-        if let Some(lh) = local_hist {
-            let hist_ed_ref = component_ref::<Editor>();
-            let mut list_rows: Vec<AnyElement> = Vec::new();
-            for entry in &lh.entries {
-                let sel = lh.selected_id.as_deref() == Some(entry.id.as_str());
-                let eid = entry.id.clone();
-                let rid = lh.repo_id.clone();
-                let rpath = lh.rel_path.clone();
-                list_rows.push(
-                    view()
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .bg(if sel { p.active_row_bg } else { transparent_black() })
-                        .cursor(Cursor::Pointer)
-                        .hover(move |s| if sel { s } else { s.bg(p.surface_hover) })
-                        .on_press(move || {
-                            let store = LocalHistoryStore::default_store();
-                            let text_val = store
-                                .read_content(&rid, &rpath, &eid)
-                                .map(|b| String::from_utf8_lossy(&b).to_string())
-                                .unwrap_or_default();
-                            app_signal().update(|s| {
-                                if let Some(m) = &mut s.local_history_modal {
-                                    m.selected_id = Some(eid.clone());
-                                    m.preview_text = text_val;
-                                }
-                            });
-                        })
-                        .child(
-                            text(format!("{} · {}", entry.label, &entry.created_at[..19.min(entry.created_at.len())]))
-                                .text_size(px(11.0))
-                                .text_color(p.text_primary)
-                                .number_of_lines(1u32),
-                        )
-                        .into_element(),
-                );
-            }
-
-            return modal_backdrop(
-                view()
-                    .test_id("local-history-modal")
-                    .w(px(740.0))
-                    .h(px(460.0))
-                    .rounded(px(10.0))
-                    .bg(p.surface)
-                    .border_1()
-                    .border_color(p.border_strong)
-                    .flex_col()
-                    .overflow_hidden()
-                    .child(
-                        view()
-                            .px(px(14.0))
-                            .py(px(10.0))
-                            .border_b_1()
-                            .border_color(p.border)
-                            .flex_row()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                text(format!("本地历史 · {} ({} 条)", lh.rel_path, lh.entries.len()))
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.text_primary),
-                            )
-                            .child(
-                                view()
-                                    .cursor(Cursor::Pointer)
-                                    .on_press(state::close_active_modal)
-                                    .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),
-                            ),
-                    )
-                    .child(
-                        view()
-                            .flex_1()
-                            .flex_row()
-                            .overflow_hidden()
-                            .child(
-                                scroll()
-                                    .w(px(230.0))
-                                    .border_r_1()
-                                    .border_color(p.border)
-                                    .child(view().flex_col().children(list_rows)),
-                            )
-                            .child(
-                                editor()
-                                    .component_ref(&hist_ed_ref)
-                                    .flex_1()
-                                    .value(Some(SharedString::from(lh.preview_text.clone())))
-                                    .language(Some(SharedString::from(lh.rel_path.clone())))
-                                    .read_only(true)
-                                    .on_focus(move || {
-                                        state::set_text_input_focused(false);
-                                        state::editor_refs_signal()
-                                            .update(|r| r.modal_active = Some(hist_ed_ref));
-                                    }),
-                            ),
-                    ),
             )
             .into_element();
         }
