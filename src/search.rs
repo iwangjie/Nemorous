@@ -18,6 +18,8 @@ use regex::Regex;
 
 use crate::git::WorkspaceFile;
 
+mod ripgrep;
+
 /// Largest file that is scanned; larger files are skipped.
 pub const MAX_FILE_BYTES: u64 = 2 << 20;
 /// Global hit budget for one search.
@@ -192,6 +194,24 @@ pub fn search_files(
     options: &SearchOptions<'_>,
     cancel: &CancelToken,
 ) -> Result<SearchOutcome, SearchError> {
+    search_with_backend(
+        files,
+        scope_dir,
+        query,
+        options,
+        cancel,
+        Some(Path::new("rg")),
+    )
+}
+
+fn search_with_backend(
+    files: &[WorkspaceFile],
+    scope_dir: Option<&Path>,
+    query: &str,
+    options: &SearchOptions<'_>,
+    cancel: &CancelToken,
+    ripgrep: Option<&Path>,
+) -> Result<SearchOutcome, SearchError> {
     let Some(mut scope) = SearchScope::new(scope_dir, options.mask)? else {
         return Ok(SearchOutcome::empty());
     };
@@ -204,33 +224,78 @@ pub fn search_files(
     if cancel.is_cancelled() {
         return Ok(SearchOutcome::cancelled(hits));
     }
-    for wf in files {
-        if cancel.is_cancelled() {
-            return Ok(SearchOutcome::cancelled(hits));
-        }
-        let Some(path) = scope.resolve(wf, &candidate_path(wf)) else {
-            continue;
-        };
-        if cancel.is_cancelled() {
-            return Ok(SearchOutcome::cancelled(hits));
-        }
-        let Some(text) = read_text(&path) else {
-            continue;
-        };
-        let abs = path.to_string_lossy();
-        let first_hit = hits.len();
-        let result = scan(wf, abs.as_ref(), &text, &re, multiline, cancel, &mut hits);
-        let new_hits = &mut hits[first_hit..];
-        if !new_hits.is_empty() {
-            let digest = crate::local_history::sha256_hex(text.as_bytes());
-            for hit in new_hits {
-                hit.raw_sha256.clone_from(&digest);
+    // For literal queries the rg pattern and in-process match use the same
+    // escaped text. Regex queries use the line and EOF semantics of scan().
+    let mut rg = ripgrep.filter(|_| !options.regex);
+    for chunk in files.chunks(128) {
+        let mut resolved = Vec::new();
+        for wf in chunk {
+            if cancel.is_cancelled() {
+                return Ok(SearchOutcome::cancelled(hits));
+            }
+            if let Some(path) = scope.resolve(wf, &candidate_path(wf)) {
+                resolved.push((wf, path));
             }
         }
-        match result {
-            ScanResult::Finished => {}
-            ScanResult::Cancelled => return Ok(SearchOutcome::cancelled(hits)),
-            ScanResult::Truncated => return Ok(SearchOutcome::completed(hits, true)),
+        let matching = rg.and_then(|binary| {
+            let paths: Vec<_> = resolved
+                .iter()
+                .filter(|(_, path)| {
+                    fs::metadata(path)
+                        .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_FILE_BYTES)
+                })
+                .map(|(_, path)| path.clone())
+                .collect();
+            match ripgrep::matching_files(
+                binary,
+                &paths,
+                re.as_str(),
+                options.case_sensitive,
+                multiline,
+                cancel,
+            ) {
+                Ok(matches) => Some(matches),
+                Err(_) => {
+                    rg = None;
+                    None
+                }
+            }
+        });
+        for (wf, path) in resolved {
+            if cancel.is_cancelled() {
+                return Ok(SearchOutcome::cancelled(hits));
+            }
+            if matching
+                .as_ref()
+                .is_some_and(|matches| !matches.contains(&path))
+            {
+                continue;
+            }
+            let Some(text) = read_text(&path) else {
+                continue;
+            };
+            let first_hit = hits.len();
+            let result = scan(
+                wf,
+                &path.to_string_lossy(),
+                &text,
+                &re,
+                multiline,
+                cancel,
+                &mut hits,
+            );
+            let new_hits = &mut hits[first_hit..];
+            if !new_hits.is_empty() {
+                let digest = crate::local_history::sha256_hex(text.as_bytes());
+                for hit in new_hits {
+                    hit.raw_sha256.clone_from(&digest);
+                }
+            }
+            match result {
+                ScanResult::Finished => {}
+                ScanResult::Cancelled => return Ok(SearchOutcome::cancelled(hits)),
+                ScanResult::Truncated => return Ok(SearchOutcome::completed(hits, true)),
+            }
         }
     }
     Ok(SearchOutcome::completed(hits, false))
@@ -762,6 +827,69 @@ mod tests {
         options: &SearchOptions<'_>,
     ) -> SearchOutcome {
         search_files(files, scope, query, options, &CancelToken::new()).expect("search succeeds")
+    }
+
+    #[test]
+    fn ripgrep_and_fallback_preserve_multiline_crlf_and_unicode_hits() {
+        let dir = TempDir::new("ripgrep-parity");
+        let root = dir.path().canonicalize().unwrap();
+        let matching = write_file(&root, "src/甲.go", "😀 éneedle\r\nNEXT\r\n".as_bytes());
+        let unmatched = write_file(&root, "src/.skip.go", b"needle\nnot the next line\n");
+        write_file(&root, "src/ignore.txt", b"needle\nNEXT\n");
+        write_file(&root, "other.go", b"needle\nNEXT\n");
+        let files = ["src/.skip.go", "src/甲.go", "src/ignore.txt", "other.go"]
+            .into_iter()
+            .map(|path| workspace_file(&root, path))
+            .collect::<Vec<_>>();
+        let options = SearchOptions {
+            mask: Some("*.go"),
+            ..SearchOptions::default()
+        };
+        let scope = root.join("src");
+        let query = "needle\nnext";
+        let cancel = CancelToken::new();
+        let builtin =
+            search_with_backend(&files, Some(&scope), query, &options, &cancel, None).unwrap();
+        assert_eq!(builtin.hits.len(), 1);
+        assert_eq!(builtin.hits[0].column_utf16, 4);
+        assert_eq!(
+            builtin.hits[0].file_range,
+            "😀 é".len() as u64.."😀 éneedle\r\nNEXT".len() as u64,
+        );
+
+        let absent = root.join("no-ripgrep-here");
+        let recovered = search_with_backend(
+            &files,
+            Some(&scope),
+            query,
+            &options,
+            &cancel,
+            Some(&absent),
+        )
+        .unwrap();
+        assert_eq!(recovered, builtin);
+
+        let binary = Path::new("rg");
+        let found = ripgrep::matching_files(
+            binary,
+            &[unmatched, matching.clone()],
+            build_regex(query, &options).unwrap().as_str(),
+            false,
+            true,
+            &cancel,
+        );
+        if found
+            .as_ref()
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::NotFound)
+            && std::env::var_os("NEMOROUS_REQUIRE_RG").is_none()
+        {
+            return;
+        }
+        assert_eq!(found.unwrap(), HashSet::from([matching]));
+        let accelerated =
+            search_with_backend(&files, Some(&scope), query, &options, &cancel, Some(binary))
+                .unwrap();
+        assert_eq!(accelerated, builtin);
     }
 
     #[test]
