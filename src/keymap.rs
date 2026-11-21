@@ -91,7 +91,10 @@ pub(crate) const ACTIONS: &[Definition] = &[
     action("nextOccurrence", "选择下一处相同文字", "编辑", &["ctrl+g"]),
     action("copy", "复制", "编辑", &["mod+c"]),
     action("compareOrDiff", "打开差异或比较文件", "差异", &["mod+d"]),
-    action("settings", "快捷键设置", "窗口", &["mod+,"]),
+    action("settings", "设置", "窗口", &["mod+,"]),
+    action("zoomIn", "放大界面", "窗口", &["mod+="]),
+    action("zoomOut", "缩小界面", "窗口", &["mod+-"]),
+    action("zoomReset", "重置界面缩放", "窗口", &[]),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

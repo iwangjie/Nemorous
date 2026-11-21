@@ -206,6 +206,7 @@ fn commit(push: bool) {
             .filter(|(_, included)| included.is_some())
             .count()
     );
+    let parallelism = app_signal().with_untracked(|s| s.cfg.parallelism());
     let submitted = message.clone();
     state::run_git_action(
         move || {
@@ -228,6 +229,7 @@ fn commit(push: bool) {
                     &pushed,
                     RemoteAction::Push,
                     &std::sync::atomic::AtomicBool::new(false),
+                    parallelism,
                 )
             } else {
                 Vec::new()

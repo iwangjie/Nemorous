@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -175,13 +176,22 @@ impl Stage {
             ".nemorous-format-{}-{now}-{sequence}",
             std::process::id()
         ));
-        fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        let directory = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let directory = {
+            let mut directory = directory;
+            directory.mode(0o700);
+            directory
+        };
+        directory.create(&dir)?;
         let stage = Self {
             input: dir.join(name),
             dir,
         };
-        OpenOptions::new()
-            .mode(0o600)
+        let mut options = OpenOptions::new();
+        #[cfg(unix)]
+        options.mode(0o600);
+        options
             .create_new(true)
             .write(true)
             .open(&stage.input)?

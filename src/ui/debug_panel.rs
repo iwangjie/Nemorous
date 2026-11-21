@@ -362,6 +362,10 @@ fn poll() {
     });
 }
 
+pub(super) fn running() -> bool {
+    global::<Debug>().with_untracked(|state| state.running)
+}
+
 pub(super) fn setup() {
     let running = computed(|| global::<Debug>().with(|view| view.running));
     effect(move || {

@@ -92,12 +92,7 @@ fn submit(name: &str) {
     let (repos, parallelism) = app_signal().with_untracked(|s| {
         (
             s.repos.clone(),
-            s.cfg
-                .extra
-                .get("concurrency")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(8)
-                .clamp(1, 32) as usize,
+            s.cfg.parallelism(),
         )
     });
     match workbench_mani::load(&workspace)
@@ -223,6 +218,10 @@ fn cancel() {
             }
         }
     });
+}
+
+pub(super) fn running() -> bool {
+    global::<Results>().with_untracked(|state| state.active)
 }
 
 pub(super) fn setup() {

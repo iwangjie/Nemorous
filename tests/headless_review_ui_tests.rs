@@ -714,6 +714,7 @@ fn ui_rebind_shortcuts_rejects_conflicts_and_survives_restart() {
     app.press_key("escape").unwrap();
 
     app.press_key("mod+,").unwrap();
+    app.press("id:settings-keymap").unwrap();
     app.wait_for("id:keymap-settings").unwrap();
     app.type_text("id:keymap-filter", "goToLine").unwrap();
     app.press("id:keymap-action-goToLine").unwrap();
@@ -741,6 +742,7 @@ fn ui_rebind_shortcuts_rejects_conflicts_and_survives_restart() {
     app.wait_for("id:goto-line-modal").unwrap();
     app.press_key("escape").unwrap();
     app.press_key("mod+,").unwrap();
+    app.press("id:settings-keymap").unwrap();
     app.type_text("id:keymap-filter", "goToLine").unwrap();
     app.press("id:keymap-action-goToLine").unwrap();
     app.press("id:keymap-reset").unwrap();
@@ -2214,7 +2216,8 @@ fn ui_commit_checked_hunks_preserves_unselected_hunks_and_staged_files() {
     app.press_key("mod+d").unwrap();
     app.wait_for("✓ 纳入提交").unwrap();
     app.press("id:diff-include-hunk").unwrap();
-    assert!(!app.screen().matches("✓ 纳入提交").unwrap(), "first hunk checkbox must be visibly cleared");
+    app.wait_for_gone("✓ 纳入提交", Duration::from_secs(2))
+        .expect("first hunk checkbox must be visibly cleared");
     app.type_text("id:git-commit-message", "Commit second hunk").unwrap();
     assert!(!app.screen().matches("✓ 纳入提交").unwrap(), "typing the message must preserve hunk exclusion");
     app.press("id:git-commit-submit").unwrap();
@@ -2449,4 +2452,41 @@ fn ui_run_creates_edits_and_removes_legacy_compatible_configuration() {
     app.wait_for_gone("id:run-config-modal",Duration::from_secs(2)).unwrap();
     let stored: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
     assert_eq!(stored["run_configs"],serde_json::json!([]));
+}
+
+#[test]
+fn ui_legacy_setting_choices_persist_without_losing_unknown_values() {
+    let _guard = lock_env();
+    let fx = Fixture::new("settings-legacy");
+    fs::write(&fx.config_file,serde_json::to_vec(&serde_json::json!({
+        "workspace_path":fx.repo_dir,
+        "theme":"light",
+        "app_icon":"aero",
+        "zoom":1.0,
+        "auto_update":false,
+        "include_root_repo":true,
+        "diff_ignore_mode":2,
+        "diff_side_by_side":false,
+        "mani_enabled":true,
+        "future_setting":{"kept":true}
+    })).unwrap()).unwrap();
+    let mut app = fx.start_headless(1440.0,900.0);
+    app.press_key("mod+,").unwrap();
+    app.wait_for("id:settings-modal").unwrap();
+    app.press("id:settings-theme").unwrap();
+    app.choose_menu_item("Darcula").unwrap();
+    app.press("id:settings-icon").unwrap();
+    app.choose_menu_item("Prism").unwrap();
+    app.press("id:settings-general").unwrap();
+    app.press("id:mani_enabled").unwrap();
+    app.press("id:settings-close").unwrap();
+    app.wait_for_gone("id:rail-mani-btn",Duration::from_secs(3)).unwrap();
+    let disk: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(disk["theme"],"darcula");
+    assert_eq!(disk["app_icon"],"prism");
+    assert_eq!(disk["auto_update"],false);
+    assert_eq!(disk["diff_ignore_mode"],2);
+    assert_eq!(disk["diff_side_by_side"],false);
+    assert_eq!(disk["mani_enabled"],false);
+    assert_eq!(disk["future_setting"]["kept"],true);
 }

@@ -43,9 +43,10 @@ fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
     }
     let stop = Arc::new(AtomicBool::new(false));
     let worker = stop.clone();
+    let parallelism = app_signal().with_untracked(|s| s.cfg.parallelism());
     let dialog = global::<SyncDialog>();
     if !state::run_git_action(
-        move || git_remotes::run_batch(&repos, action, &worker),
+        move || git_remotes::run_batch(&repos, action, &worker, parallelism),
         move |reports| {
             let problems = reports
                 .iter()

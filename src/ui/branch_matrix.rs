@@ -96,6 +96,7 @@ fn run(operations: Vec<(RepoInfo, Option<BranchTarget>)>) {
                                 std::slice::from_ref(&repo),
                                 crate::git_remotes::RemoteAction::Pull,
                                 &std::sync::atomic::AtomicBool::new(false),
+                                1,
                             );
                             match reports.first().filter(|report| {
                                 report.status == crate::git_remotes::RemoteStatus::Failed

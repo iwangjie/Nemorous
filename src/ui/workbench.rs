@@ -108,6 +108,10 @@ pub(super) fn is_running() -> bool {
     global::<Output>().with(|output| output.active)
 }
 
+pub(super) fn has_active_jobs() -> bool {
+    is_running() || super::debug_panel::running() || super::mani_panel::running()
+}
+
 pub(super) fn launch(label: String, mut command: Command) {
     if is_running() {
         state::show_toast("warn", "已有运行任务");

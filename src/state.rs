@@ -707,10 +707,11 @@ fn handle_watch_hint(hint: WatchHint) {
 
 /// 同步刷新工作区（主要用于 Headless 测试快速准备或同步调用）。
 pub fn refresh_workspace_sync(only_repos: Option<HashSet<String>>) {
-    let (ws, hidden, generation, existing_repos) = app_signal().with_untracked(|s| {
+    let (ws, hidden, include_root, generation, existing_repos) = app_signal().with_untracked(|s| {
         (
             s.cfg.workspace_path.clone(),
             s.cfg.hidden_repos.clone(),
+            s.cfg.extra_bool("include_root_repo",true),
             s.refresh_gen + 1,
             s.repos.clone(),
         )
@@ -723,7 +724,7 @@ pub fn refresh_workspace_sync(only_repos: Option<HashSet<String>>) {
         s.is_refreshing = true;
     });
 
-    let result = compute_workspace_snapshot(ws, hidden, only_repos, existing_repos);
+    let result = compute_workspace_snapshot(ws, hidden, include_root, only_repos, existing_repos);
     apply_workspace_snapshot(generation, result);
 }
 
@@ -740,6 +741,7 @@ struct RefreshSnapshot {
 fn compute_workspace_snapshot(
     ws: String,
     hidden: Vec<String>,
+    include_root: bool,
     only_repos: Option<HashSet<String>>,
     existing_repos: Vec<RepoInfo>,
 ) -> RefreshSnapshot {
@@ -747,7 +749,9 @@ fn compute_workspace_snapshot(
     let repos = if only_repos.is_some() && !existing_repos.is_empty() {
         existing_repos
     } else {
-        git::discover_workspace_repos(&ws, &hidden)
+        let mut repos = git::discover_workspace_repos(&ws, &hidden);
+        if !include_root { repos.retain(|repo| !repo.is_root); }
+        repos
     };
 
     let target_repos: Vec<&RepoInfo> = match &only_repos {
@@ -784,10 +788,11 @@ fn compute_workspace_snapshot(
 
 /// 异步刷新工作区（后台线程跑 git，代次防过期覆盖，绝不覆盖脏缓冲）。
 pub fn refresh_workspace_async(only_repos: Option<HashSet<String>>) {
-    let (ws, hidden, generation, existing_repos, busy) = app_signal().with_untracked(|s| {
+    let (ws, hidden, include_root, generation, existing_repos, busy) = app_signal().with_untracked(|s| {
         (
             s.cfg.workspace_path.clone(),
             s.cfg.hidden_repos.clone(),
+            s.cfg.extra_bool("include_root_repo",true),
             s.refresh_gen + 1,
             s.repos.clone(),
             s.command_busy,
@@ -813,7 +818,7 @@ pub fn refresh_workspace_async(only_repos: Option<HashSet<String>>) {
 
     spawn(async move {
         let res = blocking(move || {
-            compute_workspace_snapshot(ws, hidden, only_repos, existing_repos)
+            compute_workspace_snapshot(ws, hidden, include_root, only_repos, existing_repos)
         })
         .await;
         if let Ok(snapshot) = res {
@@ -3477,6 +3482,7 @@ pub fn close_active_modal() {
     let git_prompt_closed = crate::ui::git_prompt::close_active();
     let run_config_closed = crate::ui::run_panel::close_active();
     let github_closed = crate::ui::github_panel::close_active();
+    let settings_closed = crate::ui::settings::close_active();
     let branches_closed = crate::ui::branch_matrix::close_active();
     let sync_closed = crate::ui::sync_dialog::close_active();
     let index_review_closed = crate::ui::index_review::close_active();
@@ -3488,7 +3494,7 @@ pub fn close_active_modal() {
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if github_closed || run_config_closed || credentials_closed || git_advanced_closed || rebase_plan_closed || merge_menu_closed || conflict_workbench_closed || index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
+        if settings_closed || github_closed || run_config_closed || credentials_closed || git_advanced_closed || rebase_plan_closed || merge_menu_closed || conflict_workbench_closed || index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;

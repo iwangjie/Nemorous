@@ -9,6 +9,8 @@ mod debug_panel;
 pub(crate) mod github_panel;
 mod mani_panel;
 mod language_tools;
+pub(crate) mod settings;
+mod update_view;
 pub(crate) mod run_panel;
 mod terminal_panel;
 pub(crate) mod workbench;
@@ -141,7 +143,9 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
             "Nemorous",
             [
                 MenuItem::role(MenuRole::About),
-                menu_binding(MenuItem::new("快捷键设置…"), keymap, "settings")
+                menu_binding(MenuItem::new("设置…"), keymap, "settings")
+                    .on_select(guard_app_command(settings::open)).disabled(modal_open),
+                MenuItem::new("快捷键设置…")
                     .on_select(guard_app_command(keymap_settings::open)).disabled(modal_open),
                 MenuItem::separator(),
                 MenuItem::role(MenuRole::Hide),
@@ -394,7 +398,10 @@ fn setup_shortcuts() {
         bind_action(&keys, "save", always, |_| {
             save_active_document();
         });
-        bind_action(&keys, "settings", always, |_| keymap_settings::open());
+        bind_action(&keys, "settings", always, |_| settings::open());
+        bind_action(&keys, "zoomIn", always, |_| settings::zoom(0.1));
+        bind_action(&keys, "zoomOut", always, |_| settings::zoom(-0.1));
+        bind_action(&keys, "zoomReset", always, |_| settings::zoom(0.0));
         if !text_input_focused {
             bind_action(&keys, "branchMatrix", always, |_| branch_matrix::open());
         }
@@ -864,6 +871,7 @@ fn left_rail() -> impl IntoElement {
             )
         });
 
+        let captions = app_signal().with(|s| s.cfg.extra_bool("nav_show_labels",false));
         let rail_btn = |tid: &'static str,
                         label: &'static str,
                         svg_src: &'static str,
@@ -871,8 +879,9 @@ fn left_rail() -> impl IntoElement {
                         on_click: fn()| {
             view()
                 .test_id(tid)
-                .w(px(34.0))
-                .h(px(34.0))
+                .w(px(if captions { 58.0 } else { 34.0 }))
+                .h(px(if captions { 42.0 } else { 34.0 }))
+                .flex_col()
                 .rounded(px(7.0))
                 .bg(if active { p.accent_soft } else { transparent_black() })
                 .items_center()
@@ -886,6 +895,8 @@ fn left_rail() -> impl IntoElement {
                     16.0,
                     if active { p.accent_soft_text } else { p.text_control },
                 ))
+                .child(captions.then(|| text(label.split(" (").next().unwrap_or(label))
+                    .text_color(p.text_muted).text_size(px(8.5)).number_of_lines(1u32)))
         };
 
         let theme_icon = match theme_name.as_str() {
@@ -896,7 +907,7 @@ fn left_rail() -> impl IntoElement {
 
         view()
             .test_id("left-rail")
-            .w(px(46.0))
+            .w(px(if captions { 68.0 } else { 46.0 }))
             .flex_none()
             .flex_col()
             .items_center()
@@ -968,6 +979,7 @@ fn left_rail() -> impl IntoElement {
                 )
             }))
             .child(view().flex_1())
+            .child(rail_btn("rail-settings-btn","设置",ICO_SETTINGS,false,settings::open))
             .child(rail_btn(
                 "rail-theme-btn",
                 "切换主题",
@@ -1141,13 +1153,22 @@ pub fn shell() -> impl IntoElement {
     debug_panel::setup();
     mani_panel::setup();
     language_tools::setup();
+    update_view::setup();
+    #[cfg(target_os="macos")]
+    settings::setup_icon();
+    let zoom = computed(|| app_signal().with(|state| state.cfg.zoom()));
+    use nsh_core::geometry::relative;
 
-    view()
+    let content = view()
         .test_id("nemorous-root")
+        .w(move || relative(1.0 / zoom.get()))
+        .h(move || relative(1.0 / zoom.get()))
+        .flex_none()
+        .scale(move || zoom.get())
+        .transform_origin(nsh_core::TransformOrigin { x: relative(0.0), y: relative(0.0), z: px(0.0) })
         .on_key_down(key_gestures::key_down)
         .on_key_up(key_gestures::key_up)
         .relative()
-        .flex_1()
         .flex_col()
         .overflow_hidden()
         .bg(move || current_palette().app_bg)
@@ -1234,5 +1255,7 @@ pub fn shell() -> impl IntoElement {
         .child(git_prompt::layer())
         .child(run_panel::layer())
         .child(github_panel::layer())
-        .child(modals::modals_layer())
+        .child(settings::layer())
+        .child(modals::modals_layer());
+    view().flex_1().w_full().h_full().overflow_hidden().child(content)
 }

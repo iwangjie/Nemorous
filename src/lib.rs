@@ -41,6 +41,8 @@ pub mod state;
 pub mod theme;
 pub mod ui;
 pub mod watcher;
+mod update_manifest;
+mod update_runtime;
 mod workbench_github;
 mod workbench_lsp;
 mod workbench_mani;

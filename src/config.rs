@@ -126,6 +126,36 @@ impl Default for Config {
 }
 
 impl Config {
+    pub(crate) fn extra_bool(&self, key: &str, default: bool) -> bool {
+        self.extra.get(key).and_then(serde_json::Value::as_bool).unwrap_or(default)
+    }
+
+    pub(crate) fn extra_str<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.extra.get(key).and_then(serde_json::Value::as_str).unwrap_or(default)
+    }
+
+    pub(crate) fn parallelism(&self) -> usize {
+        self.extra.get("concurrency").and_then(serde_json::Value::as_u64).unwrap_or(8).clamp(1,32) as usize
+    }
+
+    pub(crate) fn zoom(&self) -> f32 {
+        self.extra.get("zoom").and_then(serde_json::Value::as_f64).unwrap_or(1.0).clamp(0.75,2.0) as f32
+    }
+
+    pub(crate) fn protected_branch(&self, name: &str) -> bool {
+        let name = name.trim().strip_prefix("origin/").unwrap_or(name.trim()).to_ascii_lowercase();
+        if matches!(name.as_str(),"main"|"master"|"trunk"|"release"|"develop"|"development")
+            || name.starts_with("release/") || name.starts_with("release-") {
+            return true;
+        }
+        if let Some(branches) = self.extra.get("protected_branches").and_then(serde_json::Value::as_array) {
+            branches.iter().filter_map(serde_json::Value::as_str)
+                .any(|branch| branch.trim().eq_ignore_ascii_case(&name))
+        } else {
+            matches!(name.as_str(),"test"|"dev"|"prod"|"production")
+        }
+    }
+
     pub fn normalized(mut self) -> Self {
         if self.theme.is_empty() {
             self.theme = "light".to_string();
@@ -152,11 +182,11 @@ impl Config {
     }
 
     /// 将旧版 Go 字段（`diff_side_by_side`、`diff_ignore_mode`）同步到当前字段。
-    pub fn sync_from_legacy_extra(&mut self) {
-        if let Some(side_by_side) = self.extra.get("diff_side_by_side").and_then(|v| v.as_bool()) {
+    fn sync_from_legacy_extra(&mut self, modern_column: bool, modern_whitespace: bool) {
+        if !modern_column && let Some(side_by_side) = self.extra.get("diff_side_by_side").and_then(|v| v.as_bool()) {
             self.diff_single_column = !side_by_side;
         }
-        if let Some(mode) = self.extra.get("diff_ignore_mode").and_then(|v| v.as_u64()) {
+        if !modern_whitespace && let Some(mode) = self.extra.get("diff_ignore_mode").and_then(|v| v.as_u64()).filter(|m| *m <= 3) {
             self.diff_whitespace_mode = match mode {
                 1 => "trim".to_string(),
                 2 => "all".to_string(),
@@ -298,6 +328,14 @@ pub fn config_path() -> PathBuf {
             return PathBuf::from(trimmed);
         }
     }
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("APPDATA").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path).join("nemorous").join("config.json");
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME").filter(|path| Path::new(path).is_absolute()) {
+        return PathBuf::from(path).join("nemorous").join("config.json");
+    }
     if let Ok(home) = std::env::var("HOME") {
         if !home.trim().is_empty() {
             #[cfg(target_os = "macos")]
@@ -341,9 +379,13 @@ pub fn load_from(path: &Path) -> Result<Config> {
     }
     let data = fs::read_to_string(path)
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
-    let mut cfg: Config = serde_json::from_str(&data)
+    let raw: serde_json::Value = serde_json::from_str(&data)
         .with_context(|| format!("解析配置文件失败: {}", path.display()))?;
-    cfg.sync_from_legacy_extra();
+    let modern_column = raw.get("diff_single_column").is_some();
+    let modern_whitespace = raw.get("diff_whitespace_mode").is_some();
+    let mut cfg: Config = serde_json::from_value(raw)
+        .with_context(|| format!("解析配置字段失败: {}", path.display()))?;
+    cfg.sync_from_legacy_extra(modern_column, modern_whitespace);
     if let Ok(ws) = std::env::var("NEMOROUS_WORKSPACE") {
         let trimmed = ws.trim();
         if !trimmed.is_empty() {

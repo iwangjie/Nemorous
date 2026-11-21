@@ -5,6 +5,11 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="${1:-$ROOT_DIR/build/out}"
 BIN_PATH="${2:-$ROOT_DIR/build/rust-target/release/nemorous}"
 APP_DIR="$OUT_DIR/Nemorous.app"
+VERSION="$(awk -F '"' '/^version = / {print $2; exit}' "$ROOT_DIR/Cargo.toml")"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "error: invalid bundle version in Cargo.toml" >&2
+  exit 1
+fi
 
 if [[ ! -x "$BIN_PATH" ]]; then
   echo "error: release binary not found or not executable: $BIN_PATH" >&2
@@ -17,11 +22,11 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources/nsh"
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/Nemorous"
 chmod +x "$APP_DIR/Contents/MacOS/Nemorous"
 
-cat > "$APP_DIR/Contents/Resources/nsh/app.json" <<'JSON'
+cat > "$APP_DIR/Contents/Resources/nsh/app.json" <<JSON
 {
   "name": "Nemorous",
-  "id": "com.nemorous.app",
-  "version": "0.10.21",
+  "id": "dev.nemorous.app",
+  "version": "$VERSION",
   "appearance": "system",
   "window": {
     "title": "Nemorous",
@@ -83,7 +88,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key>
   <string>Nemorous</string>
   <key>CFBundleIdentifier</key>
-  <string>com.nemorous.app</string>
+  <string>dev.nemorous.app</string>
   <key>CFBundleName</key>
   <string>Nemorous</string>
   <key>CFBundleDisplayName</key>
@@ -91,7 +96,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.10.21</string>
+  <string>$VERSION</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>CFBundleSupportedPlatforms</key>

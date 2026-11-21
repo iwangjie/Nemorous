@@ -202,7 +202,10 @@ mod macos {
     }
 
     fn send_click(window: &NSWindow, target: &NSView, clicks: isize) {
-        let pt = center_in_window(target);
+        send_click_at(window,center_in_window(target),clicks);
+    }
+
+    fn send_click_at(window: &NSWindow, pt: NSPoint, clicks: isize) {
         for c in 1..=clicks {
             let ts = NSProcessInfo::processInfo().systemUptime();
             let down = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
@@ -679,6 +682,37 @@ mod macos {
         println!("NATIVE_BATCH5_TERMINAL_RUN PASS");
     }
 
+    fn batch6_settings(app: &NSApplication, window: &NSWindow, root: &NSView, repo: &Path, evidence: &Path) {
+        let click = |id: &str| {
+            wait_until(id, Duration::from_secs(6), || view_with_id(root,id).is_some());
+            send_click(window,&view_with_id(root,id).unwrap(),1);
+        };
+        send_key(app,window,",",",",43,NSEventModifierFlags::Command);
+        wait_until("Settings shortcut opened appearance",Duration::from_secs(6),|| view_with_id(root,"settings-modal").is_some());
+        click("zoom-increase");
+        wait_until("110 percent zoom applied",Duration::from_secs(6),|| a11y_contains(root,"110%"));
+        let reset = view_with_id(root,"zoom-reset").unwrap();
+        let logical = center_in_window(&reset);
+        let top_left = root.convertPoint_toView(
+            NSPoint::new(0.0, if root.isFlipped() { 0.0 } else { root.bounds().size.height }),
+            None
+        );
+        let visible = NSPoint::new(top_left.x + (logical.x-top_left.x)*1.1,top_left.y + (logical.y-top_left.y)*1.1);
+        send_click_at(window,visible,1);
+        wait_until("zoom reset",Duration::from_secs(6),|| a11y_contains(root,"100%"));
+        click("settings-updates");
+        wait_until("native update settings rendered",Duration::from_secs(6),|| view_with_id(root,"update-check").is_some());
+        save_window_png(window,&evidence.join("native-settings-update.png"));
+        click("settings-appearance");
+        save_window_png(window,&evidence.join("native-settings-appearance.png"));
+        click("settings-keymap");
+        wait_until("opened keyboard mapping from settings",Duration::from_secs(6),|| view_with_id(root,"keymap-settings").is_some());
+        send_key(app,window,"\u{1b}","\u{1b}",53,NSEventModifierFlags::empty());
+        println!("BATCH6_NATIVE_FIXTURE {}",repo.display());
+        println!("BATCH6_NATIVE_HEAD {}",git_run(repo,&["rev-parse","HEAD"]));
+        println!("NATIVE_BATCH6_SETTINGS PASS");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -693,7 +727,10 @@ mod macos {
         let batch3 = std::env::var_os("NEMOROUS_NATIVE_BATCH3").is_some();
         let batch4 = std::env::var_os("NEMOROUS_NATIVE_BATCH4").is_some();
         let batch5 = std::env::var_os("NEMOROUS_NATIVE_BATCH5").is_some();
-        let work_dir = if batch5 {
+        let batch6 = std::env::var_os("NEMOROUS_NATIVE_BATCH6").is_some();
+        let work_dir = if batch6 {
+            root_dir.join(format!("build/tmp-ab/native-batch6-{}", std::process::id()))
+        } else if batch5 {
             root_dir.join(format!("build/tmp-ab/native-batch5-{}", std::process::id()))
         } else if batch4 {
             root_dir.join(format!("build/tmp-ab/native-batch4-{}", std::process::id()))
@@ -743,7 +780,7 @@ mod macos {
         }
 
         let cfg_path = work_dir.join("config-new.json");
-        if batch5 {
+        if batch5 || batch6 {
             copy_dir_all(&repo_copy, &work_dir.join("initial-repo"));
         }
         let mut cfg_json = serde_json::json!({
@@ -752,6 +789,12 @@ mod macos {
             "change_diff_preview": false,
             "editor_font_size": 14.0
         });
+        if batch6 {
+            cfg_json["auto_update"] = false.into();
+            cfg_json["app_icon"] = "aero".into();
+            cfg_json["zoom"] = 1.0.into();
+            cfg_json["diff_side_by_side"] = true.into();
+        }
         if batch5 {
             cfg_json["run_configs"] = serde_json::json!([{
                 "id": "native-run", "name": "Native Run fixture", "kind": "run", "command": "/bin/sh",
@@ -817,6 +860,13 @@ mod macos {
         }
 
         let root = surface.view();
+        if batch6 {
+            let evidence = root_dir.join("build/migration-evidence/batch-6");
+            batch6_settings(&app,&window,&root,&repo_copy,&evidence);
+            window.close();
+            pump(150);
+            return;
+        }
         if batch5 {
             let evidence = root_dir.join("build/migration-evidence/batch-5");
             batch5_workbench(&app, &window, &root, &repo_copy, &evidence);

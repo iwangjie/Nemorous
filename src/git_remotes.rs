@@ -33,7 +33,6 @@ pub(crate) struct Report {
     pub detail: String,
 }
 
-const WORKERS: usize = 3;
 const DEADLINE: Duration = Duration::from_secs(120);
 static STASH_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -41,11 +40,12 @@ pub(crate) fn run_batch(
     repos: &[RepoInfo],
     action: RemoteAction,
     cancel: &AtomicBool,
+    parallelism: usize,
 ) -> Vec<Report> {
     let next = AtomicUsize::new(0);
     let reports = Mutex::new(Vec::with_capacity(repos.len()));
     std::thread::scope(|scope| {
-        for _ in 0..WORKERS.min(repos.len()) {
+        for _ in 0..parallelism.clamp(1,32).min(repos.len()) {
             scope.spawn(|| {
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
@@ -447,7 +447,7 @@ mod tests {
 
         let repo = f.repo(&consumer);
         let cancel = AtomicBool::new(false);
-        let result = run_batch(std::slice::from_ref(&repo), RemoteAction::Pull, &cancel);
+        let result = run_batch(std::slice::from_ref(&repo), RemoteAction::Pull, &cancel, 3);
         assert_eq!(result[0].status, RemoteStatus::Done, "{result:?}");
         assert_eq!(
             f.git(&consumer, &["rev-parse", "HEAD"]),
@@ -465,17 +465,17 @@ mod tests {
         assert!(f.git(&consumer, &["stash", "list"]).is_empty());
         assert!(!f.git(&consumer, &["branch", "-r"]).contains("temporary"));
 
-        let result = run_batch(std::slice::from_ref(&repo), RemoteAction::Push, &cancel);
+        let result = run_batch(std::slice::from_ref(&repo), RemoteAction::Push, &cancel, 3);
         assert_eq!(result[0].status, RemoteStatus::Skipped, "{result:?}");
         f.git(&consumer, &["commit", "-m", "local staged"]);
-        let result = run_batch(std::slice::from_ref(&repo), RemoteAction::Push, &cancel);
+        let result = run_batch(std::slice::from_ref(&repo), RemoteAction::Push, &cancel, 3);
         assert_eq!(result[0].status, RemoteStatus::Done, "{result:?}");
         assert_eq!(
             f.git(&bare, &["rev-parse", "refs/heads/main"]),
             f.git(&consumer, &["rev-parse", "HEAD"])
         );
         cancel.store(true, Ordering::Release);
-        let result = run_batch(&[repo], RemoteAction::Fetch, &cancel);
+        let result = run_batch(&[repo], RemoteAction::Fetch, &cancel, 3);
         assert_eq!(result[0].status, RemoteStatus::Cancelled);
     }
 
@@ -499,7 +499,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let started = Instant::now();
         std::thread::scope(|scope| {
-            let worker = scope.spawn(|| run_batch(&[repo], RemoteAction::Fetch, &cancel));
+            let worker = scope.spawn(|| run_batch(&[repo], RemoteAction::Fetch, &cancel, 3));
             while !f.0.join("transport-started").exists()
                 && started.elapsed() < Duration::from_secs(4)
             {

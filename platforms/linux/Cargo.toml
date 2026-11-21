@@ -1,0 +1,14 @@
+[package]
+name = "nemorous-linux"
+version = "0.10.21"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "nemorous"
+path = "main.rs"
+
+[dependencies]
+nemorous = { path = "../.." }
+env_logger = "0.11"
+nsh-platform-linux = { path = "../../build/nsh-v0.6.1/crates/nsh-platform-linux", default-features = false, features = ["editor", "highlight", "svg"] }

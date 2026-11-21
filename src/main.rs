@@ -3,6 +3,7 @@
 #[cfg(target_os = "macos")]
 use nsh_platform_macos as platform;
 
+#[cfg(target_os = "macos")]
 fn initial_window_size() -> (i32, i32) {
     if let Ok(raw) = std::env::var("NEMOROUS_WINDOW_SIZE") {
         if let Some((w, h)) = raw.trim().split_once('x') {
@@ -35,4 +36,11 @@ fn main() -> impl std::process::Termination {
             ..Default::default()
         },
     )
+}
+
+
+#[cfg(not(target_os = "macos"))]
+fn main() -> std::process::ExitCode {
+    eprintln!("Build the native entry point from its manifest under platforms/.");
+    std::process::ExitCode::FAILURE
 }

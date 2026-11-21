@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -900,6 +903,54 @@ fn parse_branch_header(header: &str, status: &mut RepoStatus) {
     }
 }
 
+#[cfg(unix)]
+fn review_mode(meta: &fs::Metadata) -> u32 {
+    meta.permissions().mode()
+}
+
+#[cfg(windows)]
+fn review_mode(meta: &fs::Metadata) -> u32 {
+    if meta.permissions().readonly() {
+        0o444
+    } else {
+        0o666
+    }
+}
+
+#[cfg(unix)]
+fn review_inode(meta: &fs::Metadata) -> u64 {
+    meta.ino()
+}
+
+#[cfg(windows)]
+fn review_inode(meta: &fs::Metadata) -> u64 {
+    // Portable metadata exposes the creation timestamp. Saving also checks
+    // the actual file ID from the open handle at both checkpoints.
+    meta.creation_time()
+}
+
+#[cfg(unix)]
+fn review_file_identity(file: &fs::File) -> std::io::Result<(u64, u64)> {
+    let meta = file.metadata()?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+#[cfg(windows)]
+fn review_file_identity(file: &fs::File) -> std::io::Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // The File owns the live handle and info is a valid writable out parameter.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok((u64::from(info.dwVolumeSerialNumber), index))
+}
+
 pub(crate) fn metadata_to_version(meta: &fs::Metadata, bytes: &[u8]) -> ReviewVersion {
     let mtime_nanos = meta
         .modified()
@@ -912,8 +963,8 @@ pub(crate) fn metadata_to_version(meta: &fs::Metadata, bytes: &[u8]) -> ReviewVe
         sha256: sha256_hex(bytes),
         size: meta.len(),
         mtime_nanos,
-        ino: meta.ino(),
-        mode: meta.permissions().mode(),
+        ino: review_inode(meta),
+        mode: review_mode(meta),
     }
 }
 
@@ -1005,8 +1056,8 @@ pub fn read_review_worktree(abs_path: &Path) -> WorktreeRead {
             version: ReviewVersion {
                 exists: true,
                 size: meta.len(),
-                ino: meta.ino(),
-                mode: meta.permissions().mode(),
+                ino: review_inode(&meta),
+                mode: review_mode(&meta),
                 ..Default::default()
             },
             editable: false,
@@ -1044,7 +1095,7 @@ pub fn read_review_worktree(abs_path: &Path) -> WorktreeRead {
         };
     }
 
-    let mode = meta.permissions().mode();
+    let mode = review_mode(&meta);
     let writable = (mode & 0o222) != 0;
     let line_ending = LineEnding::detect(&bytes);
     let text = LineEnding::normalize_to_lf(std::str::from_utf8(&bytes).unwrap_or(""));
@@ -1256,8 +1307,6 @@ pub fn save_review_text_in_repo(
     new_lf_text: &str,
     history: Option<&LocalHistoryStore>,
 ) -> SaveReviewOutcome {
-    use std::os::unix::fs::MetadataExt;
-
     if let Err(err) = validate_path_within_repo(repo_root, rel_path, abs_path) {
         return SaveReviewOutcome::Rejected {
             reason: err.to_string(),
@@ -1275,7 +1324,8 @@ pub fn save_review_text_in_repo(
         };
     }
 
-    let check_target = || -> Result<(fs::Metadata, Vec<u8>, ReviewVersion), SaveReviewOutcome> {
+    type CheckedFile = (fs::Permissions, (u64, u64), Vec<u8>, ReviewVersion);
+    let check_target = || -> Result<CheckedFile, SaveReviewOutcome> {
         let meta = match fs::symlink_metadata(abs_path) {
             Ok(m) => m,
             Err(_) => {
@@ -1291,21 +1341,34 @@ pub fn save_review_text_in_repo(
                 reason: "目标不是常规文件，已拒绝保存".to_string(),
             });
         }
-        let mode = meta.permissions().mode();
+        let mode = review_mode(&meta);
         if (mode & 0o222) == 0 {
             return Err(SaveReviewOutcome::Rejected {
                 reason: "磁盘文件为只读，无法保存".to_string(),
             });
         }
-        let bytes = match fs::read(abs_path) {
-            Ok(b) => b,
-            Err(err) => {
-                return Err(SaveReviewOutcome::Rejected {
-                    reason: format!("读取当前磁盘文件失败: {err}"),
-                });
-            }
-        };
-        let ver = metadata_to_version(&meta, &bytes);
+        let (opened, identity, bytes) = (|| -> Result<_> {
+            let file = fs::File::open(abs_path)?;
+            let opened = file.metadata()?;
+            anyhow::ensure!(
+                opened.is_file()
+                    && opened.len() == meta.len()
+                    && opened.modified()? == meta.modified()?
+                    && review_inode(&opened) == review_inode(&meta)
+                    && review_mode(&opened) == mode,
+                "打开期间工作区版本已变化"
+            );
+            let identity = review_file_identity(&file)?;
+            let mut bytes = Vec::new();
+            file.take(MAX_REVIEW_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= MAX_REVIEW_BYTES, "文件超过审阅上限");
+            Ok((opened, identity, bytes))
+        })()
+        .map_err(|err| SaveReviewOutcome::Rejected {
+            reason: format!("读取当前磁盘文件失败: {err}"),
+        })?;
+        let ver = metadata_to_version(&opened, &bytes);
         if expected.exists && ver.sha256 != expected.sha256 {
             let disk_text = if bytes.contains(&0) {
                 String::new()
@@ -1318,14 +1381,13 @@ pub fn save_review_text_in_repo(
                 disk_deleted: false,
             });
         }
-        Ok((meta, bytes, ver))
+        Ok((opened.permissions(), identity, bytes, ver))
     };
 
-    let (meta, current_bytes, _current_ver) = match check_target() {
+    let (permissions, identity, current_bytes, current_ver) = match check_target() {
         Ok(v) => v,
         Err(outcome) => return outcome,
     };
-    let mode = meta.permissions().mode();
 
     // 保存前写入本地历史快照（失败不阻塞主保存，仅记日志）
     if let Some(store) = history {
@@ -1361,7 +1423,7 @@ pub fn save_review_text_in_repo(
         f.write_all(&out_bytes)?;
         f.sync_all()?;
         drop(f);
-        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(mode))?;
+        fs::set_permissions(&tmp_path, permissions)?;
         Ok(())
     })();
 
@@ -1373,19 +1435,18 @@ pub fn save_review_text_in_repo(
     }
 
     // rename 替换前二次核对目标文件（防并发外部修改/删除/替换 inode 或权限变化）
-    let latest_meta = match check_target() {
-        Ok((m, _, _)) => m,
+    let (_, latest_identity, latest_bytes, latest_ver) = match check_target() {
+        Ok(checked) => checked,
         Err(outcome) => {
             let _ = fs::remove_file(&tmp_path);
             return outcome;
         }
     };
-    if latest_meta.dev() != meta.dev()
-        || latest_meta.ino() != meta.ino()
-        || latest_meta.permissions().mode() != mode
+    if latest_identity != identity
+        || latest_ver.mode != current_ver.mode
+        || latest_ver.sha256 != current_ver.sha256
     {
         let _ = fs::remove_file(&tmp_path);
-        let latest_bytes = fs::read(abs_path).unwrap_or_default();
         let disk_text = if latest_bytes.contains(&0) {
             String::new()
         } else {
@@ -1393,7 +1454,7 @@ pub fn save_review_text_in_repo(
         };
         return SaveReviewOutcome::Conflict {
             disk_text,
-            disk_version: metadata_to_version(&latest_meta, &latest_bytes),
+            disk_version: latest_ver,
             disk_deleted: false,
         };
     }

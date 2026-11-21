@@ -42,18 +42,16 @@ fn plan() -> Signal<MergePlanner> {
 }
 
 pub(super) fn open() {
-    let (repos, branch, target) = app_signal().with_untracked(|s| {
-        (
-            s.repos.clone(),
-            s.statuses
-                .iter()
-                .find(|st| !st.detached)
-                .map(|st| st.branch.clone())
-                .unwrap_or_default(),
-            s.cfg.release_branch.clone(),
-        )
+    let (repos, branch, target, selected) = app_signal().with_untracked(|s| {
+        let branch = s.statuses.iter().find(|status| !status.detached)
+            .map(|status| status.branch.clone()).unwrap_or_default();
+        let target = s.cfg.extra_str("default_target_branch", "test").to_owned();
+        let selected = s.statuses.iter().filter(|status| {
+            !status.detached && status.branch != target
+                && !s.cfg.protected_branch(&status.branch)
+        }).map(|status| status.repo.id.clone()).collect();
+        (s.repos.clone(),branch,target,selected)
     });
-    let selected = repos.iter().map(|repo| repo.id.clone()).collect();
     plan().set(MergePlanner {
         open: true,
         repos,

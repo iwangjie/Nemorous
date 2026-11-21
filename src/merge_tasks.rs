@@ -89,7 +89,7 @@ impl MergeTask {
 }
 
 struct TaskLock {
-    _file: File,
+    file: File,
 }
 
 impl TaskLock {
@@ -103,7 +103,15 @@ impl TaskLock {
             .truncate(false)
             .open(&lock)?;
         file.try_lock().context("合并任务正在由另一个窗口处理")?;
-        Ok(Self { _file: file })
+        Ok(Self { file })
+    }
+}
+
+impl Drop for TaskLock {
+    fn drop(&mut self) {
+        // A concurrent subprocess can briefly inherit the descriptor before
+        // exec closes it. Release the lock independently of that descriptor.
+        let _ = self.file.unlock();
     }
 }
 
