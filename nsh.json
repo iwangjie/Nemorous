@@ -1,0 +1,16 @@
+{
+  "name": "Nemorous",
+  "id": "com.nemorous.app",
+  "version": "0.10.21",
+  "rust": ".",
+  "root": "App",
+  "appearance": "system",
+  "icon": "resources/icon.png",
+  "window": {
+    "title": "Nemorous",
+    "width": 1440,
+    "height": 900,
+    "minWidth": 900,
+    "minHeight": 580
+  }
+}

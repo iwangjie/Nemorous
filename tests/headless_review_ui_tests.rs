@@ -1,0 +1,1101 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use nsh_core::geometry::{px, size};
+use nsh_core::platform::{Idiom, Os};
+use nsh_engine::{EngineConfig, Environment, Root};
+use nsh_testing::Headless;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+struct Fixture {
+    root: PathBuf,
+    repo_dir: PathBuf,
+    config_file: PathBuf,
+}
+
+impl Fixture {
+    fn new(name: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "nemorous-ui-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let repo_dir = root.join("sample-repo");
+        let config_file = root.join("config.json");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        git_run(&repo_dir, &["init", "-b", "main"]);
+        git_run(&repo_dir, &["config", "user.name", "Tester"]);
+        git_run(&repo_dir, &["config", "user.email", "tester@example.com"]);
+
+        fs::create_dir_all(repo_dir.join("src")).unwrap();
+        fs::write(
+            repo_dir.join("src/app.go"),
+            "package main\n\nfunc hello() string {\n\treturn \"old-greeting\"\n}\n\nfunc footer() string {\n\treturn \"end\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            repo_dir.join("src/rename_old.go"),
+            "package main\n\nconst AppName = \"Nemorous\"\nconst Module = \"review\"\nconst Version = \"v1\"\n",
+        )
+        .unwrap();
+        fs::write(repo_dir.join("README.md"), "# Sample\nline 2\n").unwrap();
+        git_run(&repo_dir, &["add", "."]);
+        git_run(&repo_dir, &["commit", "-m", "feat: initial fixture"]);
+
+        // 创建第二条提交（含重命名）用于历史 Diff 验证
+        git_run(&repo_dir, &["mv", "src/rename_old.go", "src/rename_new.go"]);
+        fs::write(
+            repo_dir.join("src/rename_new.go"),
+            "package main\n\nconst AppName = \"Nemorous\"\nconst Module = \"review\"\nconst Version = \"v2\"\n",
+        )
+        .unwrap();
+        git_run(&repo_dir, &["add", "-A"]);
+        git_run(&repo_dir, &["commit", "-m", "refactor: rename file to v2"]);
+
+        // 创建工作区变更：修改 src/app.go + 新增未跟踪 notes.txt
+        fs::write(
+            repo_dir.join("src/app.go"),
+            "package main\n\nfunc hello() string {\n\treturn \"new-greeting\"\n}\n\nfunc footer() string {\n\treturn \"end\"\n}\n",
+        )
+        .unwrap();
+        fs::write(repo_dir.join("notes.txt"), "untracked note line 1\n").unwrap();
+
+        let cfg_json = serde_json::json!({
+            "workspace_path": repo_dir.to_string_lossy(),
+            "theme": "light",
+            "change_diff_preview": false,
+            "changes_flat": false
+        });
+        fs::write(&config_file, serde_json::to_string_pretty(&cfg_json).unwrap()).unwrap();
+
+        Self {
+            root,
+            repo_dir,
+            config_file,
+        }
+    }
+
+    fn start_headless_expect(&self, width: f32, height: f32, wait_sel: &str) -> Headless {
+        unsafe {
+            std::env::set_var("NEMOROUS_CONFIG", &self.config_file);
+            std::env::set_var("NEMOROUS_WORKSPACE", &self.repo_dir);
+        }
+        let mut config = EngineConfig::new(Root::of::<nemorous::App>());
+        let mut env = Environment::default();
+        env.os = Os::MacOs;
+        env.idiom = Idiom::Desktop;
+        env.apple_keyboard = true;
+        config.environment = env;
+        config.viewport = size(px(width), px(height));
+        #[cfg(target_os = "macos")]
+        let mut app =
+            Headless::start_with_text_engine(config, nsh_platform_macos::CoreTextEngine::default)
+                .expect("start headless with CoreTextEngine");
+        #[cfg(not(target_os = "macos"))]
+        let mut app = Headless::start(config).expect("start headless");
+
+        app.wait_for("本地变更").expect("wait for commit header");
+        app.wait_for(wait_sel).expect("wait for expected element");
+        app
+    }
+
+    fn start_headless(&self, width: f32, height: f32) -> Headless {
+        self.start_headless_expect(width, height, "app.go")
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn git_run(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "Tester")
+        .env("GIT_AUTHOR_EMAIL", "tester@example.com")
+        .env("GIT_COMMITTER_NAME", "Tester")
+        .env("GIT_COMMITTER_EMAIL", "tester@example.com")
+        .output()
+        .expect("git");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn ui_commit_focus_single_click_vs_cmd_d_and_copy_rules() {
+    let _guard = lock_env();
+    let fx = Fixture::new("focus-copy");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 默认单击不打开 Diff，仅选中行并聚焦 Commit 树
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    assert!(!app.screen().matches("id:working-diff-pane").unwrap());
+
+    // 2. 已跟踪文件 Cmd+C 复制 basename
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("app.go"));
+
+    // 3. 未跟踪文件 Cmd+C 复制 displayPath（/tmp 下在主目录外为绝对路径）
+    app.press("id:change-row-unstaged-notes.txt").unwrap();
+    app.press_key("mod+c").unwrap();
+    let expected_untracked = nemorous::paths::display_path(
+        &fx.repo_dir.join("notes.txt").to_string_lossy(),
+    );
+    assert_eq!(app.screen().clipboard(), Some(expected_untracked.as_str()));
+
+    // 4. 选中 src/app.go 按 Cmd+D 打开并聚焦工作区 Diff
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.wait_for("Diff: app.go").unwrap();
+
+    // 5. 按 Cmd+W 关闭 Diff，回到 Commit 树且不报错
+    app.press_key("mod+w").unwrap();
+    app.wait_for_gone("id:working-diff-pane", Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn ui_working_diff_f4_source_and_cmd_bracket_return_roundtrip() {
+    let _guard = lock_env();
+    let fx = Fixture::new("f4-return");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+
+    // 按 F4 跳转到源码页
+    app.press_key("f4").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.wait_for("返回差异").unwrap();
+
+    // 按 Cmd+[ 返回工作区 Diff
+    app.press_key("mod+[").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+
+    // 按 Cmd+] 前进回源码页
+    app.press_key("mod+]").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+}
+
+#[test]
+fn ui_diff_find_focused_side_goto_line_and_whitespace_menu() {
+    let _guard = lock_env();
+    let fx = Fixture::new("diff-tools");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+
+    // Cmd+F 打开按聚焦侧查找条（右侧默认）
+    app.press_key("mod+f").unwrap();
+    app.wait_for("id:diff-find-bar").unwrap();
+    app.wait_for("查找右侧").unwrap();
+    app.type_text("id:diff-find-input", "new-greeting").unwrap();
+    app.wait_for("1 个结果").or_else(|_| app.wait_for("1/1")).unwrap();
+
+    // 关闭查找条后按 Cmd+L 打开转到行:列弹窗并跳到第 7 行
+    app.press_key("escape").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.type_text("id:goto-line-input", "7:2").unwrap();
+    app.press("id:goto-line-submit").unwrap();
+    app.wait_for_gone("id:goto-line-modal", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("7:2").unwrap();
+
+    // 4 级忽略空白菜单可达
+    app.press("id:diff-whitespace-btn").unwrap();
+    app.choose_menu_item("忽略空白和空行").unwrap();
+    app.wait_for("忽略空白和空行").unwrap();
+}
+
+#[test]
+fn ui_agent_disk_change_auto_refreshes_commit_list() {
+    let _guard = lock_env();
+    let fx = Fixture::new("agent-watch");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 模拟外部 Agent 写盘新增一个文件
+    fs::write(fx.repo_dir.join("agent_generated.rs"), "pub fn hi() {}\n").unwrap();
+    // 监听去抖 280ms 后自动刷新进 Commit 树
+    app.wait_for_within("agent_generated.rs", Duration::from_secs(4))
+        .unwrap();
+}
+
+#[test]
+fn ui_save_conflict_modal_and_second_disk_change_recheck() {
+    let _guard = lock_env();
+    let fx = Fixture::new("save-conflict");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 打开 src/app.go 源码页并进行轻编辑
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.press_key("f4").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+
+    // 通过查找替换把 new-greeting 改成 my-local-edit（确保编辑器变脏）
+    app.press_key("mod+alt+f").unwrap();
+    app.wait_for("id:code-find-bar").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "my-local-edit").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("未保存").unwrap();
+
+    // 外部 Agent 覆盖磁盘文件
+    fs::write(
+        fx.repo_dir.join("src/app.go"),
+        "package main\n\nfunc hello() string {\n\treturn \"external-v1\"\n}\n",
+    )
+    .unwrap();
+
+    // 按 Cmd+S 触发受检保存冲突弹窗
+    app.press_key("mod+s").unwrap();
+    app.wait_for("id:save-conflict-modal").unwrap();
+    app.wait_for("磁盘文件已变化，编辑仍保留").unwrap();
+
+    // 弹窗打开期间外部再次改盘 -> 点「使用磁盘版本」必须先二次核对并给出警告！
+    fs::write(
+        fx.repo_dir.join("src/app.go"),
+        "package main\n\nfunc hello() string {\n\treturn \"external-v2\"\n}\n",
+    )
+    .unwrap();
+    app.press("id:conflict-accept-disk-btn").unwrap();
+    app.wait_for("磁盘内容再次变化，请核对最新版本").unwrap();
+
+    // 再次点击「使用磁盘版本」确认采用 v2
+    app.press("id:conflict-accept-disk-btn").unwrap();
+    app.wait_for_gone("id:save-conflict-modal", Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn ui_committed_diff_and_rename_context_copy() {
+    let _guard = lock_env();
+    let fx = Fixture::new("commit-diff");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // ⌘9 打开 Git 底部面板
+    app.press_key("mod+9").unwrap();
+    app.wait_for("id:git-bottom-pane").unwrap();
+    app.wait_for("text:refactor: rename file to v2").unwrap();
+
+    // 选中重命名文件并按 Cmd+D 打开历史提交 Diff
+    app.press("id:git-commit-file-src/rename_new.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:commit-diff-pane").unwrap();
+    app.wait_for("src/rename_old.go → src/rename_new.go").unwrap();
+
+    // 1. 默认聚焦右侧（新路径）：⌘L 跳第 2 行，⌘⌥⇧C 复制新路径:2
+    app.press_key("mod+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.type_text("id:goto-line-input", "2:1").unwrap();
+    app.press("id:goto-line-submit").unwrap();
+    app.wait_for_gone("id:goto-line-modal", Duration::from_secs(2))
+        .unwrap();
+    app.press_key("mod+alt+shift+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("src/rename_new.go:2"));
+
+    // 右侧全选 + ⌘C 复制新版本文本，键入字符绝不修改只读内容
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    let right_clip = app.screen().clipboard().unwrap_or("").to_string();
+    assert!(
+        right_clip.contains("Version = \"v2\""),
+        "expected new commit text in clipboard, got {right_clip:?}"
+    );
+    app.press_key("x").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard().unwrap_or(""), right_clip);
+
+    // 2. 切到左侧（旧路径）：聚焦左侧编辑器，⌘L 跳第 1 行，⌘⌥⇧C 复制旧路径:1，选区片段复制 + 全选复制 + 右键复制 + 只读拦截
+    app.press("id:diff-old-pane-bar").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.type_text("id:goto-line-input", "1:1").unwrap();
+    app.press("id:goto-line-submit").unwrap();
+    app.wait_for_gone("id:goto-line-modal", Duration::from_secs(2))
+        .unwrap();
+    app.press_key("mod+alt+shift+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("src/rename_old.go:1"));
+
+    // 左侧局部选区片段复制（第 1 行前 7 字符 "package"）
+    for _ in 0..7 {
+        app.press_key("shift+right").unwrap();
+    }
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("package"));
+
+    // 左侧全选 + ⌘C 复制旧版本文本，再通过右键上下文菜单「复制」验证，键入字符绝不修改只读内容
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    let left_clip = app.screen().clipboard().unwrap_or("").to_string();
+    assert!(
+        left_clip.contains("Version = \"v1\""),
+        "expected old commit text in clipboard, got {left_clip:?}"
+    );
+    // 先把剪贴板改成路径（全选后光标 head 在第 6 行），再右键左侧代码行点「复制」，验证右键「复制」真实把旧版本选区写入剪贴板
+    app.press_key("mod+alt+shift+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("src/rename_old.go:6"));
+    app.press_key("mod+a").unwrap();
+    app.right_click("const Version = \"v1\"").unwrap();
+    app.choose_menu_item("复制").unwrap();
+    assert_eq!(app.screen().clipboard().unwrap_or(""), left_clip);
+    app.press_key("z").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard().unwrap_or(""), left_clip);
+
+    // 3. 切去其他标签再点回提交 Diff 标签时，保留左侧 active_side（不再被硬编码重置到右侧）
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "README.md").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+
+    app.press("id:editor-tab-commit-diff").unwrap();
+    app.wait_for("id:commit-diff-pane").unwrap();
+    app.press_key("mod+alt+shift+c").unwrap();
+    assert_eq!(
+        app.screen().clipboard(),
+        Some("src/rename_old.go:6"),
+        "switching back to commit diff tab must preserve active_side=Old"
+    );
+}
+
+#[test]
+fn ui_narrow_pane_1040x660_and_100px_more_menu_stash() {
+    let _guard = lock_env();
+    let fx = Fixture::new("narrow");
+    let mut app = fx.start_headless(1040.0, 660.0);
+
+    // 1. 1040x660 默认左栏 320px：标题行与计数单行展示且按钮可见
+    app.wait_for("id:changes-header-title-row").unwrap();
+    app.wait_for("变更视图选项").unwrap();
+    app.wait_for("Stash").unwrap();
+
+    // 2. 通过配置以极窄左栏 100px 启动，验证工具栏自动收入 More 菜单且可直达 Stash -> 管理 Stash…
+    let narrow_cfg = serde_json::json!({
+        "workspace_path": fx.repo_dir.to_string_lossy(),
+        "theme": "light",
+        "commit_left_width": 100.0
+    });
+    fs::write(&fx.config_file, serde_json::to_string_pretty(&narrow_cfg).unwrap()).unwrap();
+    drop(app);
+
+    let mut narrow_app = fx.start_headless_expect(1040.0, 660.0, "id:changes-toolbar-more");
+    narrow_app.press("id:changes-toolbar-more").unwrap();
+    narrow_app.choose_menu_item("Stash > 管理 Stash… (0)").unwrap();
+    narrow_app.wait_for("id:stash-modal").unwrap();
+}
+
+#[test]
+fn ui_project_tree_locate_and_file_picker_line_col() {
+    let _guard = lock_env();
+    let fx = Fixture::new("picker-locate");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // Cmd+Shift+O 转到文件支持 path:line:col
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:4:2").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.wait_for("4:2").unwrap();
+
+    // ⌥F1 在文件树中定位 -> 切到 Project 面板并展开 src 目录显示 app.go
+    app.press_key("alt+f1").unwrap();
+    app.wait_for("id:project-pane").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+}
+
+#[test]
+fn ui_commit_view_options_preview_and_flat_toggle() {
+    let _guard = lock_env();
+    let fx = Fixture::new("view-opts");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 打开“变更视图选项”并启用“单击时预览差异”
+    app.press("id:changes-view-options-btn").unwrap();
+    app.choose_menu_item("单击时预览差异").unwrap();
+
+    // 开启后单击 src/app.go 立即打开工作区 Diff
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+
+    // 切换树形 -> 平铺，验证显示完整路径 src/app.go
+    app.press("id:changes-flat-toggle-btn").unwrap();
+    app.wait_for("平铺").unwrap();
+    app.wait_for("src/app.go").unwrap();
+}
+
+#[test]
+fn ui_commit_context_menu_copy_path_variants_and_locate() {
+    let _guard = lock_env();
+    let fx = Fixture::new("ctx-menu");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 右键 src/app.go -> 复制路径／引用 > 相对仓库路径
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("复制路径／引用 > 相对仓库路径").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("src/app.go"));
+
+    // 右键 src/app.go -> 复制路径／引用 > 绝对路径
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("复制路径／引用 > 绝对路径").unwrap();
+    let expected_abs = fx.repo_dir.join("src/app.go").to_string_lossy().to_string();
+    assert_eq!(app.screen().clipboard(), Some(expected_abs.as_str()));
+
+    // 右键 src/app.go -> 在文件树中定位
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("在文件树中定位").unwrap();
+    app.wait_for("id:project-pane").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+}
+
+#[test]
+fn ui_working_diff_scope_switch_single_column_and_collapse() {
+    let _guard = lock_env();
+    let fx = Fixture::new("diff-modes");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.wait_for("可轻编辑").unwrap();
+
+    // 切到暂存区 -> 只读
+    app.press("id:diff-scope-staged").unwrap();
+    app.wait_for("只读").unwrap();
+
+    // 切回未暂存 -> 切单栏模式 -> 切回双栏
+    app.press("id:diff-scope-unstaged").unwrap();
+    app.press("id:diff-layout-toggle").unwrap();
+    app.wait_for("id:working-diff-unified-editor").unwrap();
+    app.press("id:diff-layout-toggle").unwrap();
+    app.wait_for("id:working-diff-new-editor").unwrap();
+
+    // 折叠/展开未改动行按钮可点击无报错
+    app.press("id:diff-collapse-btn").unwrap();
+    app.press("id:diff-collapse-btn").unwrap();
+}
+
+#[test]
+fn ui_dirty_tabs_close_all_together_protection() {
+    let _guard = lock_env();
+    let fx = Fixture::new("dirty-close");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 打开两个文件并分别做查找替换变脏
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.press_key("mod+alt+f").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "edited-app").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "README.md").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+    app.press_key("mod+alt+f").unwrap();
+    app.clear("id:code-find-input").unwrap();
+    app.type_text("id:code-find-input", "Sample").unwrap();
+    app.clear("id:code-replace-input").unwrap();
+    app.type_text("id:code-replace-input", "EditedSample").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    // 右键标签选“关闭全部” -> 合并弹出保护框“有 2 个未保存文件”
+    app.right_click("id:editor-tab-file-README.md").unwrap();
+    app.choose_menu_item("关闭全部").unwrap();
+    app.wait_for("id:dirty-close-modal").unwrap();
+    app.wait_for("有 2 个未保存文件").unwrap();
+
+    // 点击“保存全部” -> 两文件均已受检写盘且弹窗关闭
+    app.press("id:dirty-close-save").unwrap();
+    app.wait_for_gone("id:dirty-close-modal", Duration::from_secs(2))
+        .unwrap();
+    assert!(fs::read_to_string(fx.repo_dir.join("src/app.go")).unwrap().contains("edited-app"));
+    assert!(fs::read_to_string(fx.repo_dir.join("README.md")).unwrap().contains("EditedSample"));
+}
+
+#[test]
+fn ui_diff_f7_boundary_confirmation_and_keyboard_mixed_staging() {
+    let _guard = lock_env();
+    let fx = Fixture::new("f7-stage");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 选中 src/app.go，按 S 暂存 -> 出现“已暂存的更改”分区，再按 U 取消暂存
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("s").unwrap();
+    app.wait_for("已暂存的更改").unwrap();
+    app.press_key("u").unwrap();
+    app.wait_for_gone("已暂存的更改", Duration::from_secs(2))
+        .unwrap();
+
+    // 打开 src/app.go Diff（只有 1 处 hunk）：
+    // 第一次按 F7 出现边界提示“再按 F7 切到下一文件”
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.press_key("f7").unwrap();
+    app.wait_for("再按 F7 切到下一文件").unwrap();
+
+    // 第二次按 F7 切换到下一个变更文件 notes.txt
+    app.press_key("f7").unwrap();
+    app.wait_for("Diff: notes.txt").unwrap();
+}
+
+#[test]
+fn ui_deleted_file_save_rejected_and_shows_deleted_conflict_modal() {
+    let _guard = lock_env();
+    let fx = Fixture::new("deleted-save");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 打开 src/app.go 源码并做轻编辑
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+
+    app.press_key("mod+alt+f").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "edited-before-delete").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    // 外部删除磁盘文件后按 Cmd+S -> 绝不静默重建，必须弹出“磁盘文件已删除”和“放弃编辑并关闭文件”
+    let target = fx.repo_dir.join("src/app.go");
+    fs::remove_file(&target).unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for("id:save-conflict-modal").unwrap();
+    app.wait_for("磁盘文件已删除").unwrap();
+    app.wait_for("放弃编辑并关闭文件").unwrap();
+    assert!(!target.exists(), "deleted file must never be silently recreated");
+
+    // 点击“复制我的编辑”验证编辑内容完整写入剪贴板
+    app.press("id:conflict-copy-mine-btn").unwrap();
+    assert!(
+        app.screen()
+            .clipboard()
+            .unwrap_or("")
+            .contains("edited-before-delete")
+    );
+}
+
+#[test]
+fn ui_working_diff_right_pane_edit_and_autosave_on_switch() {
+    let _guard = lock_env();
+    let fx = Fixture::new("diff-right-edit");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 打开 src/app.go 工作区 Diff（右侧可轻编辑）
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.wait_for("可轻编辑").unwrap();
+
+    // 在右侧工作区编辑器内直接键入轻改内容 -> 出现未保存徽章
+    app.type_text("id:working-diff-new-editor", "// diff-inline-edit\n")
+        .unwrap();
+    app.wait_for("id:diff-dirty-badge").unwrap();
+
+    // 切换到另一文件 notes.txt 的 Diff -> 切文件前自动受检保存原右侧修改到磁盘
+    app.press("id:change-row-unstaged-notes.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("Diff: notes.txt").unwrap();
+    let saved = fs::read_to_string(fx.repo_dir.join("src/app.go")).unwrap();
+    assert!(
+        saved.contains("// diff-inline-edit"),
+        "switching working diff file should auto-save right pane edits, got: {saved}"
+    );
+}
+
+#[test]
+fn ui_modal_escape_restores_focus_and_cmd0_cmd1_focus_routing() {
+    let _guard = lock_env();
+    let fx = Fixture::new("modal-focus-routing");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 选中 Commit 行后打开 ⌘⇧O 弹窗并按 Escape 关闭 -> 焦点必须恢复到 CommitTree 而非滞留 Modal
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:review-picker-modal", Duration::from_secs(2))
+        .unwrap();
+
+    // 弹窗关闭后立即按 ⌘D 必须能正常打开工作区 Diff
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+
+    // 2. 此时焦点在 Diff 编辑器且左侧 Commit 面板已显示，按 ⌘0 必须切焦点到 Commit 树而不隐藏左侧面板！
+    app.press_key("mod+0").unwrap();
+    app.wait_for("id:commit-pane").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("app.go"));
+
+    // 2.5 验证 `<input>` 输入框内按 ⌘C 绝不被树复制劫持（选中 notes.txt 后在筛选框内键入并按 ⌘C，剪贴板不得被覆写为 notes.txt 路径）
+    app.press("id:change-row-unstaged-notes.txt").unwrap();
+    app.type_text("id:changes-filter-input", "app").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(
+        app.screen().clipboard(),
+        Some("app.go"),
+        "mod+c inside filter <input> must NOT be hijacked by tree copy_for_current_focus"
+    );
+    app.clear("id:changes-filter-input").unwrap();
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+
+    // 3. 焦点已在 CommitTree，再按 ⌘1 切到 Project 树并保持编辑器打开
+    app.press_key("mod+1").unwrap();
+    app.wait_for("id:project-pane").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+}
+
+#[test]
+fn ui_code_replace_cmd_r_find_next_prev_cmd_g_and_undo_save() {
+    let _guard = lock_env();
+    let fx = Fixture::new("cmd-r-g-undo");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.press_key("f4").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+
+    // 按 ⌘R 打开查找替换条
+    app.press_key("mod+r").unwrap();
+    app.wait_for("id:code-find-bar").unwrap();
+    app.wait_for("id:code-replace-input").unwrap();
+
+    // 验证 ⌘G / ⇧⌘G 真实在多个匹配间前后切换（src/app.go 有 2 处 "return"：第 4 行与第 8 行）
+    app.type_text("id:code-find-input", "return").unwrap();
+    app.wait_for("2 个结果").unwrap();
+    app.press_key("mod+g").unwrap();
+    app.wait_for("1/2").unwrap();
+    app.wait_for("4:8").unwrap();
+    app.press_key("mod+g").unwrap();
+    app.wait_for("2/2").unwrap();
+    app.wait_for("8:8").unwrap();
+    app.press_key("mod+shift+g").unwrap();
+    app.wait_for("1/2").unwrap();
+    app.wait_for("4:8").unwrap();
+
+    app.clear("id:code-find-input").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "replaced-by-cmd-r")
+        .unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    // 关闭查找替换条回归编辑器，按 ⌘Z 撤销并验证内容恢复为 new-greeting，再按 ⇧⌘Z 重做并 ⌘S 保存
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:code-find-bar", Duration::from_secs(2))
+        .unwrap();
+    app.press_key("mod+z").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    let after_undo = app.screen().clipboard().unwrap_or("").to_string();
+    assert!(
+        after_undo.contains("new-greeting") && !after_undo.contains("replaced-by-cmd-r"),
+        "Cmd+Z must undo replacement, got: {after_undo:?}"
+    );
+    app.press_key("mod+shift+z").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    // ⌘S 保存并核对磁盘写入
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:code-dirty-badge", Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        fs::read_to_string(fx.repo_dir.join("src/app.go"))
+            .unwrap()
+            .contains("replaced-by-cmd-r")
+    );
+}
+
+#[test]
+fn ui_diff_left_side_find_isolation_and_single_column_find() {
+    let _guard = lock_env();
+    let fx = Fixture::new("diff-left-single-find");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+
+    // 1. 聚焦左侧编辑器后按 ⌘F -> 必须显示“查找左侧”，查右侧独有词返回 0，查左侧独有词命中 1/1
+    app.press("id:diff-old-pane-bar").unwrap();
+    app.press_key("mod+f").unwrap();
+    app.wait_for("id:diff-find-bar").unwrap();
+    app.wait_for("查找左侧").unwrap();
+    app.type_text("id:diff-find-input", "new-greeting").unwrap();
+    app.wait_for("0 个结果").unwrap();
+
+    app.clear("id:diff-find-input").unwrap();
+    app.type_text("id:diff-find-input", "old-greeting").unwrap();
+    app.wait_for("1 个结果").or_else(|_| app.wait_for("1/1")).unwrap();
+
+    // 2. 切到单栏 Diff -> 查找条显示“查找单栏”并可查找旧/新两侧文本
+    app.press("id:diff-layout-toggle").unwrap();
+    app.wait_for("id:working-diff-unified-editor").unwrap();
+    app.wait_for("查找单栏").unwrap();
+    app.clear("id:diff-find-input").unwrap();
+    app.type_text("id:diff-find-input", "new-greeting").unwrap();
+    app.wait_for("1 个结果").or_else(|_| app.wait_for("1/1")).unwrap();
+}
+
+#[test]
+fn ui_working_diff_dirty_f4_preserves_edits_and_commit_dir_copy() {
+    let _guard = lock_env();
+    let fx = Fixture::new("dirty-f4-dir-copy");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 单击 Commit 目录行 `src` 后按 ⌘C -> 复制目录 display_path
+    app.press("id:change-dir-unstaged-src").unwrap();
+    app.press_key("mod+c").unwrap();
+    let expected_dir = nemorous::paths::display_path(&fx.repo_dir.join("src").to_string_lossy());
+    assert_eq!(app.screen().clipboard(), Some(expected_dir.as_str()));
+
+    // 2. 打开 src/app.go 工作区 Diff 并在右侧轻改（不保存），直接按 F4 跳源码 -> 源码必须保留未保存编辑！
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.type_text("id:working-diff-new-editor", "// dirty-f4-carry\n")
+        .unwrap();
+    app.wait_for("id:diff-dirty-badge").unwrap();
+
+    app.press_key("f4").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    // 在源码页做二次编辑后再 ⌘S 保存 -> 磁盘包含两段修改，且 ⌘[ 返回工作区 Diff 时同步清脏
+    app.press_key("mod+r").unwrap();
+    app.wait_for("id:code-find-bar").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "source-second-edit")
+        .unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.press_key("escape").unwrap();
+
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:code-dirty-badge", Duration::from_secs(2))
+        .unwrap();
+    let final_disk = fs::read_to_string(fx.repo_dir.join("src/app.go")).unwrap();
+    assert!(
+        final_disk.contains("// dirty-f4-carry") && final_disk.contains("source-second-edit"),
+        "expected both diff and source edits persisted, got: {final_disk:?}"
+    );
+    app.press_key("mod+[").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    assert!(
+        !app.screen().matches("id:diff-dirty-badge").unwrap(),
+        "returning to working diff after saving in source must clear diff dirty state"
+    );
+}
+
+#[test]
+fn ui_alt_arrows_preserve_editor_input_word_nav_and_modal_blocks_shortcuts() {
+    let _guard = lock_env();
+    let fx = Fixture::new("alt-arrows-modal");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 打开 src/app.go 源码页并跳到 1:1 ("package main")，按 alt+right / alt+left 必须保持在源码页且按词移动！
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:1:1").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.wait_for("1:1").unwrap();
+
+    app.press_key("alt+right").unwrap();
+    assert!(
+        app.screen().matches("id:code-editor-pane").unwrap(),
+        "alt+right in CodeEditor must stay in CodeEditor"
+    );
+    assert!(
+        !app.screen().matches("id:working-diff-pane").unwrap(),
+        "alt+right in CodeEditor must NOT switch into WorkingDiff"
+    );
+    app.wait_for("1:8").unwrap();
+    app.press_key("alt+left").unwrap();
+    app.wait_for("1:1").unwrap();
+
+    // 2. 在筛选 <input> 内按 alt+left / alt+right 绝不劫持切入 WorkingDiff
+    app.type_text("id:changes-filter-input", "app.go").unwrap();
+    app.press_key("alt+left").unwrap();
+    app.press_key("alt+right").unwrap();
+    assert!(
+        app.screen().matches("id:code-editor-pane").unwrap(),
+        "alt+arrows in <input> must NOT open WorkingDiff"
+    );
+    assert!(!app.screen().matches("id:working-diff-pane").unwrap());
+    app.clear("id:changes-filter-input").unwrap();
+
+    // 3. 模态弹窗（goto-line-modal）打开时屏蔽后台全局快捷键（mod+w / mod+0 / f4 / alt+right）
+    app.press("id:editor-tab-file-src/app.go").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.press_key("mod+w").unwrap();
+    app.press_key("mod+0").unwrap();
+    app.press_key("f4").unwrap();
+    app.press_key("alt+right").unwrap();
+    assert!(
+        app.screen().matches("id:goto-line-modal").unwrap(),
+        "modal must remain open against background shortcuts"
+    );
+    assert!(
+        app.screen().matches("id:code-editor-pane").unwrap(),
+        "mod+w behind modal must NOT close active code tab"
+    );
+    assert!(
+        !app.screen().matches("id:working-diff-pane").unwrap(),
+        "alt+right behind modal must NOT open working diff"
+    );
+
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:goto-line-modal", Duration::from_secs(2))
+        .unwrap();
+    assert!(app.screen().matches("id:code-editor-pane").unwrap());
+}
+
+#[test]
+fn ui_working_diff_and_source_symmetric_dirty_sync_no_false_conflict() {
+    let _guard = lock_env();
+    let fx = Fixture::new("sym-dirty-sync");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. WorkingDiff 脏改 -> F4 跳源码 -> ⌘[ 回 Diff -> 在 Diff 按 ⌘S 保存 -> ⌘] 回源码：
+    //    同源 CodeTab 必须同步清脏，继续在源码编辑再保存绝不弹伪保存冲突弹窗！
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.type_text("id:working-diff-new-editor", "// sym-edit-1\n")
+        .unwrap();
+    app.wait_for("id:diff-dirty-badge").unwrap();
+
+    app.press_key("f4").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    app.press_key("mod+[").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:diff-dirty-badge", Duration::from_secs(2))
+        .unwrap();
+
+    app.press_key("mod+]").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    assert!(
+        !app.screen().matches("id:code-dirty-badge").unwrap(),
+        "CodeTab must clear dirty badge after same-file WorkingDiff Cmd+S save"
+    );
+
+    // 在源码再改一处并保存：不得触发伪保存冲突弹窗
+    app.press_key("mod+r").unwrap();
+    app.wait_for("id:code-find-bar").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "sym-edit-2").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.press_key("escape").unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:code-dirty-badge", Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        !app.screen().matches("id:save-conflict-modal").unwrap(),
+        "saving CodeTab after WorkingDiff save must NOT raise false save-conflict-modal"
+    );
+    let disk_after = fs::read_to_string(fx.repo_dir.join("src/app.go")).unwrap();
+    assert!(disk_after.contains("// sym-edit-1") && disk_after.contains("sym-edit-2"));
+
+    // 2. 源码脏改 -> Commit 树双击打开 WorkingDiff：WorkingDiff 必须带入源码脏编辑
+    app.press_key("mod+r").unwrap();
+    app.clear("id:code-find-input").unwrap();
+    app.type_text("id:code-find-input", "sym-edit-2").unwrap();
+    app.clear("id:code-replace-input").unwrap();
+    app.type_text("id:code-replace-input", "from-source-dirty").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.press_key("escape").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
+    app.wait_for("id:diff-dirty-badge").unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:diff-dirty-badge", Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        fs::read_to_string(fx.repo_dir.join("src/app.go"))
+            .unwrap()
+            .contains("from-source-dirty")
+    );
+
+    // 3. WorkingDiff 脏改 notes.txt -> ⌘⇧O 打开 notes.txt 源码：源码必须带入 Diff 脏编辑
+    app.press("id:change-row-unstaged-notes.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("Diff: notes.txt").unwrap();
+    app.type_text("id:working-diff-new-editor", "from-diff-dirty\n")
+        .unwrap();
+    app.wait_for("id:diff-dirty-badge").unwrap();
+
+    app.press_key("mod+shift+o").unwrap();
+    app.wait_for("id:review-picker-modal").unwrap();
+    app.type_text("id:review-picker-input", "notes.txt").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+}
+
+#[test]
+fn ui_f7_shift_f7_lands_on_last_hunk_and_crosses_zero_hunk_file() {
+    let _guard = lock_env();
+    let fx = Fixture::new("f7-last-zero");
+    // 在 src/app.go 中制造 2 处相隔较远的改动（2 个 hunk），并在 ws_only.txt 仅改空白（忽略空白后为 0 处差异）
+    fs::write(
+        fx.repo_dir.join("src/app.go"),
+        "package main_edited\n\nfunc hello() string {\n\treturn \"old-greeting\"\n}\n\nfunc footer() string {\n\treturn \"end_edited\"\n}\n",
+    )
+    .unwrap();
+    fs::write(fx.repo_dir.join("ws_only.txt"), "let a = 1;\n").unwrap();
+    git_run(&fx.repo_dir, &["add", "ws_only.txt"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "add ws_only"]);
+    fs::write(fx.repo_dir.join("ws_only.txt"), "let   a = 1;\n").unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 树顺序：src/app.go (2 hunks) -> notes.txt (1 hunk) -> ws_only.txt (1 hunk -> 忽略空白后 0 hunk)
+    //    从 notes.txt 连按两次 ⇧F7 回切到 src/app.go，必须落到最后一个差异块 2/2！
+    app.press("id:change-row-unstaged-notes.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("Diff: notes.txt").unwrap();
+
+    app.press_key("shift+f7").unwrap();
+    app.wait_for("再按 ⇧F7 切到上一文件").unwrap();
+    app.press_key("shift+f7").unwrap();
+    app.wait_for("Diff: app.go").unwrap();
+    app.wait_for("2/2").unwrap();
+
+    // 2. 切到 ws_only.txt 并开启「忽略空白」使其变为 0 处差异，连按两次 ⇧F7 必须能跨回 notes.txt！
+    app.press("id:change-row-unstaged-ws_only.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("Diff: ws_only.txt").unwrap();
+    app.press("id:diff-whitespace-btn").unwrap();
+    app.choose_menu_item("忽略空白").unwrap();
+    app.wait_for("0 处差异").unwrap();
+
+    app.press_key("shift+f7").unwrap();
+    app.wait_for("再按 ⇧F7 切到上一文件").unwrap();
+    app.press_key("shift+f7").unwrap();
+    app.wait_for("Diff: notes.txt").unwrap();
+}
+
+#[test]
+fn ui_single_column_diff_fold_f7_goto_line_and_context_menu_mapping() {
+    let _guard = lock_env();
+    let fx = Fixture::new("single-col-full");
+
+    // 准备一个 28 行文件，修改第 2 行与第 26 行，使中间产生明显的未改动上下文（含独特标记 MIDDLE_CONTEXT_LINE_14）
+    let mut base_lines = Vec::new();
+    for i in 1..=28 {
+        if i == 14 {
+            base_lines.push("const MIDDLE_CONTEXT_LINE_14 = 14;".to_string());
+        } else {
+            base_lines.push(format!("const LINE_{i:02} = {i};"));
+        }
+    }
+    let old_body = base_lines.join("\n") + "\n";
+    fs::write(fx.repo_dir.join("src/long_single.go"), &old_body).unwrap();
+    git_run(&fx.repo_dir, &["add", "src/long_single.go"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "add long_single.go"]);
+
+    let mut new_lines = base_lines.clone();
+    new_lines[1] = "const LINE_02 = 200; // hunk1".to_string();
+    new_lines[25] = "const LINE_26 = 2600; // hunk2".to_string();
+    fs::write(fx.repo_dir.join("src/long_single.go"), new_lines.join("\n") + "\n").unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 打开 src/long_single.go 工作区 Diff 并切到单栏模式
+    app.press("id:change-row-unstaged-src/long_single.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("Diff: long_single.go").unwrap();
+    app.press("id:diff-layout-toggle").unwrap();
+    app.wait_for("id:working-diff-unified-editor").unwrap();
+    let mid_line = "  const MIDDLE_CONTEXT_LINE_14 = 14;";
+    app.wait_for(mid_line).unwrap();
+
+    // 2. 单栏「折叠未改动」开关必须真实折叠并隐藏第 14 行上下文，再点一次恢复展示！
+    app.press("id:diff-collapse-btn").unwrap();
+    app.wait_for_gone(mid_line, Duration::from_secs(2))
+        .unwrap();
+    app.press("id:diff-collapse-btn").unwrap();
+    app.wait_for(mid_line).unwrap();
+
+    // 3. 单栏 F7 跳到第 2 个 hunk（2/2），并滚动定位到第 26 行
+    app.wait_for("1/2").unwrap();
+    app.press_key("f7").unwrap();
+    app.wait_for("2/2").unwrap();
+    app.wait_for("26:1").unwrap();
+
+    // 4. 单栏 ⌘L 跳转到 26:4 -> 状态栏必须准确映射回 26:4（验证 +2/-2 前缀偏移互逆）
+    app.press_key("mod+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.type_text("id:goto-line-input", "26:4").unwrap();
+    app.press("id:goto-line-submit").unwrap();
+    app.wait_for_gone("id:goto-line-modal", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("26:4").unwrap();
+
+    // 5. 历史提交重命名 Diff 单栏模式：右键旧侧 `-` 行与新侧 `+` 行，分别映射旧路径/旧行号与新路径/新行号！
+    app.press_key("mod+9").unwrap();
+    app.wait_for("id:git-bottom-pane").unwrap();
+    app.press("id:git-commit-row-refactor").or_else(|_| {
+        app.press("text:refactor: rename file to v2")
+    }).unwrap();
+    app.wait_for("id:git-commit-file-src/rename_new.go").unwrap();
+    app.press("id:git-commit-file-src/rename_new.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:commit-diff-unified-editor").unwrap();
+
+    app.right_click("- const Version = \"v1\"").unwrap();
+    app.choose_menu_item("复制路径／引用 > 文件与行号").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("src/rename_old.go:5"));
+
+    app.right_click("+ const Version = \"v2\"").unwrap();
+    app.choose_menu_item("复制路径／引用 > 文件与行号").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("src/rename_new.go:5"));
+}
