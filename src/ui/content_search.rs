@@ -11,6 +11,9 @@ use nsh_base::{EditorPosition, input};
 use nsh_core::prelude::*;
 
 use crate::git::WorkspaceFile;
+use crate::replace_in_files::ReplaceQuery;
+
+use super::replacement_flow::{self, Phase};
 use crate::search::{
     CancelToken, SearchError, SearchHit, SearchOptions, SearchOutcome, SearchStatus, search_files,
 };
@@ -30,6 +33,8 @@ struct ContentSearchState {
     /// 打开时所在的工作区；跨工作区的旧结果与旧命中都不再生效。
     workspace: String,
     query: String,
+    replace_mode: bool,
+    replacement: String,
     case_sensitive: bool,
     regex: bool,
     mask_enabled: bool,
@@ -166,13 +171,46 @@ fn activate_find_hit(idx: usize) {
 
 /// ⌘⇧F：在整个工作区中查找。
 pub fn open_workspace() {
-    open_with(None);
+    open_with(None, false);
+}
+
+pub fn open_replace() {
+    open_with(None, true);
 }
 
 /// 项目目录右键「在目录中查找」：仅在该目录内查找。
 /// `dir` 为上下文菜单传入的绝对目录路径。
 pub fn open_for_directory(dir: String) {
-    open_with(Some(PathBuf::from(dir)));
+    open_with(Some(PathBuf::from(dir)), false);
+}
+
+pub fn is_open() -> bool {
+    with_state(|s| s.open)
+}
+
+pub fn move_selection(delta: isize) {
+    if !matches!(replacement_flow::phase(), Phase::Idle) {
+        return;
+    }
+    update_state(|s| {
+        if !s.hits.is_empty() {
+            s.selected = s
+                .selected
+                .saturating_add_signed(delta)
+                .min(s.hits.len() - 1);
+        }
+    });
+}
+
+pub fn intercept_close() -> bool {
+    if !with_state(|s| s.open && s.replace_mode) {
+        return false;
+    }
+    match replacement_flow::phase() {
+        Phase::Applying => true,
+        Phase::Planning | Phase::Confirm { .. } => replacement_flow::cancel(),
+        Phase::Idle => false,
+    }
 }
 
 /// 关闭由本模块持有的模态（供 `state::close_active_modal` 调用）。
@@ -186,6 +224,7 @@ pub fn close_if_open() -> bool {
             s.cancel = CancelToken::new();
             s.running = false;
             s.query.clear();
+            s.replacement.clear();
             s.mask.clear();
             s.mask_enabled = false;
             s.hits.clear();
@@ -200,7 +239,8 @@ pub fn close_if_open() -> bool {
     open
 }
 
-fn open_with(scope: Option<PathBuf>) {
+fn open_with(scope: Option<PathBuf>, replace_mode: bool) {
+    replacement_flow::reset_message();
     let scope_label = match &scope {
         None => "整个工作区".to_string(),
         Some(dir) => relative_label(dir),
@@ -213,6 +253,7 @@ fn open_with(scope: Option<PathBuf>) {
         s.cancel.cancel();
         s.cancel = CancelToken::new();
         s.open = true;
+        s.replace_mode = replace_mode;
         s.generation += 1;
         s.workspace = workspace;
         s.scope_dir = scope.clone();
@@ -323,43 +364,47 @@ fn schedule() {
     };
 
     // 防抖：定时器负责等待，绝不占用阻塞线程池去 sleep。
-    set_timeout(DEBOUNCE, move || {
-        spawn(async move {
-            // 等待期间被后续输入取消：直接放弃，不做无谓扫描。
-            if cancel.is_cancelled() {
-                return;
-            }
-            let query_scope = scope.clone();
-            let outcome = blocking(move || {
-                let options = SearchOptions {
-                    case_sensitive,
-                    regex,
-                    mask: mask.as_deref(),
-                };
-                search_files(
-                    index.as_slice(),
-                    query_scope.as_deref(),
-                    &query,
-                    &options,
-                    &cancel,
-                )
-            })
-            .await;
-            // 工作区已切换：旧工作区的任务结果绝不覆盖当前结果。
-            let now_ws = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
-            if now_ws != workspace {
-                return;
-            }
-            match outcome {
-                Ok(outcome) => apply_results(generation, workspace, scope, outcome),
-                Err(_) => update_state(|s| {
-                    if s.open && s.generation == generation {
-                        s.running = false;
-                        s.error = Some("文件搜索失败".to_string());
-                    }
-                }),
-            }
-        });
+    let owner = global::<state::RootOwnerHolder>().with_untracked(|root| root.owner);
+    let Some(owner) = owner else { return };
+    owner.run(|| {
+        set_timeout(DEBOUNCE, move || {
+            spawn(async move {
+                // 等待期间被后续输入取消：直接放弃，不做无谓扫描。
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let query_scope = scope.clone();
+                let outcome = blocking(move || {
+                    let options = SearchOptions {
+                        case_sensitive,
+                        regex,
+                        mask: mask.as_deref(),
+                    };
+                    search_files(
+                        index.as_slice(),
+                        query_scope.as_deref(),
+                        &query,
+                        &options,
+                        &cancel,
+                    )
+                })
+                .await;
+                // 工作区已切换：旧工作区的任务结果绝不覆盖当前结果。
+                let now_ws = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
+                if now_ws != workspace {
+                    return;
+                }
+                match outcome {
+                    Ok(outcome) => apply_results(generation, workspace, scope, outcome),
+                    Err(_) => update_state(|s| {
+                        if s.open && s.generation == generation {
+                            s.running = false;
+                            s.error = Some("文件搜索失败".to_string());
+                        }
+                    }),
+                }
+            });
+        })
     });
 }
 
@@ -400,6 +445,12 @@ fn apply_results(
 /// 直接用候选 `WorkspaceFile` + 零基 UTF-16 `EditorPosition` 打开命中；
 /// 工作区已切换或候选已过期时拒绝打开，只做关闭。
 fn activate(idx: usize) {
+    if with_state(|s| s.replace_mode) {
+        if matches!(replacement_flow::phase(), Phase::Idle) {
+            update_state(|s| s.selected = idx);
+        }
+        return;
+    }
     let current_ws = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
     let target = with_state(|s| {
         if s.workspace != current_ws {
@@ -426,6 +477,10 @@ fn activate(idx: usize) {
 }
 
 fn activate_selected() {
+    if with_state(|s| s.replace_mode) {
+        start_replacement(false);
+        return;
+    }
     let idx = with_state(|s| s.selected);
     if with_state(|s| s.hits.get(idx).is_some()) {
         activate(idx);
@@ -464,12 +519,26 @@ fn content_search_modal() -> impl IntoElement {
                 .child(header(p))
                 .child(query_row(p))
                 .child(options_row(p))
+                .child(when(
+                    || with_state(|s| s.replace_mode),
+                    move || {
+                        view()
+                            .flex_col()
+                            .child(replacement_input(p))
+                            .child(dynamic(move || replacement_actions(p)))
+                    },
+                ))
                 .child(dynamic(move || results_view())),
         )
 }
 
 fn header(p: Palette) -> impl IntoElement {
-    let scope = with_state(|s| s.scope_label.clone());
+    let (scope, replace) = with_state(|s| (s.scope_label.clone(), s.replace_mode));
+    let title = if replace {
+        "在文件中替换"
+    } else {
+        "在文件中查找"
+    };
     view()
         .h(px(44.0))
         .px(px(14.0))
@@ -477,7 +546,7 @@ fn header(p: Palette) -> impl IntoElement {
         .items_center()
         .gap(px(8.0))
         .child(
-            text("在文件中查找")
+            text(title)
                 .text_size(px(14.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(p.text_primary),
@@ -487,9 +556,16 @@ fn header(p: Palette) -> impl IntoElement {
                 .test_id("content-search-scope")
                 .child(text(scope).text_size(px(11.0)).text_color(p.text_muted)),
         )
-        .child(dynamic(move || pin_button(p)))
+        .child(when(
+            move || !replace,
+            move || dynamic(move || pin_button(p)),
+        ))
         .child(view().flex_1())
-        .child(text("⇧⌘F").text_size(px(10.5)).text_color(p.text_muted))
+        .child(
+            text(if replace { "⇧⌘R" } else { "⇧⌘F" })
+                .text_size(px(10.5))
+                .text_color(p.text_muted),
+        )
         .child(
             view()
                 .cursor(Cursor::Pointer)
@@ -522,8 +598,10 @@ fn query_row(p: Palette) -> impl IntoElement {
                 .on_focus(|| state::set_text_input_focused(true))
                 .on_blur(|| state::set_text_input_focused(false))
                 .on_change(|v: &str| {
-                    update_state(|s| s.query = v.to_string());
-                    schedule();
+                    if replacement_input_changed() {
+                        update_state(|s| s.query = v.to_string());
+                        schedule();
+                    }
                 })
                 .on_submit(|_: &str| activate_selected()),
         )
@@ -534,8 +612,10 @@ fn query_row(p: Palette) -> impl IntoElement {
             p,
             || with_state(|s| s.case_sensitive),
             || {
-                update_state(|s| s.case_sensitive = !s.case_sensitive);
-                schedule();
+                if replacement_input_changed() {
+                    update_state(|s| s.case_sensitive = !s.case_sensitive);
+                    schedule();
+                }
             },
         ))
         .child(toggle_button(
@@ -545,8 +625,10 @@ fn query_row(p: Palette) -> impl IntoElement {
             p,
             || with_state(|s| s.regex),
             || {
-                update_state(|s| s.regex = !s.regex);
-                schedule();
+                if replacement_input_changed() {
+                    update_state(|s| s.regex = !s.regex);
+                    schedule();
+                }
             },
         ))
         .child(toggle_button(
@@ -556,8 +638,10 @@ fn query_row(p: Palette) -> impl IntoElement {
             p,
             || with_state(|s| s.mask_enabled),
             || {
-                update_state(|s| s.mask_enabled = !s.mask_enabled);
-                schedule();
+                if replacement_input_changed() {
+                    update_state(|s| s.mask_enabled = !s.mask_enabled);
+                    schedule();
+                }
             },
         ))
 }
@@ -592,9 +676,147 @@ fn mask_input(p: Palette) -> impl IntoElement {
         .on_focus(|| state::set_text_input_focused(true))
         .on_blur(|| state::set_text_input_focused(false))
         .on_change(|v: &str| {
-            update_state(|s| s.mask = v.to_string());
-            schedule();
+            if replacement_input_changed() {
+                update_state(|s| s.mask = v.to_string());
+                schedule();
+            }
         })
+}
+
+fn replacement_input_changed() -> bool {
+    if !with_state(|s| s.replace_mode) {
+        return true;
+    }
+    if !replacement_flow::cancel() {
+        return false;
+    }
+    replacement_flow::reset_message();
+    true
+}
+
+fn replacement_input(p: Palette) -> impl IntoElement {
+    view().px(px(14.0)).child(
+        input()
+            .test_id("content-search-replacement-input")
+            .h(px(28.0))
+            .px(px(8.0))
+            .rounded(px(6.0))
+            .bg(p.rail_bg)
+            .border_1()
+            .border_color(p.border)
+            .text_size(px(11.5))
+            .text_color(p.text_primary)
+            .placeholder("替换为…")
+            .value(|| with_state(|s| s.replacement.clone()))
+            .on_focus(|| state::set_text_input_focused(true))
+            .on_blur(|| state::set_text_input_focused(false))
+            .on_change(|value: &str| {
+                if replacement_input_changed() {
+                    update_state(|s| s.replacement = value.to_string());
+                }
+            })
+            .on_submit(|_: &str| activate_selected()),
+    )
+}
+
+fn start_replacement(all: bool) {
+    let request = with_state(|s| {
+        if !s.replace_mode || s.running || s.error.is_some() || s.hits.is_empty() {
+            return None;
+        }
+        Some(replacement_flow::Request {
+            workspace: s.workspace.clone(),
+            files: s.index.clone()?,
+            scope: s.scope_dir.clone(),
+            query: ReplaceQuery {
+                pattern: s.query.clone(),
+                replacement: s.replacement.clone(),
+                regex: s.regex,
+                case_sensitive: s.case_sensitive,
+                mask: mask_of(s),
+            },
+            hit: if all {
+                None
+            } else {
+                Some(s.hits.get(s.selected)?.clone())
+            },
+        })
+    });
+    if let Some(request) = request {
+        replacement_flow::start(request, refresh_after_replacement);
+    }
+}
+
+fn refresh_after_replacement() {
+    state::refresh_workspace_async(None);
+    schedule();
+}
+
+fn replacement_actions(p: Palette) -> impl IntoElement {
+    let phase = replacement_flow::phase();
+    let message = match phase {
+        Phase::Planning => Some("正在检查替换范围…".into()),
+        Phase::Applying => Some("正在替换…".into()),
+        _ => replacement_flow::message(),
+    };
+    let available = with_state(|s| !s.running && s.error.is_none() && !s.hits.is_empty());
+    view()
+        .min_h(px(36.0))
+        .px(px(14.0))
+        .py(px(4.0))
+        .gap(px(6.0))
+        .flex_row()
+        .items_center()
+        .children(match phase {
+            Phase::Idle if available => vec![
+                toggle_button(
+                    "replace-selected",
+                    "替换选中项",
+                    "替换选中的匹配",
+                    p,
+                    || false,
+                    || start_replacement(false),
+                )
+                .into_element(),
+                toggle_button(
+                    "replace-all",
+                    "全部替换…",
+                    "检查范围内所有匹配",
+                    p,
+                    || false,
+                    || start_replacement(true),
+                )
+                .into_element(),
+            ],
+            Phase::Confirm { .. } => vec![
+                toggle_button(
+                    "replace-confirm",
+                    "确认全部替换",
+                    "执行已检查的替换",
+                    p,
+                    || true,
+                    || replacement_flow::confirm(refresh_after_replacement),
+                )
+                .into_element(),
+                toggle_button(
+                    "replace-cancel",
+                    "取消",
+                    "取消待确认的替换",
+                    p,
+                    || false,
+                    || {
+                        replacement_flow::cancel();
+                    },
+                )
+                .into_element(),
+            ],
+            _ => Vec::new(),
+        })
+        .children(message.map(|message| {
+            view()
+                .test_id("replace-status")
+                .child(text(message).text_size(px(11.0)).text_color(p.text_muted))
+        }))
 }
 
 fn toggle_button(
@@ -655,6 +877,7 @@ fn hit_rows(
     hits: &[SearchHit],
     scope: &str,
     on_activate: fn(usize),
+    selected: Option<usize>,
 ) -> Vec<AnyElement> {
     let mut rows: Vec<AnyElement> = Vec::new();
     let mut last_group: Option<String> = None;
@@ -687,6 +910,11 @@ fn hit_rows(
                 .items_center()
                 .gap(px(8.0))
                 .cursor(Cursor::Pointer)
+                .bg(if selected == Some(idx) {
+                    p.surface_hover
+                } else {
+                    p.surface
+                })
                 .hover(move |s| s.bg(p.surface_hover))
                 .on_press(move || on_activate(idx))
                 .child(
@@ -756,7 +984,7 @@ fn find_panel_body() -> impl IntoElement {
         )
         .child(
             scroll().flex_1().overflow_hidden().child(
-                hit_rows(p, &hits, "find-results", activate_find_hit)
+                hit_rows(p, &hits, "find-results", activate_find_hit, None)
                     .into_iter()
                     .fold(view().flex_col().gap(px(1.0)), |acc, row| acc.child(row)),
             ),
@@ -806,7 +1034,8 @@ fn results_view() -> impl IntoElement {
             .into_element(),
     );
 
-    rows.extend(hit_rows(p, &hits, "content-search", activate));
+    let selected = Some(with_state(|s| s.selected));
+    rows.extend(hit_rows(p, &hits, "content-search", activate, selected));
 
     let list = rows
         .into_iter()

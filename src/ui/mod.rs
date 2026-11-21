@@ -1,6 +1,7 @@
 pub mod code_editor;
 pub mod commit_pane;
 pub mod content_search;
+mod replacement_flow;
 pub mod diff_view;
 pub mod editor_area;
 pub mod editor_tools;
@@ -203,6 +204,7 @@ fn setup_shortcuts() {
 
     let zone_memo = computed(|| app_signal().with(|s| s.focus_zone));
     let tab_memo = computed(|| app_signal().with(|s| s.editor_tab));
+    let workspace_search_open = computed(content_search::is_open);
     let dismissable_memo = computed(|| {
         app_signal().with(|s| {
             s.focus_zone == FocusZone::Modal
@@ -230,6 +232,10 @@ fn setup_shortcuts() {
             on_key_with("escape", always, |_| {
                 state::close_active_modal();
             });
+            if workspace_search_open.get() {
+                on_key_with("up", always, |_| content_search::move_selection(-1));
+                on_key_with("down", always, |_| content_search::move_selection(1));
+            }
             return;
         }
 
@@ -250,6 +256,9 @@ fn setup_shortcuts() {
         });
         on_key_with("mod+shift+f", always, |_| {
             content_search::open_workspace();
+        });
+        on_key_with("mod+shift+r", always, |_| {
+            content_search::open_replace();
         });
         on_key_with("mod+f12", always, |_| {
             editor_tools::open_structure();

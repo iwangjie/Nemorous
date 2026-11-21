@@ -3312,6 +3312,9 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
 
 /// 统一关闭最顶层弹窗（或查找条），并恢复焦点与原生编辑器焦点。
 pub fn close_active_modal() {
+    if crate::ui::content_search::intercept_close() {
+        return;
+    }
     set_text_input_focused(false);
     editor_refs_signal().update(|r| r.modal_active = None);
     let content_search_closed = crate::ui::content_search::close_if_open();

@@ -605,6 +605,64 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_replace_in_files_checks_selection_confirmation_and_external_changes() {
+    let _guard = lock_env();
+    let fx = Fixture::new("replace-in-files");
+    let source = fx.repo_dir.join("src/app.go");
+    let other = fx.repo_dir.join("src/rename_new.go");
+    let readme = fx.repo_dir.join("README.md");
+    fs::write(&source, "// 😀 needle needle\r\npackage main\r\n").unwrap();
+    fs::write(&other, "// needle\npackage main\n").unwrap();
+    fs::write(&readme, "# Sample needle\n").unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+r").unwrap();
+    app.wait_for("在文件中替换").unwrap();
+    app.type_text("id:content-search-input", "needle").unwrap();
+    app.press("id:content-search-mask-toggle").unwrap();
+    app.type_text("id:content-search-mask-input", "*.go").unwrap();
+    app.type_text("id:content-search-replacement-input", "new").unwrap();
+    app.wait_for("3 条匹配").unwrap();
+    app.press("id:content-search-hit-1").unwrap();
+    app.press("id:replace-selected").unwrap();
+    app.wait_for("已替换 1 个文件，共 1 处").unwrap();
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        "// 😀 needle new\r\npackage main\r\n".as_bytes()
+    );
+
+    app.wait_for("2 条匹配").unwrap();
+    app.press("id:replace-all").unwrap();
+    app.wait_for("确认替换 2 个文件，共 2 处？").unwrap();
+    assert_eq!(
+        fs::read_to_string(&other).unwrap(),
+        "// needle\npackage main\n"
+    );
+    app.press_key("escape").unwrap();
+    app.wait_for("已取消替换").unwrap();
+    app.wait_for("在文件中替换").unwrap();
+
+    app.press("id:replace-all").unwrap();
+    app.wait_for("确认替换 2 个文件，共 2 处？").unwrap();
+    fs::write(&other, "// external needle\npackage main\n").unwrap();
+    app.press("id:replace-confirm").unwrap();
+    app.wait_for("已替换 1 个文件，共 1 处；1 个文件失败（src/rename_new.go: 文件内容自预检后已变化，已跳过）")
+        .unwrap();
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        "// 😀 new new\r\npackage main\r\n".as_bytes()
+    );
+    assert_eq!(
+        fs::read_to_string(&other).unwrap(),
+        "// external needle\npackage main\n"
+    );
+    assert_eq!(fs::read_to_string(&readme).unwrap(), "# Sample needle\n");
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
 fn ui_project_preview_tab_reuse_pin_and_buffer_retention() {
     let _guard = lock_env();
     let fx = Fixture::new("project-preview");
