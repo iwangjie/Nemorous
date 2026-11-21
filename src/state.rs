@@ -125,7 +125,7 @@ impl CodeTab {
         if self.revision.is_empty() {
             base
         } else {
-            format!("{base} ({})", self.revision)
+            format!("{base} ({})", self.revision.get(..8).unwrap_or(&self.revision))
         }
     }
 }
@@ -238,6 +238,10 @@ pub struct FileRevisionHistory {
     pub rel_path: String,
     pub rev: String,
     pub commits: Vec<CommitEntry>,
+    pub(crate) paths: HashMap<String, String>,
+    pub(crate) show_affected: bool,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
 }
 
 /// 编辑器 ref 注册表，允许快捷键与工具栏命令精准操控当前活跃的 Editor 实例。
@@ -298,8 +302,6 @@ pub struct AppState {
 
     // Git 历史面板状态
     pub git_commits: Vec<CommitEntry>,
-    pub git_filter_text: String,
-    pub git_filter_repo_id: String,
     pub selected_commit: Option<CommitEntry>,
     pub selected_commit_files: Vec<CommitFileEntry>,
     pub selected_commit_file: Option<CommitFileEntry>,
@@ -387,8 +389,6 @@ impl Default for AppState {
             project_selected_file: None,
             project_selected_dir: None,
             git_commits: Vec::new(),
-            git_filter_text: String::new(),
-            git_filter_repo_id: String::new(),
             selected_commit: None,
             selected_commit_files: Vec::new(),
             selected_commit_file: None,
@@ -957,6 +957,7 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
             }
         }
     });
+    retry_file_navigation();
     if complete {
         crate::session_runtime::restore_after_refresh();
     }
@@ -1462,18 +1463,61 @@ fn open_commit_diff_with_hunk(
     focus_diff: bool,
     land_on_last_hunk: bool,
 ) {
-    crate::code_split_runtime::capture_views();
-    push_nav_back_current();
-    let ws_mode =
-        app_signal().with_untracked(|s| WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode));
-    let data = match git::read_commit_diff(&commit, &file) {
-        Ok(d) => d,
-        Err(err) => {
-            show_toast("err", format!("读取提交差异失败: {err}"));
+    let ws_mode = app_signal().with_untracked(|s| WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode));
+    match git::read_commit_diff(&commit, &file) {
+        Ok(data) => {
+            let computed = compute_diff(&data.old_text, &data.new_text, ws_mode);
+            install_commit_diff(commit, file, data, computed, focus_diff, land_on_last_hunk);
+        }
+        Err(err) => show_toast("err", format!("读取提交差异失败: {err}")),
+    }
+}
+
+#[derive(Clone, Default)]
+struct CommitPreviewRequest(u64);
+
+pub(crate) fn preview_commit_diff(commit: CommitEntry, file: CommitFileEntry) {
+    let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) else { return };
+    let (workspace, origin, whitespace) = app_signal().with_untracked(|s| {
+        (s.cfg.workspace_path.clone(), s.editor_tab, WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode))
+    });
+    let request = global::<CommitPreviewRequest>().with_untracked(|s| s.0.wrapping_add(1));
+    global::<CommitPreviewRequest>().set(CommitPreviewRequest(request));
+    let (source, item) = (commit.clone(), file.clone());
+    owner.run(|| spawn(async move {
+        let result = blocking(move || -> anyhow::Result<_> {
+            let data = git::read_commit_diff(&source, &item)?;
+            let computed = compute_diff(&data.old_text, &data.new_text, whitespace);
+            Ok((data, computed))
+        }).await;
+        if !global::<CommitPreviewRequest>().with_untracked(|s| s.0 == request)
+            || !app_signal().with_untracked(|s| {
+                s.editor_tab == origin && s.cfg.workspace_path == workspace && s.show_git_panel
+                    && s.cfg.git_log_diff_preview && s.selected_commit_file.as_ref() == Some(&file)
+                    && s.selected_commit.as_ref().is_some_and(|selected|
+                        selected.hash == commit.hash && selected.repo_id == commit.repo_id)
+            })
+        {
             return;
         }
-    };
-    let computed = compute_diff(&data.old_text, &data.new_text, ws_mode);
+        match result {
+            Ok(Ok((data, computed))) => install_commit_diff(commit, file, data, computed, false, false),
+            Ok(Err(err)) => show_toast("warn", format!("读取差异预览失败：{err}")),
+            Err(err) => show_toast("warn", format!("读取差异预览失败：{err}")),
+        }
+    }));
+}
+
+fn install_commit_diff(
+    commit: CommitEntry,
+    file: CommitFileEntry,
+    data: CommitDiffData,
+    computed: ComputedDiff,
+    focus_diff: bool,
+    land_on_last_hunk: bool,
+) {
+    crate::code_split_runtime::capture_views();
+    push_nav_back_current();
     let initial_hunk_idx = if land_on_last_hunk {
         computed.hunks.len().saturating_sub(1)
     } else {
@@ -1694,7 +1738,7 @@ pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
         .join(rel_path)
         .to_string_lossy()
         .to_string();
-    let tab_id = format!("rev::{}::{}::{}", commit.repo_id, commit.short_hash, rel_path);
+    let tab_id = format!("rev::{}::{}::{}", commit.repo_id, commit.hash, rel_path);
 
     app_signal().update(|s| {
         if let Some(idx) = s.code_tabs.iter().position(|t| t.id == tab_id) {
@@ -1713,7 +1757,7 @@ pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
                 abs_path: abs,
                 color_idx: 0,
             },
-            revision: commit.short_hash.clone(),
+            revision: commit.hash.clone(),
             text: text.clone(),
             saved_text: text,
             line_ending: LineEnding::Lf,
@@ -3732,9 +3776,25 @@ pub fn submit_goto_line() {
     focus_active_editor_ref();
 }
 
+#[derive(Clone, Default)]
+struct PendingFileNavigation(Option<(String, String)>);
+
+fn retry_file_navigation() {
+    let mut pending = None;
+    global::<PendingFileNavigation>().update(|request| pending = request.0.take());
+    if let Some((workspace, query)) = pending
+        && app_signal().with_untracked(|s| {
+            s.cfg.workspace_path == workspace && s.picker_open == Some(PickerKind::GoToFile)
+                && s.focus_zone == FocusZone::Modal && s.picker_query.trim() == query.trim()
+        })
+    {
+        open_from_file_picker_input(&query);
+    }
+}
+
 /// 处理转到文件（`Cmd+Shift+O`）输入，支持 `~/path:line:col` 和工作区相对路径搜索。
 pub fn open_from_file_picker_input(raw_input: &str) {
-    set_text_input_focused(false);
+    global::<PendingFileNavigation>().set(PendingFileNavigation::default());
     let parsed = parse_file_location(raw_input);
     if parsed.path.is_empty() {
         return;
@@ -3786,13 +3846,21 @@ pub fn open_from_file_picker_input(raw_input: &str) {
     });
 
     if let Some(wf) = matched {
+        set_text_input_focused(false);
         app_signal().update(|s| {
             s.picker_open = None;
             restore_focus_after_modal(s);
         });
         open_code_file(wf, pos, true);
     } else {
-        show_toast("warn", format!("未找到匹配文件: {}", parsed.path));
+        let defer = app_signal().with_untracked(|s| {
+            s.is_refreshing.then(|| (s.cfg.workspace_path.clone(), raw_input.to_owned()))
+        });
+        if let Some(request) = defer {
+            global::<PendingFileNavigation>().set(PendingFileNavigation(Some(request)));
+        } else {
+            show_toast("warn", format!("未找到匹配文件: {}", parsed.path));
+        }
     }
 }
 
@@ -3873,17 +3941,72 @@ pub fn open_local_history_for_active() {
 }
 
 pub fn open_file_revision_history(repo: RepoInfo, rev: String, rel_path: String) {
-    let commits = git::file_history_at_revision(&repo, &rev, &rel_path, 60).unwrap_or_default();
+    let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) else {
+        return;
+    };
+    let workspace = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
+    let request_id = global::<FileHistoryRequest>().with_untracked(|request| request.0.wrapping_add(1));
+    global::<FileHistoryRequest>().set(FileHistoryRequest(request_id));
     app_signal().update(|s| {
         s.show_git_panel = true;
         s.file_history = Some(FileRevisionHistory {
-            repo,
-            rel_path,
-            rev,
-            commits,
+            repo: repo.clone(),
+            rel_path: rel_path.clone(),
+            rev: rev.clone(),
+            commits: Vec::new(),
+            paths: HashMap::new(),
+            show_affected: false,
+            loading: true,
+            error: None,
         });
+        s.selected_commit = None;
+        s.selected_commit_file = None;
+        s.selected_commit_files.clear();
     });
+
+    crate::ui::content_search::hide_find_panel();
+    crate::ui::git_pane::focus_history();
+
+    owner.run(|| spawn(async move {
+        let repo_id = repo.id.clone();
+        let expected_rev = rev.clone();
+        let expected_path = rel_path.clone();
+        let outcome = blocking(move || -> anyhow::Result<_> {
+            let commits = git::file_history_at_revision(&repo, &rev, &rel_path, 60)?;
+            let paths = crate::file_revisions::list(Path::new(&repo.path), &rev, &rel_path, 60)?
+                .into_iter()
+                .map(|revision| (revision.hash, revision.path))
+                .collect();
+            Ok((commits, paths))
+        }).await;
+        if !global::<FileHistoryRequest>().with_untracked(|request| request.0 == request_id) {
+            return;
+        }
+        let mut first = None;
+        app_signal().update(|s| {
+            let Some(history) = s.file_history.as_mut().filter(|history|
+                s.cfg.workspace_path == workspace && history.repo.id == repo_id
+                    && history.rel_path == expected_path && history.rev == expected_rev
+            ) else { return };
+            history.loading = false;
+            match outcome {
+                Ok(Ok((commits, paths))) => {
+                    first = commits.first().cloned();
+                    history.commits = commits;
+                    history.paths = paths;
+                }
+                Ok(Err(err)) => history.error = Some(err.to_string()),
+                Err(err) => history.error = Some(err.to_string()),
+            }
+        });
+        if let Some(first) = first {
+            crate::ui::git_pane::select_commit(first);
+        }
+    }));
 }
+
+#[derive(Clone, Default)]
+struct FileHistoryRequest(u64);
 
 // ============================================================================
 // EditorRef 操控辅助

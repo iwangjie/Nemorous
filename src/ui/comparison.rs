@@ -165,24 +165,48 @@ pub fn open_project_selection() -> bool {
     true
 }
 
+fn revision_source(repo_path: &str, hash: &str, short_hash: &str, path: String) -> anyhow::Result<Source> {
+    let spec = format!("{hash}:{path}");
+    let (text, binary, too_large) = git::read_git_object_text(Path::new(repo_path), &spec)?;
+    anyhow::ensure!(!binary && !too_large, "无法比较此修订版本");
+    Ok(Source {
+        text: checked_text(text)?,
+        title: format!("{short_hash} · {path}"),
+        language: Some(path),
+    })
+}
+
 pub(crate) fn open_revision(file: WorkspaceFile, revision: crate::file_revisions::Revision) {
     let live = dirty_buffer(&file);
     queue(async move {
-        blocking(move || {
-            let spec = format!("{}:{}", revision.hash, revision.path);
-            let (text, binary, too_large) =
-                git::read_git_object_text(Path::new(&file.repo_path), &spec)?;
-            anyhow::ensure!(!binary && !too_large, "无法比较此修订版本");
-            Ok(Pair {
-                left: Source {
-                    text: checked_text(text)?,
-                    title: format!("{} · {}", revision.short_hash, revision.path),
-                    language: Some(revision.path),
-                },
-                right: file_source(file, live)?,
-            })
-        })
-        .await?
+        blocking(move || Ok(Pair {
+            left: revision_source(&file.repo_path, &revision.hash, &revision.short_hash, revision.path)?,
+            right: file_source(file, live)?,
+        })).await?
+    });
+}
+
+pub(crate) fn open_historical_file(file: WorkspaceFile, revision: git::CommitEntry, path: String) {
+    let live = dirty_buffer(&file);
+    queue(async move {
+        blocking(move || Ok(Pair {
+            left: revision_source(&revision.repo_path, &revision.hash, &revision.short_hash, path)?,
+            right: file_source(file, live)?,
+        })).await?
+    });
+}
+
+pub(crate) fn open_two_revisions(
+    left: git::CommitEntry,
+    left_path: String,
+    right: git::CommitEntry,
+    right_path: String,
+) {
+    queue(async move {
+        blocking(move || Ok(Pair {
+            left: revision_source(&left.repo_path, &left.hash, &left.short_hash, left_path)?,
+            right: revision_source(&right.repo_path, &right.hash, &right.short_hash, right_path)?,
+        })).await?
     });
 }
 

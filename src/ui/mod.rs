@@ -1,3 +1,4 @@
+mod blame_view;
 pub mod bookmarks;
 pub mod code_editor;
 pub mod commit_pane;
@@ -13,6 +14,8 @@ pub(crate) mod revision_picker;
 pub mod diff_view;
 pub mod editor_area;
 pub mod editor_tools;
+mod git_forest;
+mod git_graph;
 pub mod git_pane;
 pub mod icons;
 pub mod modals;
@@ -33,7 +36,7 @@ use crate::state::{
     copy_absolute_path_current, copy_for_current_focus, copy_reference_current, current_palette,
     init_workspace, jump_diff_hunk, jump_from_diff_to_source, locate_current_in_project_tree,
     move_change_selection, move_commit_diff_file, navigate_back, navigate_forward,
-    open_commit_diff, open_file_revision_history, open_find_bar, open_goto_line_modal,
+    open_commit_diff, open_find_bar, open_goto_line_modal,
     open_working_diff, refresh_workspace_async, save_active_document, stage_selected_change_sync,
     toggle_selected_change_checkbox,
 };
@@ -189,22 +192,12 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
                     .disabled(modal_open),
                 MenuItem::submenu(
                     "选中的文件",
-                    [MenuItem::new("查看历史").on_select(guard_app_command(|| {
-                        let info = app_signal().with_untracked(|s| {
-                            state::current_location_info().and_then(|(rpath, rel, _, _)| {
-                                s.repos
-                                    .iter()
-                                    .find(|r| r.path == rpath)
-                                    .cloned()
-                                    .map(|repo| (repo, rel))
-                            })
-                        });
-                        if let Some((repo, rel)) = info {
-                            open_file_revision_history(repo, "HEAD".to_string(), rel);
-                        } else {
-                            state::show_toast("info", "请先选择一个文件");
-                        }
-                    }))],
+                    [
+                        MenuItem::new("查看历史")
+                            .on_select(guard_app_command(revision_picker::show_active_history)),
+                        MenuItem::new("与修订版本比较…")
+                            .on_select(guard_app_command(revision_picker::open_active)),
+                    ],
                 )
                 .disabled(modal_open),
             ],
@@ -213,6 +206,22 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
             "窗口",
             [
                 MenuItem::role(MenuRole::Minimize),
+                MenuItem::new("向右拆分").on_select(guard_app_command(|| {
+                    let active = app_signal().with_untracked(|s| {
+                        (s.editor_tab == EditorTabKind::File)
+                            .then(|| s.code_tabs.get(s.active_code_tab_idx).map(|tab| tab.id.clone()))
+                            .flatten()
+                    });
+                    if let Some(tab) = active {
+                        crate::code_split_runtime::split_for_tab(&tab);
+                    }
+                })).disabled(modal_open),
+                MenuItem::new("取消所有拆分")
+                    .on_select(guard_app_command(|| {
+                        if app_signal().with_untracked(|s| s.code_split.is_some()) {
+                            crate::code_split_runtime::merge();
+                        }
+                    })).disabled(modal_open),
                 menu_binding(MenuItem::new("关闭标签"), keymap, "closeTab")
                     .on_select(guard_app_command(close_active_tab))
                     .disabled(modal_open),
@@ -493,6 +502,12 @@ fn setup_shortcuts() {
                 s.show_git_panel = !s.show_git_panel;
             });
         });
+
+        if zone == FocusZone::GitFiles && !text_input_focused {
+            let repeat = KeyOptions { repeat: true, ..not_editing };
+            on_key_with("up", repeat, |_| git_pane::move_selection(-1));
+            on_key_with("down", repeat, |_| git_pane::move_selection(1));
+        }
 
         // 树焦点快捷键（Commit 树 / Project 树 / Git 提交文件树）
         bind_action(&keys, "compareOrDiff", always, move |_| {
@@ -1014,6 +1029,7 @@ pub fn shell() -> impl IntoElement {
     let left_tab_memo = computed(|| app_signal().with(|s| s.left_tab));
     let show_git_memo = computed(|| app_signal().with(|s| s.show_git_panel));
     state::setup_project_follow();
+    git_forest::setup();
 
     view()
         .test_id("nemorous-root")

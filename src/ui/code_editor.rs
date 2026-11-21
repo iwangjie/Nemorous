@@ -605,7 +605,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                 });
 
             let auto_focus = app_signal().with_untracked(|s| s.focus_zone == FocusZone::CodeEditor);
-            editor()
+            super::blame_view::editor_body(editor()
                 .component_ref(&ed_ref)
                 .test_id("code-editor-view")
                 .flex_1()
@@ -666,6 +666,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                         app_signal().update(|s| s.code_find_matches = next);
                     }
                 })
+                .on_text_press(|_: &nsh_base::EditorTextPressEvent| super::blame_view::note_text_press())
                 .on_context_menu(move |ev: &EditorContextMenuEvent| {
                     let info = app_signal().with_untracked(|s| {
                         s.code_tabs.get(s.active_code_tab_idx).map(|t| t.file.clone())
@@ -691,6 +692,8 @@ pub fn code_editor_pane() -> impl IntoElement {
                             MenuItem::new("查看文件历史").on_select(move || super::revision_picker::show_history(history.clone())),
                             MenuItem::new("与修订版本比较…").on_select(move || super::revision_picker::open(revision.clone())),
                         ]));
+                        items.extend(super::blame_view::menu_items(ev.position.line + 1));
+                        items.push(MenuItem::separator());
                         items.extend(build_location_menu_items(
                             f.repo_id,
                             f.repo_path,
@@ -702,6 +705,6 @@ pub fn code_editor_pane() -> impl IntoElement {
                         crate::state::show_popup_menu_at(items, point(ev.x, ev.y));
                     }
                 })
-                .into_element()
+                .into_element(), ed_ref, None).into_element()
         }))
 }

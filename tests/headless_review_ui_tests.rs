@@ -1928,9 +1928,8 @@ fn ui_single_column_diff_fold_f7_goto_line_and_context_menu_mapping() {
     // 5. 历史提交重命名 Diff 单栏模式：右键旧侧 `-` 行与新侧 `+` 行，分别映射旧路径/旧行号与新路径/新行号！
     app.press_key("mod+9").unwrap();
     app.wait_for("id:git-bottom-pane").unwrap();
-    app.press("id:git-commit-row-refactor").or_else(|_| {
-        app.press("text:refactor: rename file to v2")
-    }).unwrap();
+    app.wait_for("text:refactor: rename file to v2").unwrap();
+    app.press("text:refactor: rename file to v2").unwrap();
     app.wait_for("id:git-commit-file-src/rename_new.go").unwrap();
     app.press("id:git-commit-file-src/rename_new.go").unwrap();
     app.press_key("mod+d").unwrap();
@@ -1943,4 +1942,96 @@ fn ui_single_column_diff_fold_f7_goto_line_and_context_menu_mapping() {
     app.right_click("+ const Version = \"v2\"").unwrap();
     app.choose_menu_item("复制路径／引用 > 文件与行号").unwrap();
     assert_eq!(app.screen().clipboard(), Some("src/rename_new.go:5"));
+}
+
+#[test]
+fn ui_git_forest_filters_previews_and_compares_file_history() {
+    let _guard = lock_env();
+    let fx = Fixture::new("git-forest");
+    let short = |revision: &str| {
+        let out = Command::new("git")
+            .current_dir(&fx.repo_dir)
+            .args(["rev-parse", "--short", revision])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    let current = format!("id:git-commit-row-{}", short("HEAD"));
+    let initial = format!("id:git-commit-row-{}", short("HEAD^"));
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+9").unwrap();
+    app.wait_for(current.as_str()).unwrap();
+    app.wait_for(initial.as_str()).unwrap();
+    app.type_text("id:git-filter-input", "initial|missing").unwrap();
+    app.wait_for_gone(current.as_str(), Duration::from_secs(4)).unwrap();
+    app.wait_for(initial.as_str()).unwrap();
+    app.type_text("id:git-author-filter", "我").unwrap();
+    app.type_text("id:git-path-filter", "*.go").unwrap();
+    app.wait_for(initial.as_str()).unwrap();
+    app.press("id:git-clear-filters").unwrap();
+    app.wait_for(current.as_str()).unwrap();
+    app.press("id:git-group-filter").unwrap();
+    app.choose_menu_item("按仓库").unwrap();
+    app.press(current.as_str()).unwrap();
+    app.wait_for("id:git-commit-file-src/rename_new.go").unwrap();
+    app.press("id:git-diff-preview").unwrap();
+    app.wait_for("id:commit-diff-pane").unwrap();
+    app.press("id:git-diff-preview").unwrap();
+
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/rename_new.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.right_click(r#"const Version = "v2""#).unwrap();
+    app.choose_menu_item("Git > 查看文件历史").unwrap();
+    app.wait_for(current.as_str()).unwrap();
+    app.wait_for(initial.as_str()).unwrap();
+    app.press(current.as_str()).unwrap();
+    app.press_key("down").unwrap();
+    app.wait_for("id:git-commit-file-src/rename_old.go").unwrap();
+    assert!(!app.screen().matches("id:git-commit-file-README.md").unwrap());
+    app.press("id:git-history-affected").unwrap();
+    app.wait_for("id:git-commit-file-README.md").unwrap();
+    app.right_click(initial.as_str()).unwrap();
+    app.choose_menu_item("设为比较基准").unwrap();
+    app.right_click(current.as_str()).unwrap();
+    app.choose_menu_item(&format!("与修订 {} 比较…", short("HEAD^"))).unwrap();
+    app.wait_for("id:comparison-pane").unwrap();
+    app.wait_for(r#"const Version = "v1""#).unwrap();
+    app.wait_for(r#"const Version = "v2""#).unwrap();
+}
+
+#[test]
+fn ui_blame_reveals_real_commit_and_marks_editor_only_changes() {
+    let _guard = lock_env();
+    let fx = Fixture::new("blame");
+    let original = fs::read(fx.repo_dir.join("src/app.go")).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:3").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.right_click("func hello() string {").unwrap();
+    app.choose_menu_item("显示整文件 Git Blame").unwrap();
+    app.wait_for("id:blame-gutter").unwrap();
+    app.wait_for("id:blame-line-3").unwrap();
+    app.wait_for("未提交的本地修改").unwrap();
+    app.press("id:blame-line-3").unwrap();
+    app.wait_for("id:git-bottom-pane").unwrap();
+    app.wait_for("text:feat: initial fixture").unwrap();
+    app.wait_for("id:git-commit-file-src/app.go").unwrap();
+
+    app.press("func hello() string {").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.type_text("id:goto-line-input", "3:1").unwrap();
+    app.press_key("enter").unwrap();
+    app.press_key("x").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+    app.right_click("xfunc hello() string {").unwrap();
+    app.choose_menu_item("只显示该行 Git Blame").unwrap();
+    app.wait_for_gone("id:blame-gutter", Duration::from_secs(3)).unwrap();
+    app.wait_for("id:blame-line-3").unwrap();
+    app.wait_for("未提交的本地修改").unwrap();
+    assert_eq!(fs::read(fx.repo_dir.join("src/app.go")).unwrap(), original);
 }

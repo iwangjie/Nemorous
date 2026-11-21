@@ -183,7 +183,7 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
         .overflow_hidden()
         .child(strip)
         .child(
-            editor()
+            super::blame_view::editor_body(editor()
                 .component_ref(&ed_ref)
                 .test_id(match side {
                     PaneId::Left => "split-editor-left",
@@ -260,6 +260,12 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
                     let off = api.scroll_offset();
                     code_split_runtime::save_view(side, &tab_id, last.head, off.x.0, off.y.0);
                 })
-                .into_element(),
+                .on_text_press(|_: &nsh_base::EditorTextPressEvent| super::blame_view::note_text_press())
+                .on_context_menu(move |ev: &nsh_base::EditorContextMenuEvent| {
+                    code_split_runtime::focus(side);
+                    let items = super::blame_view::menu_items(ev.position.line + 1);
+                    state::show_popup_menu_at(items, point(ev.x, ev.y));
+                })
+                .into_element(), ed_ref, Some(side)),
         )
 }

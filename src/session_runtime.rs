@@ -175,7 +175,12 @@ pub(crate) fn restore_after_refresh() {
             if let Ok(Some(plan)) = plan {
                 app_signal().update(|s| {
                     if s.code_tabs.is_empty() && ChoiceFingerprint::from_app(s) == choice {
+                        let modal = s.focus_zone == FocusZone::Modal;
                         apply_plan(s, plan);
+                        if modal {
+                            s.prev_focus_zone = s.focus_zone;
+                            s.focus_zone = FocusZone::Modal;
+                        }
                     }
                 });
             }

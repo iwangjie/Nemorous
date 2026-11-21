@@ -318,31 +318,47 @@ enum LimitedGitOutput {
     Missing,
 }
 
-/// 流式读取 Git blob 输出，最多读 `max_bytes + 1` 字节，超限时立即终止子进程避免大对象撑爆内存。
-fn run_git_blob_limited(
+pub(crate) enum BoundedGitOutput {
+    Ok(Vec<u8>),
+    TooLarge,
+    Failed { stderr: String, exit: Option<i32> },
+}
+
+/// 流式读取 Git 命令输出，最多保留 `max_bytes` 字节；超限时立即终止子进程避免大对象撑爆内存。
+pub(crate) fn run_git_limited(
     repo_path: &Path,
-    spec: &str,
+    args: &[&str],
     max_bytes: usize,
-) -> Result<LimitedGitOutput> {
+    input: Option<Vec<u8>>,
+) -> Result<BoundedGitOutput> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    let subcommand = args
+        .iter()
+        .copied()
+        .find(|arg| !arg.starts_with('-'))
+        .unwrap_or("git");
 
     let mut cmd = Command::new("git");
     cmd.arg("-c")
         .arg("core.quotepath=false")
-        .args(["cat-file", "blob", spec])
+        .args(args)
         .current_dir(repo_path)
         .env("LC_ALL", "C")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("启动 git cat-file 失败 (dir={})", repo_path.display()))?;
+        .with_context(|| format!("启动 git {subcommand} 失败 (dir={})", repo_path.display()))?;
 
+    let writer = input.zip(child.stdin.take()).map(|(bytes, mut pipe)| {
+        std::thread::spawn(move || std::io::Write::write_all(&mut pipe, &bytes))
+    });
     let mut stdout_pipe = child.stdout.take();
     let mut stderr_pipe = child.stderr.take();
     let hit_limit = Arc::new(AtomicBool::new(false));
@@ -369,7 +385,8 @@ fn run_git_blob_limited(
     let err_handle = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
         let mut buf = Vec::new();
         if let Some(ref mut pipe) = stderr_pipe {
-            pipe.read_to_end(&mut buf)?;
+            pipe.by_ref().take(64 * 1024).read_to_end(&mut buf)?;
+            std::io::copy(pipe, &mut std::io::sink())?;
         }
         Ok(buf)
     });
@@ -381,7 +398,10 @@ fn run_git_blob_limited(
             let _ = child.wait();
             let _ = out_handle.join();
             let _ = err_handle.join();
-            return Ok(LimitedGitOutput::TooLarge);
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
+            return Ok(BoundedGitOutput::TooLarge);
         }
         if let Some(st) = child.try_wait()? {
             break st;
@@ -391,25 +411,50 @@ fn run_git_blob_limited(
             let _ = child.wait();
             let _ = out_handle.join();
             let _ = err_handle.join();
-            return Err(anyhow!("git cat-file blob {spec} 超时"));
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
+            return Err(anyhow!("git {} 超时", args.join(" ")));
         }
         std::thread::sleep(Duration::from_millis(4));
     };
 
     let stdout = out_handle
         .join()
-        .map_err(|_| anyhow!("读取 git cat-file stdout 线程异常"))??;
+        .map_err(|_| anyhow!("读取 git {subcommand} stdout 线程异常"))??;
     let stderr = err_handle
         .join()
-        .map_err(|_| anyhow!("读取 git cat-file stderr 线程异常"))??;
+        .map_err(|_| anyhow!("读取 git {subcommand} stderr 线程异常"))??;
 
+    let written = writer.map(|writer| writer.join());
     if hit_limit.load(Ordering::SeqCst) {
-        return Ok(LimitedGitOutput::TooLarge);
+        return Ok(BoundedGitOutput::TooLarge);
     }
 
     if !status.success() {
         let msg = String::from_utf8_lossy(&stderr).trim().to_string();
-        let lower = msg.to_ascii_lowercase();
+        return Ok(BoundedGitOutput::Failed {
+            stderr: msg,
+            exit: status.code(),
+        });
+    }
+
+    if let Some(written) = written {
+        written.map_err(|_| anyhow!("写入 git {subcommand} stdin 线程异常"))??;
+    }
+    Ok(BoundedGitOutput::Ok(stdout))
+}
+
+fn run_git_blob_limited(
+    repo_path: &Path,
+    spec: &str,
+    max_bytes: usize,
+) -> Result<LimitedGitOutput> {
+    match run_git_limited(repo_path, &["cat-file", "blob", spec], max_bytes, None)? {
+        BoundedGitOutput::Ok(bytes) => Ok(LimitedGitOutput::Ok(bytes)),
+        BoundedGitOutput::TooLarge => Ok(LimitedGitOutput::TooLarge),
+        BoundedGitOutput::Failed { stderr, exit } => {
+            let lower = stderr.to_ascii_lowercase();
         if lower.contains("not in '")
             || lower.contains("does not exist")
             || lower.contains("invalid object name")
@@ -419,13 +464,9 @@ fn run_git_blob_limited(
         {
             return Ok(LimitedGitOutput::Missing);
         }
-        return Err(anyhow!(
-            "读取 Git 文件版本失败 ({spec}): {msg} (exit {:?})",
-            status.code()
-        ));
+            Err(anyhow!("读取 Git 文件版本失败 ({spec}): {stderr} (exit {exit:?})"))
+        }
     }
-
-    Ok(LimitedGitOutput::Ok(stdout))
 }
 
 pub fn run_git_string(repo_path: &Path, args: &[&str]) -> Result<String> {
@@ -1493,10 +1534,12 @@ pub fn file_history_at_revision(
     let out = run_git_string(
         dir,
         &[
+            "--literal-pathspecs",
             "log",
             &limit_arg,
             "--follow",
             "--format=%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s%x1f%D%x1e",
+            "--end-of-options",
             target_rev,
             "--",
             rel_path,

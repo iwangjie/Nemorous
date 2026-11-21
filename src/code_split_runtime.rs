@@ -75,7 +75,12 @@ pub(crate) fn tab_list(side: PaneId) -> Vec<(String, String, bool)> {
 }
 
 pub(crate) fn split_for_tab(id: &str) {
-    let offset = state::active_editor_api(FocusZone::CodeEditor).map(|api| api.scroll_offset());
+    let is_visible = app_signal().with_untracked(|s| {
+        s.editor_tab == EditorTabKind::File
+            && s.code_tabs.get(s.active_code_tab_idx).is_some_and(|tab| tab.id == id)
+    });
+    let offset = is_visible.then(|| state::active_editor_api(FocusZone::CodeEditor))
+        .flatten().map(|api| api.scroll_offset());
     app_signal().update(|s| {
         if s.code_split.is_some() {
             return;

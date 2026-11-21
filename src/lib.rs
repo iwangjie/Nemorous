@@ -1,3 +1,4 @@
+mod blame;
 mod code_split_runtime;
 mod editor_split;
 pub mod config;
@@ -6,6 +7,7 @@ mod file_revisions;
 mod format_runtime;
 mod formatter;
 pub mod git;
+mod git_log_query;
 mod keymap;
 pub mod local_history;
 mod local_history_legacy;
