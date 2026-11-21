@@ -7,6 +7,7 @@ mod replacement_flow;
 mod key_gestures;
 pub(crate) mod navigation_picker;
 mod split_code_view;
+pub(crate) mod revision_picker;
 pub mod diff_view;
 pub mod editor_area;
 pub mod editor_tools;
@@ -103,6 +104,10 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
                 MenuItem::role(MenuRole::SelectAll),
             ],
         ),
+        MenuItem::submenu("Git", [
+            MenuItem::new("查看文件历史").on_select(guard_app_command(revision_picker::show_active_history)).disabled(modal_open),
+            MenuItem::new("与修订版本比较…").on_select(guard_app_command(revision_picker::open_active)).disabled(modal_open),
+        ]),
         MenuItem::submenu(
             "导航",
             [
@@ -241,6 +246,7 @@ fn setup_shortcuts() {
     let workspace_search_open = computed(content_search::is_open);
     let multiline_search = computed(content_search::query_is_multiline);
     let navigation_open = computed(navigation_picker::is_open);
+    let revision_open = computed(revision_picker::is_open);
     let switcher_open = computed(navigation_picker::is_switcher);
     let dismissable_memo = computed(|| {
         app_signal().with(|s| {
@@ -269,6 +275,11 @@ fn setup_shortcuts() {
             on_key_with("escape", always, |_| {
                 state::close_active_modal();
             });
+            if revision_open.get() {
+                on_key_with("up", always, |_| revision_picker::move_selection(-1));
+                on_key_with("down", always, |_| revision_picker::move_selection(1));
+                on_key_with("enter", always, |_| revision_picker::accept());
+            }
             if navigation_open.get() {
                 on_key_with("up", always, |_| navigation_picker::move_selection(-1));
                 on_key_with("down", always, |_| navigation_picker::move_selection(1));
@@ -1043,5 +1054,6 @@ pub fn shell() -> impl IntoElement {
         .child(editor_tools::modal_layer())
         .child(bookmarks::modal_layer())
         .child(navigation_picker::modal_layer())
+        .child(revision_picker::modal_layer())
         .child(modals::modals_layer())
 }

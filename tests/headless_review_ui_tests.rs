@@ -609,6 +609,40 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_compare_pre_rename_revision_with_unsaved_source() {
+    let _guard = lock_env();
+    let fx = Fixture::new("revision-picker-rename");
+    let working = fx.repo_dir.join("src/rename_new.go");
+    let original = fs::read(&working).unwrap();
+    let hash = Command::new("git").current_dir(&fx.repo_dir)
+        .args(["rev-parse", "--short", "HEAD^"]).output().unwrap();
+    let old_hash = String::from_utf8(hash.stdout).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/rename_new.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press_key("mod+r").unwrap();
+    app.type_text("id:code-find-input", "v2").unwrap();
+    app.type_text("id:code-replace-input", "edited-v2").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("未保存").unwrap();
+    app.press_key("escape").unwrap();
+
+    app.right_click(r#"const Version = "edited-v2""#).unwrap();
+    app.choose_menu_item("Git > 与修订版本比较…").unwrap();
+    app.wait_for(&format!("id:file-revision-{}", old_hash.trim())).unwrap();
+    app.press_key("down").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("id:comparison-pane").unwrap();
+    app.wait_for(&format!("{} · src/rename_old.go", old_hash.trim())).unwrap();
+    app.wait_for(r#"const Version = "v1""#).unwrap();
+    app.wait_for(r#"const Version = "edited-v2""#).unwrap();
+    assert_eq!(fs::read(&working).unwrap(), original);
+}
+
+#[test]
 fn ui_search_everywhere_actions_recent_files_and_switcher() {
     let _guard = lock_env();
     let fx = Fixture::new("navigation-picker");

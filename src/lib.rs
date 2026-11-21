@@ -2,6 +2,7 @@ mod code_split_runtime;
 mod editor_split;
 pub mod config;
 pub mod diff_model;
+mod file_revisions;
 mod format_runtime;
 mod formatter;
 pub mod git;

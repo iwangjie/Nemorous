@@ -165,6 +165,27 @@ pub fn open_project_selection() -> bool {
     true
 }
 
+pub(crate) fn open_revision(file: WorkspaceFile, revision: crate::file_revisions::Revision) {
+    let live = dirty_buffer(&file);
+    queue(async move {
+        blocking(move || {
+            let spec = format!("{}:{}", revision.hash, revision.path);
+            let (text, binary, too_large) =
+                git::read_git_object_text(Path::new(&file.repo_path), &spec)?;
+            anyhow::ensure!(!binary && !too_large, "无法比较此修订版本");
+            Ok(Pair {
+                left: Source {
+                    text: checked_text(text)?,
+                    title: format!("{} · {}", revision.short_hash, revision.path),
+                    language: Some(revision.path),
+                },
+                right: file_source(file, live)?,
+            })
+        })
+        .await?
+    });
+}
+
 pub fn open_clipboard() {
     let tab = app_signal().with_untracked(|s| {
         s.code_tabs

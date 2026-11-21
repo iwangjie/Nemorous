@@ -525,6 +525,12 @@ fn render_project_dir(
                             super::comparison::open_project_selection();
                         }));
                     }
+                    let history = f.clone();
+                    let revision = f.clone();
+                    items.push(MenuItem::submenu("Git", [
+                        MenuItem::new("查看文件历史").on_select(move || super::revision_picker::show_history(history.clone())),
+                        MenuItem::new("与修订版本比较…").on_select(move || super::revision_picker::open(revision.clone())),
+                    ]));
                     items.extend(build_location_menu_items(
                         f.repo_id.clone(),
                         f.repo_path.clone(),
