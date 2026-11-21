@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
@@ -142,6 +142,15 @@ pub fn build_location_menu_items(
     items
 }
 
+fn commit_tri_state(keys: &[String], checked: &HashSet<String>) -> Option<bool> {
+    let tri = tri_state_for_keys(keys.iter().map(String::as_str), checked);
+    if tri == Some(true) && app_signal().with(|s| keys.iter().any(|key| s.included_hunks.contains_key(key))) {
+        Some(false)
+    } else {
+        tri
+    }
+}
+
 fn tri_checkbox(state_val: Option<bool>, p: Palette, on_toggle: impl Fn(bool) + 'static) -> impl IntoElement {
     let checked = state_val == Some(true);
     let partial = state_val == Some(false);
@@ -232,11 +241,94 @@ fn open_stash_menu() {
     ]);
 }
 
+fn set_change_list_filter(name: &str) {
+    app_signal().update(|s| s.cfg.active_change_list = name.to_owned());
+    state::save_config_quiet();
+}
+
+fn edit_change_list(existing: Option<String>) {
+    let rename = existing.clone();
+    super::git_prompt::open(
+        if rename.is_some() { "重命名变更列表" } else { "新建变更列表" },
+        existing.unwrap_or_default(),
+        move |name| {
+            let mut result = Ok(());
+            app_signal().update(|s| {
+                result = match &rename {
+                    Some(old) => s.cfg.rename_change_list(old, name),
+                    None => s.cfg.create_change_list(name),
+                };
+                if result.is_ok() {
+                    s.cfg.active_change_list = name.to_owned();
+                }
+            });
+            result?;
+            state::save_config_quiet();
+            Ok(())
+        },
+    );
+}
+
 fn open_changelist_menu() {
-    let total: usize = app_signal().with_untracked(|s| s.statuses.iter().map(|st| st.files.len()).sum());
-    crate::state::show_popup_menu(vec![
-        MenuItem::new(format!("默认变更列表 ({total} 个文件)")).checked(true),
-    ]);
+    let (names, counts, active) = app_signal().with_untracked(|s| {
+        let keys: HashSet<String> = s.statuses.iter()
+            .flat_map(|st| st.files.iter().map(ChangedFile::key))
+            .collect();
+        let mut counts = BTreeMap::<String, usize>::new();
+        for key in keys {
+            *counts.entry(s.cfg.change_list_for(&key).to_owned()).or_default() += 1;
+        }
+        let names = s.cfg.change_lists.iter().map(|list| list.name.clone()).collect::<Vec<_>>();
+        (names, counts, s.cfg.active_change_list.clone())
+    });
+    let mut items = vec![
+        MenuItem::new("全部变更").checked(active.is_empty()).on_select(|| set_change_list_filter("")),
+        MenuItem::new(format!("默认变更列表 ({} 个文件)", counts.get("").copied().unwrap_or(0)))
+            .checked(active == DEFAULT_CHANGE_LIST_FILTER)
+            .on_select(|| set_change_list_filter(DEFAULT_CHANGE_LIST_FILTER)),
+    ];
+    for name in names {
+        items.push(
+            MenuItem::new(format!("{} ({} 个文件)", name, counts.get(&name).copied().unwrap_or(0)))
+                .checked(active == name)
+                .on_select(move || set_change_list_filter(&name)),
+        );
+    }
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("新建变更列表…").on_select(|| edit_change_list(None)));
+    if !active.is_empty() && active != DEFAULT_CHANGE_LIST_FILTER {
+        let rename = active.clone();
+        items.push(MenuItem::new("重命名当前列表…").on_select(move || edit_change_list(Some(rename.clone()))));
+        items.push(MenuItem::new("删除当前列表").on_select(move || {
+            app_signal().update(|s| s.cfg.delete_change_list(&active));
+            state::save_config_quiet();
+        }));
+    }
+    state::show_popup_menu(items);
+}
+
+const DEFAULT_CHANGE_LIST_FILTER: &str = "__default__";
+
+fn matches_change_list(cfg: &crate::config::Config, file: &ChangedFile) -> bool {
+    cfg.matches_change_list(&file.key())
+}
+
+fn assign_to_list_menu(file: &ChangedFile) -> MenuItem {
+    let key = file.key();
+    let (names, active) = app_signal().with_untracked(|s| {
+        let names = s.cfg.change_lists.iter().map(|list| list.name.clone()).collect::<Vec<_>>();
+        (names, s.cfg.change_list_for(&key).to_owned())
+    });
+    let items = std::iter::once(String::new()).chain(names).map(|name| {
+        let key = key.clone();
+        MenuItem::new(if name.is_empty() { "默认变更列表".to_owned() } else { name.clone() })
+            .checked(active == name)
+            .on_select(move || {
+                app_signal().update(|s| s.cfg.assign_change_list(&name, std::slice::from_ref(&key)));
+                state::save_config_quiet();
+            })
+    });
+    MenuItem::submenu("移到变更列表", items)
 }
 
 fn open_narrow_overflow_menu() {
@@ -296,12 +388,12 @@ pub fn commit_pane() -> impl IntoElement {
                 let keys: Vec<String> = s
                     .statuses
                     .iter()
-                    .flat_map(|st| st.files.iter().map(|f| f.key()))
+                    .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)).map(ChangedFile::key))
                     .collect();
                 (keys, s.checked_changes.clone(), s.cfg.changes_flat, s.is_refreshing)
             });
             let total_files = all_keys.len();
-            let root_tri = tri_state_for_keys(all_keys.iter().map(String::as_str), &checked_set);
+            let root_tri = commit_tri_state(&all_keys, &checked_set);
             let toggle_keys = all_keys.clone();
             let narrow = w < 220.0;
 
@@ -470,7 +562,10 @@ pub fn commit_pane() -> impl IntoElement {
                     let p = current_palette();
                     let snapshot = app_signal().with(|s| {
                         (
-                            s.statuses.clone(),
+                            s.statuses.iter().cloned().map(|mut status| {
+                                status.files.retain(|f| matches_change_list(&s.cfg, f));
+                                status
+                            }).collect::<Vec<_>>(),
                             s.changes_filter.trim().to_ascii_lowercase(),
                             s.cfg.changes_flat,
                             s.change_selection.clone(),
@@ -531,13 +626,16 @@ pub fn commit_pane() -> impl IntoElement {
                     }
 
                     if staged_repos.is_empty() && unstaged_repos.is_empty() {
+                        let filtered = !filter_q.is_empty() || app_signal().with_untracked(|s| {
+                            !s.cfg.active_change_list.is_empty()
+                        });
                         return view()
                             .py(px(32.0))
                             .px(px(14.0))
                             .items_center()
                             .justify_center()
                             .child(
-                                text("工作区干净，没有本地变更")
+                                text(if filtered { "没有匹配的本地变更" } else { "工作区干净，没有本地变更" })
                                     .text_size(px(12.0))
                                     .text_color(p.text_muted),
                             )
@@ -585,6 +683,7 @@ pub fn commit_pane() -> impl IntoElement {
                     view().flex_col().py(px(4.0)).children(sections).into_element()
                 })),
         )
+        .child(super::commit_form::form())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -606,7 +705,7 @@ fn render_section(
         .flat_map(|(_, fs)| fs.iter().map(|f| f.key()))
         .collect();
     let count = section_keys.len();
-    let tri = tri_state_for_keys(section_keys.iter().map(String::as_str), checked_set);
+    let tri = commit_tri_state(&section_keys, checked_set);
     let keys_for_toggle = section_keys.clone();
     let multi_repo = repo_groups.len() > 1;
     let section_prefix = if is_staged { "staged" } else { "unstaged" };
@@ -663,7 +762,7 @@ fn render_section(
             let repo_key = format!("{section_prefix}::{}", st.repo.id);
             let repo_collapsed = collapsed_repos.contains(&repo_key);
             let repo_keys: Vec<String> = files.iter().map(|f| f.key()).collect();
-            let repo_tri = tri_state_for_keys(repo_keys.iter().map(String::as_str), checked_set);
+            let repo_tri = commit_tri_state(&repo_keys, checked_set);
             let badge = repo_badge_colors(st.repo.color_idx, p.is_dark);
 
             if multi_repo {
@@ -790,7 +889,7 @@ fn render_change_dir_children(
         let dir_collapsed = collapsed_dirs.contains(&dir_key);
         let mut keys = Vec::new();
         collect_tree_keys(sub, &mut keys);
-        let tri = tri_state_for_keys(keys.iter().map(String::as_str), checked_set);
+        let tri = commit_tri_state(&keys, checked_set);
         let dk = dir_key.clone();
         let dk_chev = dir_key.clone();
         let abs_dir = std::path::Path::new(repo_path)
@@ -951,6 +1050,7 @@ fn render_change_file_row(
         .as_ref()
         .is_some_and(|sel| sel.staged == is_staged && sel.file.key() == key);
     let is_checked = checked_set.contains(&key);
+    let partial = app_signal().with(|s| s.included_hunks.contains_key(&key));
     let indent = 14.0 + (depth as f32) * 14.0;
     let status_col = status_text_color(&cf.kind, p);
     let display_name = if show_full_path {
@@ -1045,6 +1145,15 @@ fn render_change_file_row(
                 MenuItem::new(if is_staged { "取消暂存" } else { "暂存" }).on_select(move || {
                     stage_selected_change_sync(!is_staged);
                 }),
+                {
+                    let file = f.clone();
+                    MenuItem::new("HEAD、暂存区与工作区对比").on_select(move || super::index_review::open(file.clone()))
+                },
+                {
+                    let file = f.clone();
+                    MenuItem::new("回滚文件…").on_select(move || super::git_review::rollback_file(file.clone()))
+                },
+                assign_to_list_menu(&f),
                 MenuItem::separator(),
                 MenuItem::new("复制").on_select(move || set_clipboard(copy_val.clone())),
             ];
@@ -1059,7 +1168,7 @@ fn render_change_file_row(
             crate::state::show_popup_menu_at(items, e.page_position);
         })
         .child(tri_checkbox(
-            if is_checked { Some(true) } else { None },
+            if partial { Some(false) } else if is_checked { Some(true) } else { None },
             p,
             move |shift| state::toggle_change_checked_in_section(&key_chk, is_staged, shift),
         ))

@@ -282,6 +282,7 @@ pub struct AppState {
     pub change_selection: Option<ChangeSelection>,
     pub change_selected_dir: Option<(String, String, String)>, // (repo_id, rel_dir, abs_dir)
     pub checked_changes: HashSet<String>,
+    pub(crate) included_hunks: HashMap<String, crate::ui::git_review::IncludedHunks>,
     pub known_change_keys: HashSet<String>,
     pub last_checked_key: Option<String>,
     pub last_checked_staged: Option<bool>,
@@ -373,6 +374,7 @@ impl Default for AppState {
             change_selection: None,
             change_selected_dir: None,
             checked_changes: HashSet::new(),
+            included_hunks: HashMap::new(),
             known_change_keys: HashSet::new(),
             last_checked_key: None,
             last_checked_staged: None,
@@ -880,6 +882,7 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
         }
         s.known_change_keys.retain(|k| all_change_map.contains_key(k));
         s.checked_changes.retain(|k| all_change_map.contains_key(k));
+        s.included_hunks.retain(|k, _| all_change_map.contains_key(k));
 
         // 更新当前选中行（保持原路径）
         if let Some(sel) = &mut s.change_selection {
@@ -922,7 +925,9 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
                 wd.file = latest_cf.clone();
             }
             let fresh = git::read_review_change(&wd.file, wd.data.staged_only);
-            let old_changed = fresh.old_text != wd.data.old_text;
+            let old_changed = fresh.old_text != wd.data.old_text
+                || fresh.head_snapshot != wd.data.head_snapshot
+                || fresh.index_snapshot != wd.data.index_snapshot;
             let disk_changed = fresh.version.sha256 != wd.data.version.sha256
                 || fresh.version.exists != wd.data.version.exists
                 || fresh.new_text != wd.data.new_text;
@@ -933,6 +938,8 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
                 }
                 if old_changed {
                     wd.data.old_text = fresh.old_text;
+                    wd.data.index_snapshot = fresh.index_snapshot;
+                    wd.data.head_snapshot = fresh.head_snapshot;
                     wd.computed = compute_diff(&wd.data.old_text, &wd.current_new_text, ws_mode);
                     wd.content_rev += 1;
                 }
@@ -1063,9 +1070,9 @@ pub fn visible_change_items(s: &AppState) -> Vec<ChangeSelection> {
     let q = s.changes_filter.trim().to_ascii_lowercase();
     let mut out = Vec::new();
     let matches_query = |f: &ChangedFile| {
-        q.is_empty()
+        s.cfg.matches_change_list(&f.key()) && (q.is_empty()
             || f.path.to_ascii_lowercase().contains(&q)
-            || f.repo_name.to_ascii_lowercase().contains(&q)
+            || f.repo_name.to_ascii_lowercase().contains(&q))
     };
 
     if !s.collapsed_staged_section {
@@ -1159,6 +1166,7 @@ pub fn toggle_change_checked_in_section(key: &str, staged: bool, shift_held: boo
                     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
                     let target_val = !s.checked_changes.contains(key);
                     for (_, k) in &ordered[lo..=hi] {
+                        s.included_hunks.remove(k);
                         if target_val {
                             s.checked_changes.insert(k.clone());
                         } else {
@@ -1171,6 +1179,7 @@ pub fn toggle_change_checked_in_section(key: &str, staged: bool, shift_held: boo
                 }
             }
         }
+        s.included_hunks.remove(key);
         if s.checked_changes.contains(key) {
             s.checked_changes.remove(key);
         } else {
@@ -1195,6 +1204,7 @@ pub fn toggle_change_checked(key: &str, shift_held: bool) {
 pub fn set_group_checked(keys: Vec<String>, check: bool) {
     app_signal().update(|s| {
         for k in keys {
+            s.included_hunks.remove(&k);
             if check {
                 s.checked_changes.insert(k);
             } else {
@@ -3450,7 +3460,8 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
 
 /// 统一关闭最顶层弹窗（或查找条），并恢复焦点与原生编辑器焦点。
 pub fn close_active_modal() {
-    if crate::ui::content_search::intercept_close() || crate::history_runtime::intercept_close() {
+    if crate::ui::content_search::intercept_close() || crate::history_runtime::intercept_close()
+        || crate::ui::index_review::intercept_close() {
         return;
     }
     set_text_input_focused(false);
@@ -3462,10 +3473,14 @@ pub fn close_active_modal() {
     let keymap_closed = crate::ui::keymap_settings::close_active();
     let history_closed = crate::history_runtime::close_active();
     let editor_tool_closed = crate::ui::editor_tools::close_active();
+    let git_prompt_closed = crate::ui::git_prompt::close_active();
+    let branches_closed = crate::ui::branch_matrix::close_active();
+    let sync_closed = crate::ui::sync_dialog::close_active();
+    let index_review_closed = crate::ui::index_review::close_active();
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
+        if index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;
@@ -3864,6 +3879,41 @@ pub fn open_from_file_picker_input(raw_input: &str) {
     }
 }
 
+pub(crate) fn spawn_from_root(future: impl std::future::Future<Output = ()> + 'static) {
+    if let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) {
+        owner.run(|| spawn(future));
+    } else {
+        spawn(future);
+    }
+}
+
+/// Run a Git write off the UI thread and refresh after releasing the workspace write guard.
+pub(crate) fn run_git_action<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    complete: impl FnOnce(T) + 'static,
+) -> bool {
+    if app_signal().with_untracked(|s| s.command_busy) {
+        show_toast("warn", "其他 Git 操作正在运行");
+        return false;
+    }
+    app_signal().update(|s| s.command_busy = true);
+    let task = async move {
+        let result = blocking(work).await;
+        app_signal().update(|s| {
+            s.command_busy = false;
+            s.pending_refresh = false;
+            s.pending_refresh_repos.clear();
+        });
+        match result {
+            Ok(value) => complete(value),
+            Err(err) => show_toast("err", format!("任务失败：{err}")),
+        }
+        refresh_workspace_async(None);
+    };
+    spawn_from_root(task);
+    true
+}
+
 /// 暂存或取消暂存指定文件（命令期间暂缓监听刷新，结束后补刷）。
 pub fn stage_files_action(files: Vec<ChangedFile>, stage: bool) {
     if files.is_empty() {
@@ -3876,35 +3926,26 @@ pub fn stage_files_action(files: Vec<ChangedFile>, stage: bool) {
             .or_default()
             .push(f.path.clone());
     }
-    app_signal().update(|s| s.command_busy = true);
-    spawn(async move {
-        let res = blocking(move || {
+    run_git_action(
+        move || {
             for (repo_path, paths) in by_repo {
                 git::stage_or_unstage_files(&repo_path, &paths, stage)?;
             }
             anyhow::Ok(())
-        })
-        .await;
-        let need_follow = app_signal().with_untracked(|s| s.pending_refresh);
-        app_signal().update(|s| {
-            s.command_busy = false;
-            s.pending_refresh = false;
-            s.pending_refresh_repos.clear();
-        });
-        match res {
-            Ok(Ok(())) => {
-                show_toast("ok", if stage { "已暂存选中文件" } else { "已取消暂存" });
-            }
-            Ok(Err(err)) => show_toast("err", format!("暂存操作失败: {err}")),
-            Err(err) => show_toast("err", format!("任务失败: {err}")),
-        }
-        let _ = need_follow;
-        refresh_workspace_async(None);
-    });
+        },
+        move |res| match res {
+            Ok(()) => show_toast("ok", if stage { "已暂存选中文件" } else { "已取消暂存" }),
+            Err(err) => show_toast("err", format!("暂存操作失败：{err}")),
+        },
+    );
 }
 
 /// 同步版暂存（便于测试或直接按键即时反馈）。
 pub fn stage_selected_change_sync(stage: bool) {
+    if app_signal().with_untracked(|s| s.command_busy) {
+        show_toast("warn", "其他 Git 操作正在运行");
+        return;
+    }
     let file = app_signal().with_untracked(|s| {
         s.change_selection
             .as_ref()

@@ -295,6 +295,7 @@ pub fn project_pane() -> impl IntoElement {
                         let expanded = force_expand || expanded_repos.contains(&repo.id);
                         let badge = repo_badge_colors(repo.color_idx, p.is_dark);
                         let rid = repo.id.clone();
+                        let sync_repo = repo.clone();
 
                         rows.push(
                             view()
@@ -313,6 +314,9 @@ pub fn project_pane() -> impl IntoElement {
                                         }
                                         s.focus_zone = FocusZone::ProjectTree;
                                     });
+                                })
+                                .on_context_menu(move |event: &ContextMenuEvent| {
+                                    crate::state::show_popup_menu_at(super::sync_dialog::menu(Some(sync_repo.clone())), event.page_position);
                                 })
                                 .child(icons::icon(
                                     if expanded {

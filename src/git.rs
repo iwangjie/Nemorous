@@ -164,6 +164,8 @@ impl WorkspaceFile {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewChangeData {
+    pub(crate) index_snapshot: std::result::Result<Option<crate::git_index::IndexEntry>, String>,
+    pub(crate) head_snapshot: Option<String>,
     pub repo_id: String,
     pub repo_name: String,
     pub repo_path: String,
@@ -331,6 +333,16 @@ pub(crate) fn run_git_limited(
     max_bytes: usize,
     input: Option<Vec<u8>>,
 ) -> Result<BoundedGitOutput> {
+    run_git_limited_with_index(repo_path, args, max_bytes, input, None)
+}
+
+pub(crate) fn run_git_limited_with_index(
+    repo_path: &Path,
+    args: &[&str],
+    max_bytes: usize,
+    input: Option<Vec<u8>>,
+    index: Option<&Path>,
+) -> Result<BoundedGitOutput> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -341,6 +353,9 @@ pub(crate) fn run_git_limited(
         .unwrap_or("git");
 
     let mut cmd = Command::new("git");
+    if let Some(index) = index {
+        cmd.env("GIT_INDEX_FILE", index).args(["-c", "core.splitIndex=false"]);
+    }
     cmd.arg("-c")
         .arg("core.quotepath=false")
         .args(args)
@@ -1061,6 +1076,9 @@ pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> ReviewChangeDa
     let repo_dir = Path::new(&cf.repo_path);
     let old_path = cf.old_path_or_current().to_string();
     let new_path = cf.path.clone();
+    let index_snapshot = crate::git_index::read_index_entry(repo_dir, &new_path)
+        .map_err(|err| err.to_string());
+    let head_snapshot = staged_only.then(|| crate::git_commit::head_oid(repo_dir).ok().flatten()).flatten();
 
     if staged_only {
         let head_spec = format!("HEAD:{old_path}");
@@ -1083,6 +1101,8 @@ pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> ReviewChangeDa
             }
         };
         return ReviewChangeData {
+            index_snapshot,
+            head_snapshot,
             repo_id: cf.repo_id.clone(),
             repo_name: cf.repo_name.clone(),
             repo_path: cf.repo_path.clone(),
@@ -1129,6 +1149,8 @@ pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> ReviewChangeDa
 
     let wt = read_review_worktree(&PathBuf::from(cf.abs_path()));
     ReviewChangeData {
+        index_snapshot,
+        head_snapshot,
         repo_id: cf.repo_id.clone(),
         repo_name: cf.repo_name.clone(),
         repo_path: cf.repo_path.clone(),
@@ -1151,7 +1173,7 @@ pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> ReviewChangeDa
 static TEMP_SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// 校验目标路径是否严格位于仓库根目录之内，防御相对路径穿越（`..`）与父目录符号链接逃逸。
-fn validate_path_within_repo(repo_root: Option<&Path>, rel_path: &str, abs_path: &Path) -> Result<()> {
+pub(crate) fn validate_path_within_repo(repo_root: Option<&Path>, rel_path: &str, abs_path: &Path) -> Result<()> {
     for comp in Path::new(rel_path).components() {
         match comp {
             std::path::Component::ParentDir
@@ -1179,6 +1201,28 @@ fn validate_path_within_repo(repo_root: Option<&Path>, rel_path: &str, abs_path:
         ));
     }
     Ok(())
+}
+
+pub(crate) fn read_review_worktree_bytes(
+    repo: &Path,
+    rel: &str,
+) -> Result<(Option<(Vec<u8>, ReviewVersion)>, &'static str)> {
+    let path = repo.join(rel);
+    validate_path_within_repo(Some(repo), rel, &path)?;
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((None, "100644")),
+        Err(err) => return Err(err).context("读取工作区文件失败"),
+    };
+    anyhow::ensure!(meta.is_file() && !meta.is_symlink(), "仅支持普通文件");
+    anyhow::ensure!(meta.len() <= MAX_REVIEW_BYTES as u64, "文件超过审阅上限");
+    let mut bytes = Vec::new();
+    fs::File::open(&path)?.take(MAX_REVIEW_BYTES as u64 + 1).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= MAX_REVIEW_BYTES && !bytes.contains(&0), "文件不是可审阅文本");
+    std::str::from_utf8(&bytes).context("仅支持 UTF-8 文本")?;
+    let version = metadata_to_version(&meta, &bytes);
+    let mode = if version.mode & 0o111 != 0 { "100755" } else { "100644" };
+    Ok((Some((bytes, version)), mode))
 }
 
 /// 受检原子保存（带仓库根目录边界校验，严格对齐旧版 `internal/gitops/review.go::SaveReviewText`）：

@@ -1,5 +1,6 @@
 mod blame;
 mod code_split_runtime;
+mod commit_message;
 mod editor_split;
 pub mod config;
 pub mod diff_model;
@@ -7,6 +8,12 @@ mod file_revisions;
 mod format_runtime;
 mod formatter;
 pub mod git;
+mod git_branches;
+mod git_commit;
+mod git_review_actions;
+mod git_remotes;
+mod git_index;
+mod git_index_transaction;
 mod git_log_query;
 mod keymap;
 #[cfg(target_os = "macos")]
@@ -18,12 +25,14 @@ mod history_runtime;
 pub mod paths;
 pub mod replace_in_files;
 pub mod search;
+mod selected_changes;
 pub mod session;
 mod session_runtime;
 pub mod state;
 pub mod theme;
 pub mod ui;
 pub mod watcher;
+mod workspace_ops;
 
 use nsh_core::prelude::*;
 

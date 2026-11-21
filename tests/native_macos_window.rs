@@ -513,6 +513,82 @@ mod macos {
 
     }
 
+    fn batch3_stage_and_branch(
+        app: &NSApplication,
+        window: &NSWindow,
+        root: &NSView,
+        repo: &Path,
+        evidence: &Path,
+    ) {
+        let empty = NSEventModifierFlags::empty();
+        let command = NSEventModifierFlags::Command;
+        let row = "change-row-unstaged-batch3-ticket.txt";
+        let wait = |id: &str| wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+        let click = |id: &str| {
+            wait(id);
+            send_click(window, &view_with_id(root, id).unwrap(), 1);
+        };
+
+        wait(row);
+        println!("WORKSPACE {}", repo.display());
+        println!("HEAD {}", git_run(repo, &["rev-parse", "HEAD"]));
+        println!("INDEX {}", git_run(repo, &["ls-files", "--stage", "--", "batch3-ticket.txt"]));
+        use sha2::Digest;
+        println!("FILE_SHA256 {:x}", sha2::Sha256::digest(fs::read(repo.join("batch3-ticket.txt")).unwrap()));
+        click(row);
+        send_key(app, window, "d", "d", 2, command);
+        wait("diff-stage-hunk");
+        click("diff-stage-hunk");
+        wait_until("only the selected hunk entered the real index", Duration::from_secs(6), || {
+            let staged = git_run(repo, &["show", ":batch3-ticket.txt"]);
+            staged.contains("edited first") && !staged.contains("edited last")
+        });
+        wait("change-row-staged-batch3-ticket.txt");
+        assert!(fs::read_to_string(repo.join("batch3-ticket.txt")).unwrap().contains("edited last"));
+        save_window_png(window, &evidence.join("native-selected-hunk.png"));
+        click("diff-scope-staged");
+        click("diff-stage-hunk");
+        wait_until("selected staged hunk was reverted from the index", Duration::from_secs(6), || {
+            !git_run(repo, &["show", ":batch3-ticket.txt"]).contains("edited first")
+        });
+        println!("BATCH3_NATIVE_STAGE_AND_UNSTAGE ok");
+
+        click("diff-index-review");
+        wait("index-review-middle");
+        wait("index-review-head");
+        wait("index-review-worktree");
+        click("index-review-middle");
+        send_key(app, window, "a", "a", 0, command);
+        send_key(app, window, "x", "x", 7, empty);
+        send_key(app, window, "s", "s", 1, command);
+        wait_until("index editor wrote only selected stage-0 entry", Duration::from_secs(6), || {
+            git_run(repo, &["show", ":batch3-ticket.txt"]) == "x"
+        });
+        assert!(fs::read_to_string(repo.join("batch3-ticket.txt")).unwrap().contains("edited last"));
+        save_window_png(window, &evidence.join("native-index-three-pane.png"));
+        wait_until("index save completion reached AppKit", Duration::from_secs(6), || {
+            a11y_contains(root, "已保存暂存版本")
+        });
+        click("index-close");
+        wait_until("index overlay closed", Duration::from_secs(6), || {
+            view_with_id(root, "git-index-review").is_none()
+        });
+        println!("BATCH3_NATIVE_INDEX_EDIT ok");
+        git_run(repo, &["restore", "--staged", "--", "batch3-ticket.txt"]);
+        git_run(repo, &["restore", "--", "batch3-ticket.txt", "tracked.txt"]);
+
+        send_key(app, window, "b", "b", 11, command);
+        wait("branch-filter-input");
+        send_key(app, window, "t", "t", 17, empty);
+        wait("branch-switch-repo-topic");
+        save_window_png(window, &evidence.join("native-branch-matrix.png"));
+        click("branch-switch-repo-topic");
+        wait_until("branch selected through AppKit", Duration::from_secs(6), || {
+            git_run(repo, &["symbolic-ref", "--short", "HEAD"]) == "topic"
+        });
+        println!("BATCH3_NATIVE_BRANCH_MATRIX ok");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -524,7 +600,10 @@ mod macos {
         );
 
         let batch2 = std::env::var_os("NEMOROUS_NATIVE_BATCH2").is_some();
-        let work_dir = if batch2 {
+        let batch3 = std::env::var_os("NEMOROUS_NATIVE_BATCH3").is_some();
+        let work_dir = if batch3 {
+            root_dir.join(format!("build/tmp-ab/native-batch3-{}", std::process::id()))
+        } else if batch2 {
             root_dir.join(format!("build/tmp-ab/native-batch2-{}", std::process::id()))
         } else {
             let dir = root_dir.join("build/tmp-ab/native-macos-ab");
@@ -533,6 +612,15 @@ mod macos {
         };
         let repo_copy = work_dir.join("repo");
         copy_dir_all(&baseline_repo, &repo_copy);
+        if batch3 {
+            let context = (1..20).map(|line| format!("context {line}\n")).collect::<String>();
+            let file = repo_copy.join("batch3-ticket.txt");
+            fs::write(&file, format!("original first\n{context}original last\n")).unwrap();
+            git_run(&repo_copy, &["add", "batch3-ticket.txt"]);
+            git_run(&repo_copy, &["-c", "user.email=native@example.invalid", "-c", "user.name=Nemorous QA", "-c", "commit.gpgsign=false", "commit", "-m", "Batch 3 fixture"]);
+            git_run(&repo_copy, &["branch", "topic"]);
+            fs::write(&file, format!("edited first\n{context}edited last\n")).unwrap();
+        }
 
         let cfg_path = work_dir.join("config-new.json");
         let cfg_json = serde_json::json!({
@@ -600,6 +688,14 @@ mod macos {
         }
 
         let root = surface.view();
+        if batch3 {
+            let evidence = root_dir.join("build/migration-evidence/batch-3");
+            batch3_stage_and_branch(&app, &window, &root, &repo_copy, &evidence);
+            window.close();
+            pump(150);
+            println!("NATIVE_BATCH3_GIT PASS");
+            return;
+        }
         if batch2 {
             wait_until("workspace file loaded", Duration::from_secs(6), || {
                 view_with_id(&root, "change-row-unstaged-tracked.txt").is_some()

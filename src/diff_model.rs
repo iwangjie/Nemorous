@@ -157,6 +157,17 @@ pub fn compute_diff(old_text: &str, new_text: &str, ws_mode: WhitespaceMode) -> 
     let old_raw = split_lines_keep_logical(old_text);
     let new_raw = split_lines_keep_logical(new_text);
 
+    if ws_mode == WhitespaceMode::None {
+        let hunks = crate::selected_changes::exact_hunks(old_text.as_bytes(), new_text.as_bytes());
+        return ComputedDiff {
+            old_line_count: old_raw.len(),
+            new_line_count: new_raw.len(),
+            added_lines: hunks.iter().map(|h| h.new_end - h.new_start).sum(),
+            deleted_lines: hunks.iter().map(|h| h.old_end - h.old_start).sum(),
+            hunks,
+        };
+    }
+
     if ws_mode == WhitespaceMode::AllAndEmptyLines {
         return compute_diff_ignoring_empty_lines(&old_raw, &new_raw);
     }

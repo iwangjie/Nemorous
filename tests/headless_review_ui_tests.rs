@@ -2035,3 +2035,233 @@ fn ui_blame_reveals_real_commit_and_marks_editor_only_changes() {
     app.wait_for("未提交的本地修改").unwrap();
     assert_eq!(fs::read(fx.repo_dir.join("src/app.go")).unwrap(), original);
 }
+
+#[test]
+fn ui_branch_matrix_shortcut_filter_create_and_switch() {
+    let _guard = lock_env();
+    let fx = Fixture::new("branch-matrix");
+    git_run(&fx.repo_dir, &["branch", "known/topic"]);
+    git_run(&fx.repo_dir, &["restore", "--", "src/app.go"]);
+    let mut app = fx.start_headless_expect(1440.0, 900.0, "notes.txt");
+    app.press_key("mod+b").unwrap();
+    app.wait_for("id:branch-matrix").unwrap();
+    app.wait_for("known/topic").unwrap();
+    app.type_text("id:branch-filter-input", "known").unwrap();
+    app.wait_for("known/topic").unwrap();
+    assert!(!app.screen().matches("✓ main").unwrap());
+    app.press_key("escape").unwrap();
+    assert!(!app.screen().matches("id:branch-matrix").unwrap());
+
+    app.press("id:top-branch-button").unwrap();
+    app.press("id:branch-new-all").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    app.type_text("id:git-text-prompt-input", "feature/local").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("已切换 1 个仓库").unwrap();
+    assert_eq!(
+        nemorous::git::run_git_string(&fx.repo_dir, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(),
+        "feature/local"
+    );
+
+    fs::remove_file(fx.repo_dir.join("notes.txt")).unwrap();
+    app.press_key("mod+b").unwrap();
+    app.press("id:branch-default-all").unwrap();
+    for _ in 0..80 {
+        if nemorous::git::run_git_string(&fx.repo_dir, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim() == "main" {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        let _ = app.screen();
+    }
+    panic!("workspace default branch switch did not complete");
+}
+
+#[test]
+fn ui_change_lists_create_assign_filter_and_rename() {
+    let _guard = lock_env();
+    let fx = Fixture::new("change-lists");
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:changes-list-btn").unwrap();
+    app.choose_menu_item("新建变更列表…").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    app.type_text("id:git-text-prompt-input", "本轮修改").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("没有匹配的本地变更").unwrap();
+
+    app.press("id:changes-list-btn").unwrap();
+    app.choose_menu_item("全部变更").unwrap();
+    app.wait_for("id:change-row-unstaged-src/app.go").unwrap();
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("移到变更列表 > 本轮修改").unwrap();
+
+    app.press("id:changes-list-btn").unwrap();
+    app.choose_menu_item("本轮修改 (1 个文件)").unwrap();
+    app.wait_for("id:change-row-unstaged-src/app.go").unwrap();
+    assert!(!app.screen().matches("id:change-row-unstaged-notes.txt").unwrap());
+    app.press("id:changes-list-btn").unwrap();
+    app.choose_menu_item("重命名当前列表…").unwrap();
+    app.clear("id:git-text-prompt-input").unwrap();
+    app.type_text("id:git-text-prompt-input", "复核").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    let saved = nemorous::config::load_from(&fx.config_file).unwrap();
+    assert_eq!(saved.active_change_list, "复核");
+    assert_eq!(saved.change_lists[0].files.len(), 1);
+}
+
+#[test]
+fn ui_diff_stages_one_hunk_and_unstages_it_without_writing_worktree() {
+    let _guard = lock_env();
+    let fx = Fixture::new("stage-hunk");
+    let context = (1..20).map(|n| format!("context {n}\n")).collect::<String>();
+    let path = fx.repo_dir.join("many.txt");
+    let old = format!("old first\n{context}old last\n");
+    let new = format!("new first\n{context}new last\n");
+    fs::write(&path, &old).unwrap();
+    git_run(&fx.repo_dir, &["add", "many.txt"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "fixture"]);
+    fs::write(&path, &new).unwrap();
+
+    let mut app = fx.start_headless_expect(1440.0, 900.0, "id:change-row-unstaged-many.txt");
+    app.press("id:change-row-unstaged-many.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:diff-stage-hunk").unwrap();
+    app.press("id:diff-stage-hunk").unwrap();
+    app.wait_for("id:change-row-staged-many.txt").unwrap();
+    let read = || nemorous::git::run_git_string(&fx.repo_dir, &["show", ":many.txt"]).unwrap();
+    assert_eq!(read(), format!("new first\n{context}old last\n"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), new);
+    app.press("id:diff-scope-staged").unwrap();
+    app.press("id:diff-stage-hunk").unwrap();
+    app.wait_for("已取消暂存所选变更").unwrap();
+    assert_eq!(read(), old);
+    assert_eq!(fs::read_to_string(&path).unwrap(), new);
+}
+
+#[test]
+fn ui_index_review_saves_edits_and_preserves_worktree() {
+    let _guard = lock_env();
+    let fx = Fixture::new("index-review");
+    git_run(&fx.repo_dir, &["add", "src/app.go"]);
+    let path = fx.repo_dir.join("src/app.go");
+    let worktree = "package main\n// local only\n";
+    fs::write(&path, worktree).unwrap();
+    let mut app = fx.start_headless_expect(1440.0, 900.0, "id:change-row-staged-src/app.go");
+    app.right_click("id:change-row-staged-src/app.go").unwrap();
+    app.choose_menu_item("HEAD、暂存区与工作区对比").unwrap();
+    app.wait_for("id:index-review-head").unwrap();
+    app.wait_for("id:index-review-worktree").unwrap();
+    app.type_text("id:index-review-middle", "").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.type_text("id:index-review-middle", "package main\n// saved index only\n").unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for("已保存暂存版本").unwrap();
+    let read = || nemorous::git::run_git_string(&fx.repo_dir, &["show", ":src/app.go"]).unwrap();
+    assert_eq!(read(), "package main\n// saved index only\n");
+    assert_eq!(fs::read_to_string(&path).unwrap(), worktree);
+    app.press_key("escape").unwrap();
+    assert!(!app.screen().matches("id:git-index-review").unwrap());
+}
+
+#[test]
+fn ui_commit_checked_hunks_preserves_unselected_hunks_and_staged_files() {
+    let _guard = lock_env();
+    let _ = env_logger::builder().is_test(true).try_init();
+    let fx = Fixture::new("commit-hunk");
+    let context = (1..20).map(|n| format!("context {n}\n")).collect::<String>();
+    let path = fx.repo_dir.join("many.txt");
+    let old = format!("old first\n{context}old last\n");
+    let new = format!("new first\n{context}new last\n");
+    fs::write(&path, &old).unwrap();
+    git_run(&fx.repo_dir, &["add", "many.txt"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "fixture"]);
+    git_run(&fx.repo_dir, &["add", "notes.txt"]);
+    fs::write(&path, &new).unwrap();
+
+    let mut cfg = nemorous::config::load_from(&fx.config_file).unwrap();
+    cfg.create_change_list("This change").unwrap();
+    cfg.assign_change_list("This change", &["sample-repo::many.txt".into()]);
+    cfg.active_change_list = "This change".into();
+    nemorous::config::save_to(&fx.config_file, &cfg).unwrap();
+    let mut app = fx.start_headless_expect(1440.0, 900.0, "id:change-row-unstaged-many.txt");
+    app.press("id:change-row-unstaged-many.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("✓ 纳入提交").unwrap();
+    app.press("id:diff-include-hunk").unwrap();
+    assert!(!app.screen().matches("✓ 纳入提交").unwrap(), "first hunk checkbox must be visibly cleared");
+    app.type_text("id:git-commit-message", "Commit second hunk").unwrap();
+    assert!(!app.screen().matches("✓ 纳入提交").unwrap(), "typing the message must preserve hunk exclusion");
+    app.press("id:git-commit-submit").unwrap();
+    app.wait_for("提交成功 1 个仓库，失败 0 个").unwrap();
+
+    let show = |spec: &str| nemorous::git::run_git_string(&fx.repo_dir, &["show", spec]).unwrap();
+    assert_eq!(show("HEAD:many.txt"), format!("old first\n{context}new last\n"));
+    assert_eq!(show(":notes.txt"), "untracked note line 1\n");
+    assert_eq!(fs::read_to_string(path).unwrap(), new);
+}
+
+#[test]
+fn ui_workspace_recent_switch_uses_new_repo_and_preserves_original_config_data() {
+    let _guard = lock_env();
+    let fx = Fixture::new("workspace-switch");
+    let other = fx.root.join("another-workspace");
+    fs::create_dir(&other).unwrap();
+    git_run(&other, &["init", "-b", "main"]);
+    fs::write(other.join("new-workspace.txt"), "fixture\n").unwrap();
+    let mut config = nemorous::config::load_from(&fx.config_file).unwrap();
+    config.add_recent_workspace(other.to_str().unwrap());
+    config.extra.insert("legacy_field".into(), serde_json::json!({"keep": true}));
+    nemorous::config::save_to(&fx.config_file, &config).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:top-workspace-button").unwrap();
+    let label = nemorous::paths::display_path(&other.to_string_lossy());
+    app.choose_menu_item(&format!("最近工作区 > {label} > 打开")).unwrap();
+    app.wait_for("id:change-row-unstaged-new-workspace.txt").unwrap();
+    assert!(!app.screen().matches("id:change-row-unstaged-src/app.go").unwrap());
+    let cfg: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(cfg["legacy_field"]["keep"], true);
+    assert_eq!(cfg["workspace_path"], other.canonicalize().unwrap().to_str().unwrap());
+}
+
+#[test]
+fn ui_git_sync_reports_missing_remote_without_rolling_back_changes() {
+    let _guard = lock_env();
+    let fx = Fixture::new("remote-sync-report");
+    let worktree = fs::read(fx.repo_dir.join("src/app.go")).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:top-git-sync-btn").unwrap();
+    app.choose_menu_item("获取全部仓库").unwrap();
+    app.wait_for("sample-repo · 跳过").unwrap();
+    app.press("id:git-sync-close").unwrap();
+    assert_eq!(fs::read(fx.repo_dir.join("src/app.go")).unwrap(), worktree);
+}
+
+#[test]
+fn ui_rollback_code_block_is_undoable_and_file_rollback_requires_confirmation() {
+    let _guard = lock_env();
+    let _ = env_logger::builder().is_test(true).try_init();
+    let fx = Fixture::new("rollback");
+    let path = fx.repo_dir.join("src/app.go");
+    let bytes = fs::read(&path).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:4:2").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for(r#"return "new-greeting""#).unwrap();
+    app.type_text("id:code-editor-view", "").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.type_text("id:goto-line-input", "4:2").unwrap();
+    app.submit("id:goto-line-input").unwrap();
+    app.press_key("mod+alt+z").unwrap();
+    app.wait_for(r#"return "old-greeting""#).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes, "rolling back a code block edits only the buffer");
+    app.press_key("mod+z").unwrap();
+    app.wait_for(r#"return "new-greeting""#).unwrap();
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("回滚文件…").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("已回滚文件").unwrap();
+    assert!(String::from_utf8_lossy(&fs::read(&path).unwrap()).contains("old-greeting"));
+}

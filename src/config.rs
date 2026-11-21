@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,6 +34,23 @@ pub struct Bookmark {
     pub note: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ChangeList {
+    pub name: String,
+    #[serde(deserialize_with = "deserialize_change_list_files")]
+    pub files: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub updated_at: String,
+}
+
+fn deserialize_change_list_files<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -45,6 +62,10 @@ pub struct Config {
     pub release_branch: String,
     pub default_base_branch: String,
     pub branch_presets: Vec<BranchPreset>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub change_lists: Vec<ChangeList>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub active_change_list: String,
     pub changes_flat: bool,
     pub change_diff_preview: bool,
     pub git_log_diff_preview: bool,
@@ -79,6 +100,8 @@ impl Default for Config {
             release_branch: "release".to_string(),
             default_base_branch: "main".to_string(),
             branch_presets: Vec::new(),
+            change_lists: Vec::new(),
+            active_change_list: String::new(),
             changes_flat: false,
             change_diff_preview: false,
             git_log_diff_preview: false,
@@ -169,6 +192,86 @@ impl Config {
             "diff_ignore_mode".to_string(),
             serde_json::Value::Number(ignore_code.into()),
         );
+    }
+
+    pub fn matches_change_list(&self, key: &str) -> bool {
+        match self.active_change_list.as_str() {
+            "" | "__all__" => true,
+            "__default__" => self.change_list_for(key).is_empty(),
+            name => self.change_list_for(key) == name,
+        }
+    }
+
+    pub fn change_list_for(&self, key: &str) -> &str {
+        self.change_lists
+            .iter()
+            .find(|list| list.files.iter().any(|file| file == key))
+            .map_or("", |list| list.name.as_str())
+    }
+
+    pub fn create_change_list(&mut self, name: &str) -> Result<()> {
+        let name = name.trim();
+        self.validate_new_change_list_name(name)?;
+        self.change_lists.push(ChangeList {
+            name: name.to_owned(),
+            updated_at: chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()).to_rfc3339(),
+            ..ChangeList::default()
+        });
+        Ok(())
+    }
+
+    pub fn rename_change_list(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = to.trim();
+        if from == to {
+            return Ok(());
+        }
+        self.validate_new_change_list_name(to)?;
+        let list = self.change_lists.iter_mut().find(|list| list.name == from)
+            .context("变更列表已不存在")?;
+        list.name = to.to_owned();
+        list.updated_at = chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()).to_rfc3339();
+        if self.active_change_list == from {
+            self.active_change_list = to.to_owned();
+        }
+        Ok(())
+    }
+
+    fn validate_new_change_list_name(&self, name: &str) -> Result<()> {
+        anyhow::ensure!(!name.is_empty() && !matches!(name, "__all__" | "__default__"), "请输入有效的变更列表名");
+        anyhow::ensure!(
+            !self.change_lists.iter().any(|list| list.name == name),
+            "变更列表名已存在"
+        );
+        Ok(())
+    }
+
+    pub fn delete_change_list(&mut self, name: &str) {
+        self.change_lists.retain(|list| list.name != name);
+        if self.active_change_list == name {
+            self.active_change_list.clear();
+        }
+    }
+
+    pub fn assign_change_list(&mut self, name: &str, keys: &[String]) {
+        if !name.is_empty() && !self.change_lists.iter().any(|list| list.name == name) {
+            return;
+        }
+        let keys: HashSet<_> = keys.iter().cloned().collect();
+        let updated_at = chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now()).to_rfc3339();
+        for list in &mut self.change_lists {
+            if list.name == name {
+                list.files.extend(keys.iter().cloned());
+                list.files.sort();
+                list.files.dedup();
+                list.updated_at.clone_from(&updated_at);
+            } else {
+                let before = list.files.len();
+                list.files.retain(|file| !keys.contains(file));
+                if list.files.len() != before {
+                    list.updated_at.clone_from(&updated_at);
+                }
+            }
+        }
     }
 
     pub fn is_repo_hidden(&self, repo_id: &str) -> bool {
@@ -287,4 +390,37 @@ pub fn save_to(path: &Path, cfg: &Config) -> Result<()> {
 
 pub fn save(cfg: &Config) -> Result<()> {
     save_to(&config_path(), cfg)
+}
+
+#[cfg(test)]
+mod change_list_tests {
+    use super::*;
+
+    #[test]
+    fn change_lists_roundtrip_legacy_null_files_and_move_without_duplicates() {
+        let mut cfg: Config = serde_json::from_str(r#"{
+            "change_lists": [
+                {"name":"登录","files":["a::one","a::two"],"updated_at":"2026-11-20T01:00:00Z"},
+                {"name":"支付","files":null}
+            ],
+            "active_change_list":"登录",
+            "external_setting":{"preserve":true}
+        }"#).unwrap();
+        cfg.assign_change_list("支付", &["a::one".into(), "a::one".into()]);
+        assert_eq!(cfg.change_list_for("a::one"), "支付");
+        assert_eq!(cfg.change_list_for("a::two"), "登录");
+        assert_eq!(cfg.change_lists[1].files, ["a::one"]);
+        cfg.rename_change_list("登录", "认证").unwrap();
+        assert_eq!(cfg.active_change_list, "认证");
+        assert!(cfg.rename_change_list("认证", "支付").is_err());
+        cfg.delete_change_list("认证");
+        assert_eq!(cfg.active_change_list, "");
+        assert_eq!(cfg.change_list_for("a::two"), "");
+        cfg.create_change_list("新条目").unwrap();
+        let data = serde_json::to_string(&cfg).unwrap();
+        let loaded: Config = serde_json::from_str(&data).unwrap();
+        assert_eq!(loaded.change_list_for("a::one"), "支付");
+        assert!(loaded.change_lists[1].files.is_empty());
+        assert_eq!(loaded.extra["external_setting"]["preserve"], true);
+    }
 }

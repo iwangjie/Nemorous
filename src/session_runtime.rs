@@ -143,6 +143,14 @@ fn live_state(s: &AppState) -> State {
     snapshot
 }
 
+pub(crate) fn save_current_workspace() {
+    let snapshot = app_signal().with_untracked(live_state);
+    let workspace = snapshot.workspace.as_deref().unwrap_or_default();
+    if !workspace.is_empty() {
+        queue_write(session::session_path(workspace), snapshot);
+    }
+}
+
 pub(crate) fn restore_after_refresh() {
     let runtime = global::<Runtime>();
     let workspace = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());

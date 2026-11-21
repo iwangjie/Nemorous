@@ -1,7 +1,9 @@
 mod blame_view;
+pub(crate) mod branch_matrix;
 pub mod bookmarks;
 pub mod code_editor;
 pub mod commit_pane;
+mod commit_form;
 pub mod content_search;
 pub(crate) mod comparison;
 mod replacement_flow;
@@ -19,7 +21,12 @@ mod git_graph;
 pub mod git_pane;
 pub mod icons;
 pub mod modals;
+pub(crate) mod git_prompt;
+pub(crate) mod git_review;
+pub(crate) mod index_review;
 pub mod project_pane;
+mod workspace_menu;
+pub(crate) mod sync_dialog;
 
 use nsh_base::{EditorCommand, h_resizable, resizable_panel};
 use nsh_core::desktop::{MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes};
@@ -150,10 +157,6 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
                 MenuItem::role(MenuRole::SelectAll),
             ],
         ),
-        MenuItem::submenu("Git", [
-            MenuItem::new("查看文件历史").on_select(guard_app_command(revision_picker::show_active_history)).disabled(modal_open),
-            MenuItem::new("与修订版本比较…").on_select(guard_app_command(revision_picker::open_active)).disabled(modal_open),
-        ]),
         MenuItem::submenu(
             "导航",
             [
@@ -199,6 +202,13 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
         MenuItem::submenu(
             "Git",
             [
+                menu_binding(MenuItem::new("分支矩阵…"), keymap, "branchMatrix")
+                    .on_select(guard_app_command(branch_matrix::open)).disabled(modal_open),
+                menu_binding(MenuItem::new("拉取全部仓库"), keymap, "pull")
+                    .on_select(guard_app_command(|| sync_dialog::start_all(crate::git_remotes::RemoteAction::Pull))).disabled(modal_open),
+                menu_binding(MenuItem::new("推送全部仓库"), keymap, "push")
+                    .on_select(guard_app_command(|| sync_dialog::start_all(crate::git_remotes::RemoteAction::Push))).disabled(modal_open),
+                MenuItem::new("获取全部仓库").on_select(guard_app_command(|| sync_dialog::start_all(crate::git_remotes::RemoteAction::Fetch))).disabled(modal_open),
                 menu_binding(MenuItem::new("刷新工作区"), keymap, "refresh")
                     .on_select(guard_app_command(|| refresh_workspace_async(None)))
                     .disabled(modal_open),
@@ -295,6 +305,8 @@ fn setup_shortcuts() {
     let navigation_open = computed(navigation_picker::is_open);
     let revision_open = computed(revision_picker::is_open);
     let switcher_open = computed(navigation_picker::is_switcher);
+    let index_review_open = computed(index_review::is_open);
+    let commit_message_focused = computed(commit_form::has_focus);
     let dismissable_memo = computed(|| {
         app_signal().with(|s| {
             s.focus_zone == FocusZone::Modal
@@ -322,6 +334,9 @@ fn setup_shortcuts() {
             on_key_with("escape", always, |_| {
                 state::close_active_modal();
             });
+            if index_review_open.get() {
+                bind_action(&keys, "save", always, |_| index_review::save_active());
+            }
             if revision_open.get() {
                 on_key_with("up", always, |_| revision_picker::move_selection(-1));
                 on_key_with("down", always, |_| revision_picker::move_selection(1));
@@ -353,6 +368,18 @@ fn setup_shortcuts() {
             save_active_document();
         });
         bind_action(&keys, "settings", always, |_| keymap_settings::open());
+        if !text_input_focused {
+            bind_action(&keys, "branchMatrix", always, |_| branch_matrix::open());
+        }
+        bind_action(&keys, "gitCommit", not_editing, |_| commit_form::focus());
+        if commit_message_focused.get() {
+            on_key_with("mod+enter", always, |_| commit_form::submit());
+        }
+        if !text_input_focused {
+            bind_action(&keys, "rollback", always, |_| git_review::rollback_current());
+        }
+        bind_action(&keys, "pull", not_editing, |_| sync_dialog::start_all(crate::git_remotes::RemoteAction::Pull));
+        bind_action(&keys, "push", not_editing, |_| sync_dialog::start_all(crate::git_remotes::RemoteAction::Push));
         bind_action(&keys, "searchEverywhere", always, |_| navigation_picker::open(navigation_picker::Mode::Everywhere));
         bind_action(&keys, "previousTab", always, |_| navigation_picker::cycle_tabs(-1));
         bind_action(&keys, "nextTab", always, |_| navigation_picker::cycle_tabs(1));
@@ -687,6 +714,11 @@ fn top_header_bar() -> impl IntoElement {
                             .items_center()
                             .rounded(px(6.0))
                             .bg(p.surface2)
+                            .test_id("top-workspace-button")
+                            .label("工作区管理")
+                            .cursor(Cursor::Pointer)
+                            .hover(move |s| s.bg(p.surface_hover))
+                            .on_press(workspace_menu::open)
                             .child(icons::icon(ICO_FOLDER, 13.0, p.text_control))
                             .child(
                                 text(ws_name)
@@ -710,6 +742,11 @@ fn top_header_bar() -> impl IntoElement {
                             .items_center()
                             .rounded(px(6.0))
                             .bg(p.surface2)
+                            .test_id("top-branch-button")
+                            .label("分支矩阵")
+                            .cursor(Cursor::Pointer)
+                            .hover(move |s| s.bg(p.surface_hover))
+                            .on_press(branch_matrix::open)
                             .child(icons::icon(ICO_BRANCH, 13.0, p.accent))
                             .child(
                                 text(branch)
@@ -726,6 +763,16 @@ fn top_header_bar() -> impl IntoElement {
                     .items_center()
                     .gap(px(6.0))
                     .window_drag(false)
+                    .child(
+                        view()
+                            .test_id("top-git-sync-btn")
+                            .label("获取、拉取或推送")
+                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0))
+                            .items_center().justify_center().cursor(Cursor::Pointer)
+                            .hover(move |s| s.bg(p.surface_hover))
+                            .on_press(sync_dialog::open_menu)
+                            .child(text("同步").text_size(px(11.0)).text_color(p.text_control)),
+                    )
                     .child(
                         view()
                             .test_id("top-refresh-btn")
@@ -1109,5 +1156,9 @@ pub fn shell() -> impl IntoElement {
         .child(revision_picker::modal_layer())
         .child(keymap_settings::modal_layer())
         .child(local_history_view::modal_layer())
+        .child(branch_matrix::layer())
+        .child(sync_dialog::layer())
+        .child(index_review::layer())
+        .child(git_prompt::layer())
         .child(modals::modals_layer())
 }

@@ -706,6 +706,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                             MenuItem::new("书签…").on_select(crate::ui::bookmarks::open_modal),
                             MenuItem::new("重新格式化代码").on_select(crate::format_runtime::format_active),
                             MenuItem::new("与剪贴板比较").on_select(super::comparison::open_clipboard),
+                            MenuItem::new("回滚选中块").on_select(super::git_review::rollback_code),
                             MenuItem::new("保存时自动格式化")
                                 .checked(app_signal().with_untracked(|s| s.cfg.format_on_save))
                                 .on_select(|| {
