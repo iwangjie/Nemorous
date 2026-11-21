@@ -60,6 +60,107 @@ fn update_state(f: impl FnOnce(&mut ContentSearchState)) {
 }
 
 // ============================================================================
+// 查找结果面板：把一次稳定搜索钉进底部面板，与模态后续活动完全解耦
+// ============================================================================
+
+/// 面板快照：查询、命中以及命中解析所需的文件索引都在钉入时一次性克隆，
+/// 并绑定钉入时的工作区；工作区变化后既不显示，也不再打开旧命中。
+#[derive(Clone)]
+struct FindResultsView {
+    workspace: String,
+    query: String,
+    hits: Vec<SearchHit>,
+    index: Arc<Vec<WorkspaceFile>>,
+}
+
+#[derive(Clone, Default)]
+struct FindResultsState {
+    open: bool,
+    view: Option<FindResultsView>,
+}
+
+fn find_sig() -> Signal<FindResultsState> {
+    global::<FindResultsState>()
+}
+
+pub fn find_panel_available() -> bool {
+    let workspace = app_signal().with(|s| s.cfg.workspace_path.clone());
+    find_sig().with(|s| {
+        s.view
+            .as_ref()
+            .is_some_and(|view| view.workspace == workspace)
+    })
+}
+
+pub fn hide_find_panel() {
+    find_sig().update(|s| s.open = false);
+}
+
+/// 左侧「查找结果」按钮的状态（同时作为高亮与可见性来源）。
+pub fn find_panel_visible() -> bool {
+    find_panel_available() && find_sig().with(|s| s.open)
+}
+
+pub fn toggle_find_panel() {
+    if find_panel_visible() {
+        hide_find_panel();
+    } else if find_panel_available() {
+        show_find_panel();
+    }
+}
+
+fn show_find_panel() {
+    app_signal().update(|s| s.show_git_panel = false);
+    find_sig().update(|s| s.open = true);
+}
+
+/// 「在查找窗口中打开」：钉入快照、关闭模态，再显示底部面板。
+fn pin_to_find_results() {
+    let snapshot = with_state(|s| {
+        if s.running || s.error.is_some() || s.hits.is_empty() {
+            return None;
+        }
+        Some(FindResultsView {
+            workspace: s.workspace.clone(),
+            query: s.query.clone(),
+            hits: s.hits.clone(),
+            index: s.index.clone()?,
+        })
+    });
+    let view = match snapshot {
+        Some(view) => view,
+        None => return,
+    };
+    find_sig().update(|s| s.view = Some(view));
+    state::close_active_modal();
+    show_find_panel();
+}
+
+/// 打开面板中的命中；快照所属工作区已变化时拒绝导航。
+fn activate_find_hit(idx: usize) {
+    let current_ws = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
+    let target = find_sig().with(|s| {
+        let view = s.view.as_ref()?;
+        if view.workspace != current_ws {
+            return None;
+        }
+        let hit = view.hits.get(idx)?;
+        let file = view
+            .index
+            .iter()
+            .find(|f| f.repo_id == hit.repo_id && f.rel_path == hit.rel_path)?
+            .clone();
+        Some((
+            file,
+            EditorPosition::new(hit.line.saturating_sub(1) as u32, hit.column_utf16 as u32),
+        ))
+    });
+    if let Some((file, position)) = target {
+        state::open_code_file(file, Some(position), true);
+    }
+}
+
+// ============================================================================
 // 入口
 // ============================================================================
 
@@ -386,6 +487,7 @@ fn header(p: Palette) -> impl IntoElement {
                 .test_id("content-search-scope")
                 .child(text(scope).text_size(px(11.0)).text_color(p.text_muted)),
         )
+        .child(dynamic(move || pin_button(p)))
         .child(view().flex_1())
         .child(text("⇧⌘F").text_size(px(10.5)).text_color(p.text_muted))
         .child(
@@ -522,6 +624,145 @@ fn toggle_button(
         )
 }
 
+fn pin_button(p: Palette) -> impl IntoElement {
+    let (fg, bg) = with_state(|s| {
+        if s.open && !s.running && s.error.is_none() && !s.hits.is_empty() {
+            (p.text_primary, p.surface_hover)
+        } else {
+            (p.text_muted, p.surface)
+        }
+    });
+    view()
+        .test_id("content-search-pin")
+        .h(px(22.0))
+        .px(px(8.0))
+        .rounded(px(5.0))
+        .items_center()
+        .bg(bg)
+        .cursor(Cursor::Pointer)
+        .label("在查找窗口中打开")
+        .on_press(move || {
+            if with_state(|s| s.open && !s.running && s.error.is_none() && !s.hits.is_empty()) {
+                pin_to_find_results();
+            }
+        })
+        .child(text("在查找窗口中打开").text_size(px(11.0)).text_color(fg))
+}
+
+/// 模态与底部面板共用的结果行渲染：分组标题 + 命中行（点击回调由调用方提供）。
+fn hit_rows(
+    p: Palette,
+    hits: &[SearchHit],
+    scope: &str,
+    on_activate: fn(usize),
+) -> Vec<AnyElement> {
+    let mut rows: Vec<AnyElement> = Vec::new();
+    let mut last_group: Option<String> = None;
+    for (idx, hit) in hits.iter().enumerate() {
+        let group = format!("{}::{}", hit.repo_id, hit.rel_path);
+        if last_group.as_deref() != Some(group.as_str()) {
+            last_group = Some(group);
+            rows.push(
+                view()
+                    .test_id(&format!("{scope}-group-{}", hit.rel_path))
+                    .h(px(22.0))
+                    .px(px(14.0))
+                    .items_center()
+                    .child(
+                        text(format!("{} · {}", hit.repo_name, hit.rel_path))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text_muted),
+                    )
+                    .into_element(),
+            );
+        }
+        rows.push(
+            view()
+                .test_id(&format!("{scope}-hit-{idx}"))
+                .h(px(22.0))
+                .pl(px(22.0))
+                .pr(px(14.0))
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .cursor(Cursor::Pointer)
+                .hover(move |s| s.bg(p.surface_hover))
+                .on_press(move || on_activate(idx))
+                .child(
+                    text(format!("{}:{}", hit.line, hit.column))
+                        .text_size(px(10.5))
+                        .text_color(p.text_muted),
+                )
+                .child(
+                    text(hit.snippet.clone())
+                        .text_size(px(11.5))
+                        .text_color(p.text_primary),
+                )
+                .into_element(),
+        );
+    }
+    rows
+}
+
+// ============================================================================
+// 底部查找结果面板
+// ============================================================================
+
+pub fn find_panel() -> impl IntoElement {
+    let visible = computed(find_panel_visible);
+    when(move || visible.get(), || dynamic(find_panel_body))
+}
+
+fn find_panel_body() -> impl IntoElement {
+    let p = current_palette();
+    let (query, hits) = find_sig().with(|s| match s.view.as_ref() {
+        Some(v) => (v.query.clone(), v.hits.clone()),
+        None => (String::new(), Vec::new()),
+    });
+    view()
+        .test_id("find-results-panel")
+        .h(px(200.0))
+        .flex_none()
+        .flex_col()
+        .overflow_hidden()
+        .border_1()
+        .border_color(p.border)
+        .bg(p.surface)
+        .child(
+            view()
+                .h(px(32.0))
+                .px(px(12.0))
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .bg(p.rail_bg)
+                .child(
+                    view().test_id("find-results-title").flex_1().child(
+                        text(format!("查找：{query}"))
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.text_primary),
+                    ),
+                )
+                .child(
+                    view()
+                        .test_id("find-results-hide")
+                        .cursor(Cursor::Pointer)
+                        .label("隐藏查找结果")
+                        .on_press(hide_find_panel)
+                        .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),
+                ),
+        )
+        .child(
+            scroll().flex_1().overflow_hidden().child(
+                hit_rows(p, &hits, "find-results", activate_find_hit)
+                    .into_iter()
+                    .fold(view().flex_col().gap(px(1.0)), |acc, row| acc.child(row)),
+            ),
+        )
+}
+
 fn results_view() -> impl IntoElement {
     let p = current_palette();
     let (running, error, hits, truncated, query_empty) = with_state(|s| {
@@ -565,51 +806,7 @@ fn results_view() -> impl IntoElement {
             .into_element(),
     );
 
-    let mut last_group: Option<String> = None;
-    for (idx, hit) in hits.iter().enumerate() {
-        let group = format!("{}::{}", hit.repo_id, hit.rel_path);
-        if last_group.as_deref() != Some(group.as_str()) {
-            last_group = Some(group);
-            rows.push(
-                view()
-                    .test_id(&format!("content-search-group-{}", hit.rel_path))
-                    .h(px(22.0))
-                    .px(px(14.0))
-                    .items_center()
-                    .child(
-                        text(format!("{} · {}", hit.repo_name, hit.rel_path))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_muted),
-                    )
-                    .into_element(),
-            );
-        }
-        rows.push(
-            view()
-                .test_id(&format!("content-search-hit-{idx}"))
-                .h(px(22.0))
-                .pl(px(22.0))
-                .pr(px(14.0))
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .cursor(Cursor::Pointer)
-                .hover(move |s| s.bg(p.surface_hover))
-                .on_press(move || activate(idx))
-                .child(
-                    text(format!("{}:{}", hit.line, hit.column))
-                        .text_size(px(10.5))
-                        .text_color(p.text_muted),
-                )
-                .child(
-                    text(hit.snippet.clone())
-                        .text_size(px(11.5))
-                        .text_color(p.text_primary),
-                )
-                .into_element(),
-        );
-    }
+    rows.extend(hit_rows(p, &hits, "content-search", activate));
 
     let list = rows
         .into_iter()

@@ -478,6 +478,50 @@ fn ui_commit_context_menu_copy_path_variants_and_locate() {
 }
 
 #[test]
+fn ui_find_results_pin_preserves_snapshot_and_reopens() {
+    let _guard = lock_env();
+    let fx = Fixture::new("find-results-pin");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 正常工作区搜索，等到稳定命中后再钉入面板。
+    app.press_key("mod+shift+f").unwrap();
+    app.wait_for("id:content-search-modal").unwrap();
+    app.type_text("id:content-search-input", "new-greeting").unwrap();
+    app.wait_for("id:content-search-hit-0").unwrap();
+    app.press("id:content-search-pin").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
+        .unwrap();
+
+    // 2. 底部面板显示查询与分组命中。
+    app.wait_for("id:find-results-panel").unwrap();
+    app.wait_for("查找：new-greeting").unwrap();
+    app.wait_for("id:find-results-hit-0").unwrap();
+
+    // 3. 点击命中直接打开源码（行/UTF-16 列来自快照）。
+    app.press("id:find-results-hit-0").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+
+    // 4. 隐藏后经左侧「查找结果」按钮重新打开，快照仍在。
+    app.press("id:find-results-hide").unwrap();
+    app.wait_for_gone("id:find-results-panel", Duration::from_secs(2))
+        .unwrap();
+    app.press("id:rail-find-btn").unwrap();
+    app.wait_for("id:find-results-panel").unwrap();
+    app.wait_for("id:find-results-hit-0").unwrap();
+
+    // 5. 后续模态活动（新查询、关闭）不会改写已钉入的快照。
+    app.press_key("mod+shift+f").unwrap();
+    app.wait_for("id:content-search-modal").unwrap();
+    app.type_text("id:content-search-input", "Sample").unwrap();
+    app.wait_for("id:content-search-hit-0").unwrap();
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("查找：new-greeting").unwrap();
+    app.wait_for("id:find-results-hit-0").unwrap();
+}
+
+#[test]
 fn ui_content_search_modal_scope_open_and_close() {
     let _guard = lock_env();
     let fx = Fixture::new("content-search");

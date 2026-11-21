@@ -396,6 +396,7 @@ fn setup_shortcuts() {
             });
         });
         on_key_with("mod+9", always, |_| {
+            content_search::hide_find_panel();
             app_signal().update(|s| {
                 s.show_git_panel = !s.show_git_panel;
             });
@@ -745,9 +746,19 @@ fn left_rail() -> impl IntoElement {
                 ICO_BRANCH,
                 show_git,
                 || {
+                    content_search::hide_find_panel();
                     app_signal().update(|s| s.show_git_panel = !s.show_git_panel);
                 },
             ))
+            .child(content_search::find_panel_available().then(|| {
+                rail_btn(
+                    "rail-find-btn",
+                    "查找结果",
+                    ICO_SEARCH,
+                    content_search::find_panel_visible(),
+                    content_search::toggle_find_panel,
+                )
+            }))
             .child(view().flex_1())
             .child(rail_btn(
                 "rail-theme-btn",
@@ -968,6 +979,7 @@ pub fn shell() -> impl IntoElement {
                         .child(when(move || show_git_memo.get(), git_pane::git_pane)),
                 ),
         )
+        .child(content_search::find_panel())
         .child(status_bar())
         .child(toast_layer())
         .child(content_search::modal_layer())
