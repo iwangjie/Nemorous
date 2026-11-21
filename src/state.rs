@@ -273,7 +273,6 @@ pub struct AppState {
     pub editor_tab: EditorTabKind,
     pub focus_zone: FocusZone,
     pub prev_focus_zone: FocusZone,
-    pub left_pane_width: f32,
 
     // Commit 树状态（选中与提交勾选独立）
     pub changes_filter: String,
@@ -354,7 +353,6 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         let cfg = config::load();
-        let left_pane_width = cfg.commit_left_width;
         Self {
             cfg,
             repos: Vec::new(),
@@ -367,7 +365,6 @@ impl Default for AppState {
             editor_tab: EditorTabKind::Welcome,
             focus_zone: FocusZone::CommitTree,
             prev_focus_zone: FocusZone::CommitTree,
-            left_pane_width,
             changes_filter: String::new(),
             change_selection: None,
             change_selected_dir: None,
@@ -826,6 +823,7 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
         return;
     }
 
+    let complete = snap.partial_repo_ids.is_none();
     app_signal().update(|s| {
         s.is_refreshing = false;
         s.last_refresh_ms = snap.elapsed_ms;
@@ -952,6 +950,9 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
             }
         }
     });
+    if complete {
+        crate::session_runtime::restore_after_refresh();
+    }
     if std::env::var_os("NEMOROUS_TRACE_TIMING").is_some() {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

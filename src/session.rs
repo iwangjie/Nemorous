@@ -137,6 +137,12 @@ pub fn workspace_key(workspace: &str) -> String {
 }
 
 fn read_session_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "session is not a regular file",
+        ));
+    }
     let file = fs::File::open(path)?;
     let mut data = Vec::new();
     file.take(MAX_SESSION_BYTES + 1).read_to_end(&mut data)?;

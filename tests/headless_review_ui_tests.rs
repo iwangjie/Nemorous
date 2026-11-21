@@ -87,7 +87,7 @@ impl Fixture {
         }
     }
 
-    fn start_headless_expect(&self, width: f32, height: f32, wait_sel: &str) -> Headless {
+    fn start_app(&self, width: f32, height: f32) -> Headless {
         unsafe {
             std::env::set_var("NEMOROUS_CONFIG", &self.config_file);
             std::env::set_var("NEMOROUS_WORKSPACE", &self.repo_dir);
@@ -100,12 +100,16 @@ impl Fixture {
         config.environment = env;
         config.viewport = size(px(width), px(height));
         #[cfg(target_os = "macos")]
-        let mut app =
+        let app =
             Headless::start_with_text_engine(config, nsh_platform_macos::CoreTextEngine::default)
                 .expect("start headless with CoreTextEngine");
         #[cfg(not(target_os = "macos"))]
-        let mut app = Headless::start(config).expect("start headless");
+        let app = Headless::start(config).expect("start headless");
+        app
+    }
 
+    fn start_headless_expect(&self, width: f32, height: f32, wait_sel: &str) -> Headless {
+        let mut app = self.start_app(width, height);
         app.wait_for("本地变更").expect("wait for commit header");
         app.wait_for(wait_sel).expect("wait for expected element");
         app
@@ -602,6 +606,69 @@ fn ui_content_search_modal_scope_open_and_close() {
     // 7. Escape 与关闭流程不残留状态。
     app.press_key("escape").unwrap();
     app.wait_for("id:editor-tab-file-README.md").unwrap();
+}
+
+#[test]
+fn ui_legacy_workspace_session_restores_and_persists_after_reopen() {
+    let _guard = lock_env();
+    let fx = Fixture::new("legacy-session");
+    let workspace = fx.repo_dir.to_str().unwrap();
+    let path = nemorous::session::session_path_beside(&fx.config_file, workspace);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let saved = serde_json::json!({
+        "workspace": workspace,
+        "openFiles": [
+            {"repoId": "sample-repo", "path": "missing.go", "line": 3},
+            {"repoId": "sample-repo", "path": "README.md", "line": 2},
+            {"repoId": "sample-repo", "path": "src/app.go", "line": 7}
+        ],
+        "activeFile": 1,
+        "activeTab": "code",
+        "showGitPanel": true,
+        "changesSplit": 360,
+        "codeSplit": 310,
+        "pluginPanel": "old-plugin"
+    });
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+    let mut app = fx.start_app(1440.0, 900.0);
+    app.wait_for("id:project-pane").unwrap();
+    app.wait_for("id:git-bottom-pane").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for("2:1").unwrap();
+    assert!(!app.screen().matches("id:editor-tab-file-missing.go").unwrap());
+
+    app.press("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for("7:1").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.type_text("id:goto-line-input", "4").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("4:1").unwrap();
+
+    let mut saved = nemorous::session::load(&path);
+    for _ in 0..100 {
+        if saved.open_files.len() == 2 && saved.open_files[1].line == 4 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = app.screen();
+        saved = nemorous::session::load(&path);
+    }
+    assert_eq!(saved.open_files.len(), 2);
+    assert_eq!(saved.open_files[1].line, 4);
+    assert_eq!(saved.active_file, Some(1));
+    assert_eq!(saved.extra["pluginPanel"], "old-plugin");
+    assert_eq!(saved.changes_split, 360.0);
+    assert_eq!(saved.code_split, 310.0);
+    assert!(saved.show_git_panel);
+    drop(app);
+
+    let mut app = fx.start_app(1440.0, 900.0);
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for("id:git-bottom-pane").unwrap();
+    app.wait_for("4:1").unwrap();
 }
 
 #[test]

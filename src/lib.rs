@@ -6,6 +6,7 @@ pub mod paths;
 pub mod replace_in_files;
 pub mod search;
 pub mod session;
+mod session_runtime;
 pub mod state;
 pub mod theme;
 pub mod ui;

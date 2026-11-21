@@ -935,6 +935,7 @@ pub fn shell() -> impl IntoElement {
     setup_application_menu();
     setup_shortcuts();
     setup_window_focus_refresh();
+    crate::session_runtime::observe();
     init_workspace();
     let left_tab_memo = computed(|| app_signal().with(|s| s.left_tab));
     let show_git_memo = computed(|| app_signal().with(|s| s.show_git_panel));
@@ -964,12 +965,15 @@ pub fn shell() -> impl IntoElement {
                                 .child(
                                     resizable_panel()
                                         .visible(move || app_signal().with(|s| s.show_left_panel))
-                                        .size(move || px(app_signal().with(|s| s.left_pane_width)))
+                                        .size(|| px(app_signal().with(|s| match s.left_tab {
+                                            LeftTab::Commit => s.cfg.commit_left_width,
+                                            LeftTab::Project => s.cfg.code_left_width,
+                                        })))
                                         .size_range(px(90.0)..px(640.0))
                                         .on_resize(|sz: &Points| {
-                                            app_signal().update(|s| {
-                                                s.left_pane_width = sz.0;
-                                                s.cfg.commit_left_width = sz.0;
+                                            app_signal().update(|s| match s.left_tab {
+                                                LeftTab::Commit => s.cfg.commit_left_width = sz.0,
+                                                LeftTab::Project => s.cfg.code_left_width = sz.0,
                                             });
                                         })
                                         .child(dynamic(move || match left_tab_memo.get() {
