@@ -21,7 +21,7 @@ use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
 fn toolbar_icon_btn(
-    label: &'static str,
+    label: impl Into<String>,
     svg_src: &'static str,
     active: bool,
     enabled: bool,
@@ -29,6 +29,7 @@ fn toolbar_icon_btn(
     tid: &'static str,
     on_click: impl Fn() + 'static,
 ) -> impl IntoElement {
+    let label = label.into();
     let fg = if !enabled {
         p.text_muted.opacity(0.45)
     } else if active {
@@ -49,7 +50,8 @@ fn toolbar_icon_btn(
         .bg(bg)
         .cursor(if enabled { Cursor::Pointer } else { Cursor::Default })
         .hover(move |s| if enabled { s.bg(p.surface_hover) } else { s })
-        .label(label)
+        .label(label.clone())
+        .tooltip(super::tooltip_label(label, p))
         .on_press(move || {
             if enabled {
                 on_click();
@@ -83,11 +85,62 @@ fn toolbar_text_btn(
         .child(text(label).text_size(px(11.0)).text_color(fg).number_of_lines(1u32))
 }
 
+fn show_diff_display_menu() {
+    let (whitespace, inline, wrap, show_whitespace) = app_signal().with_untracked(|s| {
+        (
+            WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode),
+            InlineHighlightMode::from_config(&s.cfg.diff_inline_mode),
+            s.cfg.editor_soft_wrap,
+            s.cfg.diff_show_whitespaces,
+        )
+    });
+    let whitespace_options: Vec<_> = [
+        WhitespaceMode::None,
+        WhitespaceMode::Trim,
+        WhitespaceMode::All,
+        WhitespaceMode::AllAndEmptyLines,
+    ]
+    .into_iter()
+    .map(|mode| MenuItem::new(mode.label()).checked(mode == whitespace)
+        .on_select(move || set_whitespace_mode(mode)))
+    .collect();
+    let inline_options: Vec<_> = [InlineHighlightMode::Word, InlineHighlightMode::Char, InlineHighlightMode::None]
+        .into_iter()
+        .map(|mode| MenuItem::new(mode.label()).checked(mode == inline)
+            .on_select(move || set_inline_mode(mode)))
+        .collect();
+    state::show_popup_menu(vec![
+        MenuItem::submenu("空白比较", whitespace_options),
+        MenuItem::submenu("行内高亮", inline_options),
+        MenuItem::separator(),
+        MenuItem::new("自动换行").checked(wrap).on_select(|| {
+            app_signal().update(|s| s.cfg.editor_soft_wrap = !s.cfg.editor_soft_wrap);
+            state::save_config_quiet();
+        }),
+        MenuItem::new("显示空白字符").checked(show_whitespace).on_select(|| {
+            app_signal().update(|s| s.cfg.diff_show_whitespaces = !s.cfg.diff_show_whitespaces);
+            state::save_config_quiet();
+        }),
+    ]);
+}
+
 /// 统一渲染工作区 Diff（`is_commit = false`）或历史提交 Diff（`is_commit = true`）。
 pub fn diff_pane(is_commit: bool) -> impl IntoElement {
     let old_ref = component_ref::<Editor>();
     let new_ref = component_ref::<Editor>();
     let unified_ref = component_ref::<Editor>();
+    let keys = super::keymap_memo();
+    let shortcut_hint = move |label: &str, action| {
+        keys.with(|keys| {
+            keys.keys(action)
+                .first()
+                .and_then(|key| nsh_core::keymap::Keystroke::parse_with(key, apple_keys()).ok())
+                .map_or_else(
+                    || label.to_owned(),
+                    |key| format!("{label} ({})", key.label(os(), apple_keys())),
+                )
+        })
+    };
     let hunk_inclusion = computed(move || {
         if is_commit { None } else { app_signal().with(super::git_review::included_state) }
     });
@@ -267,10 +320,8 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
         .child(dynamic(move || {
             let p = current_palette();
             let snap = app_signal().with(|s| {
-                let ws_mode = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
                 let single = s.cfg.diff_single_column;
                 let collapse = s.cfg.diff_collapse_unchanged;
-                let show_opts = s.show_diff_options;
                 if is_commit {
                     s.commit_diff.as_ref().map(|c| {
                         let path_label = if c.data.old_path != c.data.new_path {
@@ -290,10 +341,8 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                             false, // staged_only
                             false, // editable
                             c.data.status != "D",
-                            ws_mode,
                             single,
                             collapse,
-                            show_opts,
                             c.boundary_hint,
                         )
                     })
@@ -316,10 +365,8 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                             w.data.staged_only,
                             w.data.editable && !w.data.staged_only,
                             Path::new(&w.file.abs_path()).exists(),
-                            ws_mode,
                             single,
                             collapse,
-                            show_opts,
                             w.boundary_hint,
                         )
                     })
@@ -338,10 +385,8 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                 staged_only,
                 editable,
                 can_open_source,
-                ws_mode,
                 single,
                 collapse,
-                show_opts,
                 boundary_hint,
             )) = snap
             else {
@@ -397,12 +442,12 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                         .text_color(p.text_primary)
                                         .number_of_lines(1u32),
                                 )
-                                .child(
+                                .child(single.then(|| {
                                     text(rev_label)
                                         .text_size(px(10.5))
                                         .text_color(p.text_muted)
-                                        .number_of_lines(1u32),
-                                )
+                                        .number_of_lines(1u32)
+                                }))
                                 .child(
                                     text(format!("+{added}"))
                                         .test_id("diff-stat-added")
@@ -417,10 +462,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(p.danger),
                                 )
-                                .child((!is_commit).then(|| toolbar_text_btn(
-                                    "三栏".to_owned(), false, p,
-                                    "diff-index-review", super::index_review::open_active,
-                                )))
+
                                 .child((!is_commit).then(|| dynamic(move || {
                                     let repo = app_signal().with(|s| {
                                         s.working_diff.as_ref().filter(|w| w.file.conflict).map(|w| w.file.repo_path.clone())
@@ -444,7 +486,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                                 .text_color(p.amber),
                                         )
                                 }))
-                                .child((!editable).then(|| {
+                                .child((single && !editable).then(|| {
                                     view()
                                         .px(px(5.0))
                                         .py(px(1.5))
@@ -493,7 +535,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                             save_working_diff_with_format();
                                         })
                                         .child(
-                                            text("保存 ⌘S")
+                                            text("保存")
                                                 .text_size(px(11.0))
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(p.accent_text),
@@ -511,10 +553,13 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                         .items_center()
                         .gap(px(4.0))
                         .child(toolbar_icon_btn(
-                            "上一处差异 (⇧F7)",
+                            shortcut_hint(
+                                if boundary_hint == Some(-1) { "切到上一个文件" } else { "上一处差异" },
+                                "previousDifference",
+                            ),
                             ICO_CHEVRON_UP,
-                            false,
-                            hunk_count > 0,
+                            boundary_hint == Some(-1),
+                            true,
                             p,
                             "diff-prev-hunk",
                             || jump_diff_hunk(-1),
@@ -526,10 +571,13 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                 .text_color(p.text_secondary),
                         )
                         .child(toolbar_icon_btn(
-                            "下一处差异 (F7)",
+                            shortcut_hint(
+                                if boundary_hint == Some(1) { "切到下一个文件" } else { "下一处差异" },
+                                "nextDifference",
+                            ),
                             ICO_CHEVRON_DOWN,
-                            false,
-                            hunk_count > 0,
+                            boundary_hint == Some(1),
+                            true,
                             p,
                             "diff-next-hunk",
                             || jump_diff_hunk(1),
@@ -539,10 +587,6 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                 if staged_only { "取消暂存块" } else { "暂存块" }.to_owned(),
                                 false, p, "diff-stage-hunk", super::git_review::stage_hunk,
                             )
-                        }))
-                        .child((!is_commit && hunk_count > 0).then(|| {
-                            toolbar_text_btn("行操作…".to_owned(), false, p, "diff-lines-menu",
-                                super::git_review::open_line_menu)
                         }))
                         .child(when(move || hunk_inclusion.get().is_some(), move || {
                             view()
@@ -558,19 +602,15 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                     if hunk_inclusion.get() == Some(true) { "✓ 纳入提交" } else { "纳入提交" }
                                 }).text_size(px(11.0)).text_color(p.text_primary).number_of_lines(1u32))
                         }))
-                        .child(
-                            toolbar_text_btn(
-                                "修改 (F4)".to_string(),
-                                false,
-                                p,
-                                "diff-jump-source-btn",
-                                move || {
-                                    if can_open_source {
-                                        jump_from_diff_to_source();
-                                    }
-                                },
-                            ),
-                        )
+                        .child(can_open_source.then(|| toolbar_icon_btn(
+                            shortcut_hint("跳转到源码", "jumpToSource"),
+                            ICO_EDIT,
+                            false,
+                            true,
+                            p,
+                            "diff-jump-source-btn",
+                            jump_from_diff_to_source,
+                        )))
                         .child(toolbar_icon_btn(
                             if collapse { "展开未改动" } else { "折叠未改动" },
                             ICO_COLLAPSE,
@@ -586,7 +626,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                             },
                         ))
                         .child(toolbar_icon_btn(
-                            "查找 (⌘F)",
+                            shortcut_hint("查找", "find"),
                             ICO_SEARCH,
                             false,
                             true,
@@ -594,33 +634,11 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                             "diff-find-btn",
                             || open_find_bar(false),
                         ))
-                        .child(toolbar_text_btn(
-                            ws_mode.label().to_string(),
-                            ws_mode != WhitespaceMode::None,
-                            p,
-                            "diff-whitespace-btn",
-                            move || {
-                                crate::state::show_popup_menu(vec![
-                                    MenuItem::new("不忽略空白")
-                                        .checked(ws_mode == WhitespaceMode::None)
-                                        .on_select(|| set_whitespace_mode(WhitespaceMode::None)),
-                                    MenuItem::new("忽略首尾空白")
-                                        .checked(ws_mode == WhitespaceMode::Trim)
-                                        .on_select(|| set_whitespace_mode(WhitespaceMode::Trim)),
-                                    MenuItem::new("忽略空白")
-                                        .checked(ws_mode == WhitespaceMode::All)
-                                        .on_select(|| set_whitespace_mode(WhitespaceMode::All)),
-                                    MenuItem::new("忽略空白和空行")
-                                        .checked(ws_mode == WhitespaceMode::AllAndEmptyLines)
-                                        .on_select(|| {
-                                            set_whitespace_mode(WhitespaceMode::AllAndEmptyLines)
-                                        }),
-                                ]);
-                            },
-                        ))
-                        .child(toolbar_text_btn(
-                            if single { "单栏" } else { "双栏" }.to_string(),
+                        .child(toolbar_icon_btn(
+                            if single { "切换为双栏" } else { "切换为单栏" },
+                            ICO_COLUMNS,
                             single,
+                            true,
                             p,
                             "diff-layout-toggle",
                             || {
@@ -630,29 +648,27 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                 state::save_config_quiet();
                             },
                         ))
+                        .child((!is_commit).then(|| toolbar_icon_btn(
+                            "HEAD、暂存区与工作区对比",
+                            ICO_BRANCH,
+                            false,
+                            true,
+                            p,
+                            "diff-index-review",
+                            super::index_review::open_active,
+                        )))
                         .child(toolbar_icon_btn(
-                            "显示选项",
-                            ICO_MORE,
-                            show_opts,
+                            "差异显示选项",
+                            ICO_SETTINGS,
+                            false,
                             true,
                             p,
                             "diff-options-btn",
-                            || {
-                                app_signal().update(|s| s.show_diff_options = !s.show_diff_options);
-                            },
+                            show_diff_display_menu,
                         ))
                         .child(view().flex_1())
-                        .child(boundary_hint.map(|dir| {
-                            text(if dir > 0 {
-                                "再按 F7 切到下一文件"
-                            } else {
-                                "再按 ⇧F7 切到上一文件"
-                            })
-                            .text_size(px(10.5))
-                            .text_color(p.amber)
-                        }))
                         .child(toolbar_icon_btn(
-                            "上一个文件 (⌥←)",
+                            shortcut_hint("上一个文件", "previousDiffFile"),
                             ICO_ARROW_LEFT,
                             false,
                             true,
@@ -667,7 +683,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                             },
                         ))
                         .child(toolbar_icon_btn(
-                            "下一个文件 (⌥→)",
+                            shortcut_hint("下一个文件", "nextDiffFile"),
                             ICO_ARROW_RIGHT,
                             false,
                             true,
@@ -684,91 +700,6 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                 )
                 .into_element()
         }))
-        // 显示选项折叠栏
-        .child(when(
-            move || app_signal().with(|s| s.show_diff_options),
-            move || {
-                dynamic(move || {
-                    let p = current_palette();
-                    let (wrap, show_ws, inline_m, font_sz) = app_signal().with(|s| {
-                        (
-                            s.cfg.editor_soft_wrap,
-                            s.cfg.diff_show_whitespaces,
-                            InlineHighlightMode::from_config(&s.cfg.diff_inline_mode),
-                            s.cfg.editor_font_size,
-                        )
-                    });
-                    view()
-                        .h(px(32.0))
-                        .px(px(12.0))
-                        .gap(px(6.0))
-                        .flex_row()
-                        .items_center()
-                        .bg(p.rail_bg)
-                        .border_b_1()
-                        .border_color(p.border)
-                        .child(text("显示选项：").text_size(px(11.0)).text_color(p.text_muted))
-                        .child(toolbar_text_btn(
-                            if wrap { "自动换行：开" } else { "自动换行：关" }.to_string(),
-                            wrap,
-                            p,
-                            "diff-opt-wrap",
-                            || {
-                                app_signal().update(|s| {
-                                    s.cfg.editor_soft_wrap = !s.cfg.editor_soft_wrap;
-                                });
-                                state::save_config_quiet();
-                            },
-                        ))
-                        .child(toolbar_text_btn(
-                            if show_ws {
-                                "空白字符：显"
-                            } else {
-                                "空白字符：隐"
-                            }
-                            .to_string(),
-                            show_ws,
-                            p,
-                            "diff-opt-show-ws",
-                            || {
-                                app_signal().update(|s| {
-                                    s.cfg.diff_show_whitespaces = !s.cfg.diff_show_whitespaces;
-                                });
-                                state::save_config_quiet();
-                            },
-                        ))
-                        .child(toolbar_text_btn(
-                            format!("行内高亮：{}", inline_m.label()),
-                            inline_m != InlineHighlightMode::None,
-                            p,
-                            "diff-opt-inline",
-                            move || {
-                                let next = match inline_m {
-                                    InlineHighlightMode::Word => InlineHighlightMode::Char,
-                                    InlineHighlightMode::Char => InlineHighlightMode::None,
-                                    InlineHighlightMode::None => InlineHighlightMode::Word,
-                                };
-                                set_inline_mode(next);
-                            },
-                        ))
-                        .child(toolbar_text_btn(
-                            format!("字号：{:.0}pt", font_sz),
-                            false,
-                            p,
-                            "diff-opt-fontsize",
-                            || {
-                                app_signal().update(|s| {
-                                    s.cfg.editor_font_size += 1.0;
-                                    if s.cfg.editor_font_size > 17.0 {
-                                        s.cfg.editor_font_size = 12.0;
-                                    }
-                                });
-                                state::save_config_quiet();
-                            },
-                        ))
-                })
-            },
-        ))
         // 按聚焦侧查找条（保持输入框实例稳定，仅响应 side / matches 文字更新！）
         .child(when(
             move || app_signal().with(|s| s.diff_find_open),
@@ -1251,19 +1182,14 @@ fn render_side_by_side_diff(
                                 .text_color(p.text_secondary)
                                 .number_of_lines(1u32),
                         )
-                        .child(
-                            text(move || {
-                                let ed = app_signal().with(|s| {
-                                    !is_commit
-                                        && s.working_diff
-                                            .as_ref()
-                                            .is_some_and(|w| w.data.editable && !w.data.staged_only)
-                                });
-                                if ed { "可轻编辑" } else { "只读" }
-                            })
-                            .text_size(px(9.5))
-                            .text_color(p.text_muted),
-                        ),
+                        .child(when(
+                            move || app_signal().with(|s| {
+                                is_commit || s.working_diff.as_ref().is_none_or(|w| {
+                                    !w.data.editable || w.data.staged_only
+                                })
+                            }),
+                            move || text("只读").text_size(px(9.5)).text_color(p.text_muted),
+                        )),
                 )
                 .child(
                     editor()
@@ -1620,7 +1546,7 @@ fn show_diff_editor_context_menu(
     ];
     if !is_commit {
         let staged = app_signal().with_untracked(|s| s.working_diff.as_ref().is_some_and(|w| w.data.staged_only));
-        items.push(super::git_review::line_item(side, staged));
+        items.extend(super::git_review::line_items(side, staged));
     }
     items.extend(build_location_menu_items(
         repo_id,

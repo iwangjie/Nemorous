@@ -509,7 +509,7 @@ mod macos {
 
         click("code-git-history-btn", 1);
         wait("git-bottom-pane");
-        wait("git-history-affected");
+        wait("git-file-history");
         wait("git-commit-file-tracked.txt");
         save_window_png(window, &evidence.join("native-file-history.png"));
         println!("BATCH2_NATIVE_FILE_HISTORY ok");
@@ -713,6 +713,45 @@ mod macos {
         println!("NATIVE_BATCH6_SETTINGS PASS");
     }
 
+    fn review_cleanup(app: &NSApplication, window: &NSWindow, root: &NSView, evidence: &Path) {
+        let click = |id: &str| {
+            wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+            send_click(window, &view_with_id(root, id).unwrap(), 1);
+        };
+        click("change-row-unstaged-tracked.txt");
+        send_key(app, window, "d", "d", 2, NSEventModifierFlags::Command);
+        wait_until("working diff opened", Duration::from_secs(6), || {
+            view_with_id(root, "working-diff-new-editor").is_some()
+        });
+        click("diff-next-hunk");
+        assert!(!a11y_contains(root, "再按 F7"));
+        assert!(!a11y_contains(root, "⌘[ 返回"));
+        save_window_png(window, &evidence.join("diff.png"));
+
+        click("diff-jump-source-btn");
+        wait_until("source opened", Duration::from_secs(6), || {
+            view_with_id(root, "code-editor-view").is_some()
+        });
+        assert!(view_with_id(root, "code-return-diff-btn").is_none());
+        assert!(view_with_id(root, "code-language-tools").is_none());
+        click("code-git-history-btn");
+        wait_until("file history opened", Duration::from_secs(6), || {
+            view_with_id(root, "git-file-history").is_some()
+                && view_with_id(root, "git-panel-options").is_some()
+        });
+        assert!(!a11y_contains(root, "已加载 1 个提交"));
+        save_window_png(window, &evidence.join("source-and-history.png"));
+
+        click("editor-tab-working-diff");
+        wait_until("diff tab restored", Duration::from_secs(6), || {
+            view_with_id(root, "working-diff-new-editor").is_some()
+        });
+        let narrow = NSRect::new(NSPoint::new(80.0, 80.0), NSSize::new(1040.0, 660.0));
+        window.setFrame_display(window.frameRectForContentRect(narrow), true);
+        save_window_png(window, &evidence.join("diff-narrow.png"));
+        println!("NATIVE_REVIEW_CLEANUP PASS");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -728,7 +767,10 @@ mod macos {
         let batch4 = std::env::var_os("NEMOROUS_NATIVE_BATCH4").is_some();
         let batch5 = std::env::var_os("NEMOROUS_NATIVE_BATCH5").is_some();
         let batch6 = std::env::var_os("NEMOROUS_NATIVE_BATCH6").is_some();
-        let work_dir = if batch6 {
+        let cleanup = std::env::var_os("NEMOROUS_NATIVE_REVIEW_CLEANUP").is_some();
+        let work_dir = if cleanup {
+            root_dir.join(format!("build/tmp-ab/native-review-cleanup-{}", std::process::id()))
+        } else if batch6 {
             root_dir.join(format!("build/tmp-ab/native-batch6-{}", std::process::id()))
         } else if batch5 {
             root_dir.join(format!("build/tmp-ab/native-batch5-{}", std::process::id()))
@@ -860,6 +902,13 @@ mod macos {
         }
 
         let root = surface.view();
+        if cleanup {
+            let evidence = root_dir.join("build/review-cleanup-evidence");
+            review_cleanup(&app, &window, &root, &evidence);
+            window.close();
+            pump(150);
+            return;
+        }
         if batch6 {
             let evidence = root_dir.join("build/migration-evidence/batch-6");
             batch6_settings(&app,&window,&root,&repo_copy,&evidence);

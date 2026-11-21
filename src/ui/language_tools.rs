@@ -756,10 +756,6 @@ pub(super) fn menu() -> MenuItem {
     MenuItem::submenu("语言服务", actions())
 }
 
-pub(super) fn open_menu() {
-    state::show_popup_menu(actions());
-}
-
 fn actions() -> Vec<MenuItem> {
     let active = enabled();
     let mut items = vec![

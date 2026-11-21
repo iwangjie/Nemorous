@@ -200,19 +200,12 @@ pub(super) fn line_item(side: DiffSide, staged: bool) -> MenuItem {
     .on_select(move || stage_lines(side))
 }
 
-pub(super) fn open_line_menu() {
-    let selection = app_signal().with_untracked(|s| {
-        s.working_diff
-            .as_ref()
-            .map(|w| (w.active_side, w.data.staged_only))
-    });
-    if let Some((side, staged)) = selection {
-        let mut items = vec![line_item(side, staged)];
-        if !staged {
-            items.push(MenuItem::new("回滚当前块").on_select(rollback_diff));
-        }
-        state::show_popup_menu(items);
+pub(super) fn line_items(side: DiffSide, staged: bool) -> Vec<MenuItem> {
+    let mut items = vec![line_item(side, staged)];
+    if !staged {
+        items.push(MenuItem::new("回滚当前块").on_select(rollback_diff));
     }
+    items
 }
 
 fn replace_editor_buffer(editor: &nsh_base::EditorApi, text: String) {

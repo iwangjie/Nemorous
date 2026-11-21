@@ -6,8 +6,8 @@ use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
 use crate::state::{
-    self, FocusZone, app_signal, can_return_to_review, current_palette, editor_refs_signal,
-    open_local_history_for_active, return_to_review, save_active_code_tab_now,
+    self, FocusZone, app_signal, current_palette, editor_refs_signal, open_local_history_for_active,
+    save_active_code_tab_now,
 };
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
@@ -94,7 +94,6 @@ pub fn code_editor_pane() -> impl IntoElement {
                 return view().h(px(0.0)).into_element();
             };
             let is_dirty = tab.is_dirty();
-            let can_ret = can_return_to_review();
             let show_opts = app_signal().with(|s| s.show_code_options);
             let wf = tab.file.clone();
             let line_1 = tab.cursor.line + 1;
@@ -188,25 +187,6 @@ pub fn code_editor_pane() -> impl IntoElement {
                         .flex_row()
                         .items_center()
                         .gap(px(6.0))
-                        .child(super::workbench::button("语言服务", "code-language-tools", super::language_tools::open_menu))
-                        .child(can_ret.then(|| {
-                            view()
-                                .test_id("code-return-diff-btn")
-                                .h(px(24.0))
-                                .px(px(8.0))
-                                .rounded(px(5.0))
-                                .bg(p.surface2)
-                                .items_center()
-                                .justify_center()
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .on_press(return_to_review)
-                                .child(
-                                    text("返回差异")
-                                        .text_size(px(11.0))
-                                        .text_color(p.text_primary),
-                                )
-                        }))
                         .child(is_dirty.then(|| {
                             view()
                                 .test_id("code-save-btn")
@@ -222,7 +202,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     save_active_code_tab_now();
                                 })
                                 .child(
-                                    text("保存 ⌘S")
+                                    text("保存")
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(p.accent_text),

@@ -315,7 +315,6 @@ pub struct AppState {
     pub active_code_tab_idx: usize,
     pub working_diff: Option<WorkingDiffSession>,
     pub commit_diff: Option<CommitDiffSession>,
-    pub show_diff_options: bool,
     pub show_code_options: bool,
 
     // 查找替换条状态
@@ -401,7 +400,6 @@ impl Default for AppState {
             active_code_tab_idx: 0,
             working_diff: None,
             commit_diff: None,
-            show_diff_options: false,
             show_code_options: false,
             diff_find_open: false,
             diff_find_query: String::new(),
@@ -1898,42 +1896,6 @@ pub fn jump_from_diff_to_source() {
     }
 }
 
-pub fn can_return_to_review() -> bool {
-    app_signal().with(|s| {
-        s.nav_back.iter().rev().any(|t| {
-            matches!(
-                t,
-                NavTarget::WorkingDiff { .. } | NavTarget::CommitDiff { .. }
-            )
-        })
-    })
-}
-
-pub fn return_to_review() {
-    let target = app_signal().with_untracked(|s| {
-        s.nav_back
-            .iter()
-            .rposition(|t| {
-                matches!(
-                    t,
-                    NavTarget::WorkingDiff { .. } | NavTarget::CommitDiff { .. }
-                )
-            })
-            .map(|idx| (idx, s.nav_back[idx].clone()))
-    });
-    let Some((idx, nav)) = target else {
-        return;
-    };
-    let cur = current_nav_target();
-    app_signal().update(|s| {
-        s.nav_back.truncate(idx);
-        if let Some(c) = cur {
-            s.nav_forward.push(c);
-        }
-    });
-    restore_nav_target(nav);
-}
-
 pub fn navigate_back() {
     let target = app_signal().with_untracked(|s| s.nav_back.last().cloned());
     let Some(nav) = target else {
@@ -3158,7 +3120,6 @@ pub fn jump_diff_hunk(delta: i32) {
                             w.boundary_hint = Some(-1);
                         }
                     });
-                    show_toast("info", "已是本文件第一处差异，再按 ⇧F7 切到上一文件");
                 }
                 Some(1) => {
                     app_signal().update(|s| {
@@ -3166,7 +3127,6 @@ pub fn jump_diff_hunk(delta: i32) {
                             w.boundary_hint = Some(1);
                         }
                     });
-                    show_toast("info", "已是本文件最后一处差异，再按 F7 切到下一文件");
                 }
                 _ => {
                     if let Some(idx) = target_hunk {
@@ -3220,7 +3180,6 @@ pub fn jump_diff_hunk(delta: i32) {
                             c.boundary_hint = Some(-1);
                         }
                     });
-                    show_toast("info", "已是第一处差异，再按 ⇧F7 切到上一文件");
                 }
                 Some(1) => {
                     app_signal().update(|s| {
@@ -3228,7 +3187,6 @@ pub fn jump_diff_hunk(delta: i32) {
                             c.boundary_hint = Some(1);
                         }
                     });
-                    show_toast("info", "已是最后一处差异，再按 F7 切到下一文件");
                 }
                 _ => {
                     if let Some(idx) = target_hunk {

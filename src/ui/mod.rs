@@ -994,10 +994,23 @@ fn left_rail() -> impl IntoElement {
     })
 }
 
+fn tooltip_label(label: String, p: theme::Palette) -> AnyElement {
+    view()
+        .test_id("toolbar-tooltip")
+        .px(px(8.0))
+        .py(px(5.0))
+        .rounded(px(5.0))
+        .border_1()
+        .border_color(p.border)
+        .bg(p.surface)
+        .child(text(label).text_size(px(11.0)).text_color(p.text_primary))
+        .into_element()
+}
+
 fn status_bar() -> impl IntoElement {
     dynamic(move || {
         let p = current_palette();
-        let (ws_display, cursor_text, hint) = app_signal().with(|s| {
+        let (ws_display, cursor_text) = app_signal().with(|s| {
             let ws = display_path(&s.cfg.workspace_path);
             let cur = match s.editor_tab {
                 EditorTabKind::File => s
@@ -1014,12 +1027,7 @@ fn status_bar() -> impl IntoElement {
                 }),
                 EditorTabKind::Welcome | EditorTabKind::Comparison => None,
             };
-            let hint = if s.left_tab == LeftTab::Commit {
-                "↑↓ 选择 · 空格勾选 · ⌘D 差异 · F4 源码 · ⌘[ 返回"
-            } else {
-                "⌘0 Commit · ⌘1 Project · ⌘9 Git · ⌘⇧O 转到文件 · ⌘L 转到行"
-            };
-            (ws, cur, hint)
+            (ws, cur)
         });
 
         view()
@@ -1035,6 +1043,8 @@ fn status_bar() -> impl IntoElement {
             .border_color(p.border)
             .child(
                 text(ws_display)
+                    .flex_1()
+                    .min_w(px(0.0))
                     .text_size(px(11.0))
                     .text_color(p.text_muted)
                     .number_of_lines(1u32),
@@ -1043,7 +1053,7 @@ fn status_bar() -> impl IntoElement {
                 view()
                     .flex_row()
                     .items_center()
-                    .gap(px(10.0))
+                    .flex_none()
                     .child(cursor_text.map(|pos_txt| {
                         view()
                             .test_id("status-cursor-pos")
@@ -1055,8 +1065,7 @@ fn status_bar() -> impl IntoElement {
                             .hover(move |s| s.bg(p.surface_hover))
                             .on_press(open_goto_line_modal)
                             .child(text(pos_txt).text_size(px(10.5)).text_color(p.text_control))
-                    }))
-                    .child(text(hint).text_size(px(10.5)).text_color(p.text_muted)),
+                    })),
             )
     })
 }

@@ -191,7 +191,9 @@ fn ui_working_diff_f4_source_and_cmd_bracket_return_roundtrip() {
     // 按 F4 跳转到源码页
     app.press_key("f4").unwrap();
     app.wait_for("id:code-editor-pane").unwrap();
-    app.wait_for("返回差异").unwrap();
+    assert!(!app.screen().matches("返回差异").unwrap());
+    assert!(!app.screen().matches("id:code-language-tools").unwrap());
+    assert!(!app.screen().matches("⌘[ 返回").unwrap());
 
     // 按 Cmd+[ 返回工作区 Diff
     app.press_key("mod+[").unwrap();
@@ -200,6 +202,8 @@ fn ui_working_diff_f4_source_and_cmd_bracket_return_roundtrip() {
     // 按 Cmd+] 前进回源码页
     app.press_key("mod+]").unwrap();
     app.wait_for("id:code-editor-pane").unwrap();
+    app.press("id:editor-tab-working-diff").unwrap();
+    app.wait_for("id:working-diff-pane").unwrap();
 }
 
 #[test]
@@ -230,9 +234,10 @@ fn ui_diff_find_focused_side_goto_line_and_whitespace_menu() {
     app.wait_for("7:2").unwrap();
 
     // 4 级忽略空白菜单可达
-    app.press("id:diff-whitespace-btn").unwrap();
-    app.choose_menu_item("忽略空白和空行").unwrap();
-    app.wait_for("忽略空白和空行").unwrap();
+    app.press("id:diff-options-btn").unwrap();
+    app.choose_menu_item("空白比较 > 忽略空白和空行").unwrap();
+    let cfg = nemorous::config::load_from(&fx.config_file).unwrap();
+    assert_eq!(cfg.diff_whitespace_mode, "all_and_empty");
 }
 
 #[test]
@@ -1360,7 +1365,7 @@ fn ui_working_diff_scope_switch_single_column_and_collapse() {
     app.press("id:change-row-unstaged-src/app.go").unwrap();
     app.press_key("mod+d").unwrap();
     app.wait_for("id:working-diff-pane").unwrap();
-    app.wait_for("可轻编辑").unwrap();
+    app.wait_for("id:working-diff-new-editor").unwrap();
 
     // 切到暂存区 -> 只读
     app.press("id:diff-scope-staged").unwrap();
@@ -1438,12 +1443,16 @@ fn ui_diff_f7_boundary_confirmation_and_keyboard_mixed_staging() {
         .unwrap();
 
     // 打开 src/app.go Diff（只有 1 处 hunk）：
-    // 第一次按 F7 出现边界提示“再按 F7 切到下一文件”
+    // 第一次按 F7 保留当前文件，悬停在差异箭头上才显示下一步。
     app.press("id:change-row-unstaged-src/app.go").unwrap();
     app.press_key("mod+d").unwrap();
     app.wait_for("id:working-diff-pane").unwrap();
     app.press_key("f7").unwrap();
-    app.wait_for("再按 F7 切到下一文件").unwrap();
+    assert!(!app.screen().matches("id:toolbar-tooltip").unwrap());
+    assert!(!app.screen().matches("Diff: notes.txt").unwrap());
+    app.hover("id:diff-next-hunk").unwrap();
+    app.wait_for("id:toolbar-tooltip").unwrap();
+    app.wait_for("切到下一个文件 (F7)").unwrap();
 
     // 第二次按 F7 切换到下一个变更文件 notes.txt
     app.press_key("f7").unwrap();
@@ -1498,7 +1507,7 @@ fn ui_working_diff_right_pane_edit_and_autosave_on_switch() {
     app.press("id:change-row-unstaged-src/app.go").unwrap();
     app.press_key("mod+d").unwrap();
     app.wait_for("id:working-diff-pane").unwrap();
-    app.wait_for("可轻编辑").unwrap();
+    app.wait_for("id:working-diff-new-editor").unwrap();
 
     // 在右侧工作区编辑器内直接键入轻改内容 -> 出现未保存徽章
     app.type_text("id:working-diff-new-editor", "// diff-inline-edit\n")
@@ -1878,7 +1887,7 @@ fn ui_f7_shift_f7_lands_on_last_hunk_and_crosses_zero_hunk_file() {
     app.wait_for("Diff: notes.txt").unwrap();
 
     app.press_key("shift+f7").unwrap();
-    app.wait_for("再按 ⇧F7 切到上一文件").unwrap();
+    assert!(!app.screen().matches("id:toolbar-tooltip").unwrap());
     app.press_key("shift+f7").unwrap();
     app.wait_for("Diff: app.go").unwrap();
     app.wait_for("2/2").unwrap();
@@ -1887,12 +1896,12 @@ fn ui_f7_shift_f7_lands_on_last_hunk_and_crosses_zero_hunk_file() {
     app.press("id:change-row-unstaged-ws_only.txt").unwrap();
     app.press_key("mod+d").unwrap();
     app.wait_for("Diff: ws_only.txt").unwrap();
-    app.press("id:diff-whitespace-btn").unwrap();
-    app.choose_menu_item("忽略空白").unwrap();
+    app.press("id:diff-options-btn").unwrap();
+    app.choose_menu_item("空白比较 > 忽略空白").unwrap();
     app.wait_for("0 处差异").unwrap();
 
     app.press_key("shift+f7").unwrap();
-    app.wait_for("再按 ⇧F7 切到上一文件").unwrap();
+    assert!(!app.screen().matches("id:toolbar-tooltip").unwrap());
     app.press_key("shift+f7").unwrap();
     app.wait_for("Diff: notes.txt").unwrap();
 }
@@ -2005,9 +2014,11 @@ fn ui_git_forest_filters_previews_and_compares_file_history() {
     app.choose_menu_item("按仓库").unwrap();
     app.press(current.as_str()).unwrap();
     app.wait_for("id:git-commit-file-src/rename_new.go").unwrap();
-    app.press("id:git-diff-preview").unwrap();
+    app.press("id:git-panel-options").unwrap();
+    app.choose_menu_item("差异预览").unwrap();
     app.wait_for("id:commit-diff-pane").unwrap();
-    app.press("id:git-diff-preview").unwrap();
+    app.press("id:git-panel-options").unwrap();
+    app.choose_menu_item("差异预览").unwrap();
 
     app.press_key("mod+shift+o").unwrap();
     app.type_text("id:review-picker-input", "src/rename_new.go").unwrap();
@@ -2020,7 +2031,8 @@ fn ui_git_forest_filters_previews_and_compares_file_history() {
     app.press_key("down").unwrap();
     app.wait_for("id:git-commit-file-src/rename_old.go").unwrap();
     assert!(!app.screen().matches("id:git-commit-file-README.md").unwrap());
-    app.press("id:git-history-affected").unwrap();
+    app.press("id:git-panel-options").unwrap();
+    app.choose_menu_item("显示所有受影响的文件").unwrap();
     app.wait_for("id:git-commit-file-README.md").unwrap();
     app.right_click(initial.as_str()).unwrap();
     app.choose_menu_item("设为比较基准").unwrap();
@@ -2353,12 +2365,12 @@ fn ui_lsp_requests_hover_and_stages_formatting_for_review() {
         app.idle(Duration::from_millis(60)).unwrap();
     }
     assert!(fs::read_to_string(&proof).unwrap().contains("textDocument/didOpen"));
-    app.press("id:code-language-tools").unwrap();
-    app.choose_menu_item("悬停信息").unwrap();
+    app.right_click(r#"return "new-greeting""#).unwrap();
+    app.choose_menu_item("语言服务 > 悬停信息").unwrap();
     app.wait_for("synthetic hover").unwrap();
     app.press_key("escape").unwrap();
-    app.press("id:code-language-tools").unwrap();
-    app.choose_menu_item("格式化文件").unwrap();
+    app.right_click(r#"return "new-greeting""#).unwrap();
+    app.choose_menu_item("语言服务 > 格式化文件").unwrap();
     app.wait_for("id:git-text-prompt").unwrap();
     app.press("id:git-text-prompt-submit").unwrap();
     app.wait_for("已应用到编辑器，可审阅后保存").unwrap();
@@ -2415,7 +2427,8 @@ esac
     unsafe { std::env::set_var("PATH",path); }
     let mut app = fx.start_headless(1440.0,900.0);
     app.press("id:rail-git-btn").unwrap();
-    app.press("id:github-pr-ci").unwrap();
+    app.press("id:git-panel-options").unwrap();
+    app.choose_menu_item("GitHub PR / CI").unwrap();
     app.wait_for("id:gh-pr-7").unwrap();
     app.press("id:gh-pr-7").unwrap();
     app.wait_for("unit · SUCCESS").unwrap();

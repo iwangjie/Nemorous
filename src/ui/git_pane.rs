@@ -186,42 +186,37 @@ fn next_index<T>(
     )
 }
 
-fn preview_toggle() -> impl IntoElement {
-    dynamic(|| {
-        let p = current_palette();
-        let active = app_signal().with(|s| s.cfg.git_log_diff_preview);
-        view()
-            .test_id("git-diff-preview")
-            .label("差异预览")
-            .h(px(23.0))
-            .px(px(7.0))
-            .rounded(px(4.0))
-            .items_center()
-            .justify_center()
-            .cursor(Cursor::Pointer)
-            .bg(if active { p.accent_soft } else { p.surface })
-            .child(text("差异预览").text_size(px(10.5)).text_color(if active {
-                p.accent_soft_text
-            } else {
-                p.text_primary
-            }))
-            .on_press(|| {
-                let mut preview = None;
-                app_signal().update(|s| {
-                    s.cfg.git_log_diff_preview = !s.cfg.git_log_diff_preview;
-                    if s.cfg.git_log_diff_preview {
-                        preview = s
-                            .selected_commit
-                            .clone()
-                            .zip(s.selected_commit_file.clone());
-                    }
-                });
-                crate::state::save_config_quiet();
-                if let Some((commit, file)) = preview {
-                    crate::state::preview_commit_diff(commit, file);
+fn toggle_preview() {
+    let mut preview = None;
+    app_signal().update(|s| {
+        s.cfg.git_log_diff_preview = !s.cfg.git_log_diff_preview;
+        if s.cfg.git_log_diff_preview {
+            preview = s.selected_commit.clone().zip(s.selected_commit_file.clone());
+        }
+    });
+    crate::state::save_config_quiet();
+    if let Some((commit, file)) = preview {
+        crate::state::preview_commit_diff(commit, file);
+    }
+}
+
+fn show_panel_options() {
+    let (preview, affected) = app_signal().with_untracked(|s| {
+        (s.cfg.git_log_diff_preview, s.file_history.as_ref().map(|h| h.show_affected))
+    });
+    let mut items = vec![MenuItem::new("差异预览").checked(preview).on_select(toggle_preview)];
+    if let Some(affected) = affected {
+        items.push(MenuItem::new("显示所有受影响的文件").checked(affected).on_select(|| {
+            app_signal().update(|s| {
+                if let Some(history) = s.file_history.as_mut() {
+                    history.show_affected = !history.show_affected;
                 }
-            })
-    })
+            });
+        }));
+    }
+    items.push(MenuItem::separator());
+    items.push(MenuItem::new("GitHub PR / CI").on_select(super::github_panel::open));
+    crate::state::show_popup_menu(items);
 }
 
 fn history_items(commit: CommitEntry, path: Option<String>) -> Vec<MenuItem> {
@@ -276,97 +271,64 @@ pub fn git_pane() -> impl IntoElement {
         // 顶栏
         .child(dynamic(move || {
             let p = current_palette();
-            let (total, fh_name) = app_signal().with(|s| {
-                (
-                    s.file_history.as_ref().map_or_else(
-                        || git_forest::rows().commits.len(),
-                        |history| history.commits.len(),
-                    ),
-                    s.file_history.as_ref().map(|fh| basename(&fh.rel_path)),
-                )
+            let file_history = app_signal().with(|s| {
+                s.file_history.as_ref().map(|h| basename(&h.rel_path))
             });
+            let title = file_history.as_ref().map_or_else(
+                || "Git".to_owned(),
+                |name| format!("文件历史：{name}"),
+            );
 
             view()
-                .h(px(34.0))
+                .h(px(32.0))
                 .px(px(10.0))
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(6.0))
                 .border_b_1()
                 .border_color(p.border)
                 .child(icons::icon(ICO_BRANCH, 13.0, p.accent))
                 .child(
-                    text("Git 提交历史")
+                    text(title)
+                        .test_id(if file_history.is_some() { "git-file-history" } else { "git-log-title" })
                         .text_size(px(12.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(p.text_primary),
+                        .text_color(p.text_primary)
+                        .number_of_lines(1u32),
                 )
-                .child(
-                    text(format!("已加载 {total} 个提交"))
-                        .text_size(px(10.5))
-                        .text_color(p.text_muted),
-                )
-                .child(fh_name.map(|name| {
+                .child(file_history.is_some().then(|| {
                     view()
-                        .px(px(8.0))
-                        .py(px(2.0))
+                        .w(px(22.0))
+                        .h(px(22.0))
                         .rounded(px(4.0))
-                        .bg(p.accent_soft)
-                        .flex_row()
                         .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            text(format!("文件历史：{name}"))
-                                .text_size(px(11.0))
-                                .text_color(p.accent_soft_text),
-                        )
-                        .child(
-                            view()
-                                .cursor(Cursor::Pointer)
-                                .on_press(|| {
-                                    app_signal().update(|s| s.file_history = None);
-                                    selection().update(|s| s.base = None);
-                                })
-                                .child(icons::icon(ICO_CLOSE, 10.0, p.accent_soft_text)),
-                        )
+                        .justify_center()
+                        .cursor(Cursor::Pointer)
+                        .hover(move |s| s.bg(p.surface_hover))
+                        .label("关闭文件历史")
+                        .tooltip(super::tooltip_label("关闭文件历史".into(), p))
+                        .on_press(|| {
+                            app_signal().update(|s| s.file_history = None);
+                            selection().update(|s| s.base = None);
+                        })
+                        .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted))
                 }))
                 .child(view().flex_1())
-                .child(preview_toggle())
-                .child(super::workbench::button("GitHub PR / CI", "github-pr-ci", super::github_panel::open))
-                .child(when(
-                    move || is_history.get(),
-                    || {
-                        dynamic(|| {
-                            let p = current_palette();
-                            let active = app_signal()
-                                .with(|s| s.file_history.as_ref().is_some_and(|h| h.show_affected));
-                            view()
-                                .test_id("git-history-affected")
-                                .label("显示所有受影响的文件")
-                                .px(px(6.0))
-                                .h(px(23.0))
-                                .rounded(px(4.0))
-                                .items_center()
-                                .justify_center()
-                                .cursor(Cursor::Pointer)
-                                .bg(if active { p.accent_soft } else { p.surface })
-                                .child(text("受影响的文件").text_size(px(10.5)).text_color(
-                                    if active {
-                                        p.accent_soft_text
-                                    } else {
-                                        p.text_primary
-                                    },
-                                ))
-                                .on_press(|| {
-                                    app_signal().update(|s| {
-                                        if let Some(history) = s.file_history.as_mut() {
-                                            history.show_affected = !history.show_affected;
-                                        }
-                                    })
-                                })
-                        })
-                    },
-                ))
+                .child(
+                    view()
+                        .test_id("git-panel-options")
+                        .w(px(24.0))
+                        .h(px(24.0))
+                        .rounded(px(4.0))
+                        .items_center()
+                        .justify_center()
+                        .cursor(Cursor::Pointer)
+                        .hover(move |s| s.bg(p.surface_hover))
+                        .label("Git 面板选项")
+                        .tooltip(super::tooltip_label("Git 面板选项".into(), p))
+                        .on_press(show_panel_options)
+                        .child(icons::icon(ICO_MORE, 13.0, p.text_muted)),
+                )
                 .child(
                     view()
                         .w(px(22.0))
