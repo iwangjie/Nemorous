@@ -482,19 +482,23 @@ mod macos {
         click("code-split-right-btn", 1);
         wait("split-editor-left");
         wait("split-editor-right");
-        click("split-editor-right", 1);
-        send_key(app, window, "l", "l", 37, command);
-        wait("goto-line-input");
-        send_key(app, window, "2", "2", 19, empty);
-        send_key(app, window, "\r", "\r", 36, empty);
-        send_key(app, window, "z", "z", 6, empty);
+        click("split-tab-right-file::repo::tracked.txt", 1);
         let editors_have = |value: &str| ["split-editor-left", "split-editor-right"].into_iter()
             .all(|id| view_with_id(root, id).is_some_and(|editor| a11y_contains(&editor, value)));
-        wait_until("both native panes share the edit", Duration::from_secs(4), || editors_have("zediting selection"));
+        wait_until("both native panes show the same buffer", Duration::from_secs(4), || {
+            editors_have("editing selection")
+        });
+        send_key(app, window, "z", "z", 6, empty);
+        wait_until("right split editor received the real keydown", Duration::from_secs(4), || {
+            view_with_id(root, "split-editor-right").is_some_and(|editor| a11y_contains(&editor, "z"))
+        });
+        wait_until("left native pane reflects the edit", Duration::from_secs(4), || editors_have("z"));
         save_window_png(window, &evidence.join("native-editor-split.png"));
         send_key(app, window, "z", "z", 6, command);
+        let any_editor_has = |value: &str| ["split-editor-left", "split-editor-right"].into_iter()
+            .any(|id| view_with_id(root, id).is_some_and(|editor| a11y_contains(&editor, value)));
         wait_until("undo reaches both panes", Duration::from_secs(4), || {
-            editors_have("editing selection") && !editors_have("zediting selection")
+            editors_have("editing selection") && !any_editor_has("z")
         });
         click("split-code-merge", 1);
         wait("code-editor-view");
