@@ -16,6 +16,7 @@ pub struct ReplaceQuery {
     pub pattern: String,
     pub replacement: String,
     pub regex: bool,
+    pub whole_word: bool,
     pub case_sensitive: bool,
     pub mask: Option<String>,
 }
@@ -275,6 +276,7 @@ impl<'q> Matcher<'q> {
         let options = SearchOptions {
             case_sensitive: query.case_sensitive,
             regex: query.regex,
+            whole_word: query.whole_word,
             mask: None,
         };
         let regex = search::build_regex(&query.pattern, &options)
@@ -552,8 +554,47 @@ mod tests {
             replacement: replacement.into(),
             regex,
             case_sensitive: true,
+            whole_word: false,
             mask: None,
         }
+    }
+
+    #[test]
+    fn whole_word_search_and_checked_replace_agree() {
+        let fixture = Fixture::new();
+        let file = fixture.write(
+            "words.txt",
+            "Cat cat_cat cater dog dogma 猫 猫咪 C++ XC++\r\n".as_bytes(),
+        );
+        let files = std::slice::from_ref(&file);
+        let mut request = query(r"(?x) (cat|dog|猫|C\+\+) # a final comment", "<$1>", true);
+        request.whole_word = true;
+        request.case_sensitive = false;
+        let options = SearchOptions {
+            whole_word: request.whole_word,
+            case_sensitive: request.case_sensitive,
+            regex: request.regex,
+            ..SearchOptions::default()
+        };
+        let found = search::search_files(
+            files,
+            None,
+            &request.pattern,
+            &options,
+            &search::CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(found.hits.len(), 4);
+        let dirty = HashSet::new();
+        let plan = prepare_all(files, None, request, &dirty).unwrap();
+        assert_eq!(plan.match_count(), found.hits.len());
+        let results = execute(&plan, &dirty, None);
+        assert!(results[0].error.is_none(), "{:?}", results[0].error);
+        assert_eq!(results[0].changed, 4);
+        assert_eq!(
+            fixture.read("words.txt"),
+            "<Cat> cat_cat cater <dog> dogma <猫> 猫咪 <C++> XC++\r\n".as_bytes()
+        );
     }
 
     fn hit_for(file: &WorkspaceFile, line: usize, column_utf16: usize) -> SearchHit {

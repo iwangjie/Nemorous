@@ -64,6 +64,8 @@ pub struct SearchOptions<'a> {
     pub case_sensitive: bool,
     /// Treat `query` as a regular expression instead of literal text.
     pub regex: bool,
+    /// Match only whole words using Unicode word boundaries.
+    pub whole_word: bool,
     /// Comma separated basename globs: positive selectors and `!` exclusions.
     pub mask: Option<&'a str>,
 }
@@ -377,12 +379,27 @@ pub(crate) fn build_regex(query: &str, options: &SearchOptions<'_>) -> Result<Re
     } else {
         literal_pattern(query)
     };
-    let pattern = if options.case_sensitive {
-        pattern
-    } else {
-        format!("(?i){pattern}")
+    let make_pattern = |end_of_pattern: &str| {
+        let pattern = if options.whole_word {
+            format!(r"(?u:\b{{start-half}})(?:{pattern}{end_of_pattern})(?u:\b{{end-half}})")
+        } else {
+            pattern.clone()
+        };
+        if options.case_sensitive {
+            pattern
+        } else {
+            format!("(?i){pattern}")
+        }
     };
-    Regex::new(&pattern).map_err(|err| SearchError::InvalidQuery {
+    let compiled = Regex::new(&make_pattern(""));
+    // An end-of-pattern comment in (?x) mode otherwise eats the closing group.
+    let compiled = match compiled {
+        Err(_) if options.whole_word && options.regex && Regex::new(query).is_ok() => {
+            Regex::new(&make_pattern("\n"))
+        }
+        other => other,
+    };
+    compiled.map_err(|err| SearchError::InvalidQuery {
         message: err.to_string(),
     })
 }

@@ -38,6 +38,7 @@ struct ContentSearchState {
     replacement: String,
     case_sensitive: bool,
     regex: bool,
+    whole_word: bool,
     mask_enabled: bool,
     mask: String,
     scope_dir: Option<PathBuf>,
@@ -362,6 +363,7 @@ fn schedule() {
             s.query.clone(),
             s.case_sensitive,
             s.regex,
+            s.whole_word,
             mask_of(s),
             s.scope_dir.clone(),
             s.cancel.clone(),
@@ -369,8 +371,18 @@ fn schedule() {
         ));
     });
 
-    let Some((generation, workspace, query, case_sensitive, regex, mask, scope, cancel, index)) =
-        request
+    let Some((
+        generation,
+        workspace,
+        query,
+        case_sensitive,
+        regex,
+        whole_word,
+        mask,
+        scope,
+        cancel,
+        index,
+    )) = request
     else {
         return;
     };
@@ -393,6 +405,7 @@ fn schedule() {
                     let options = SearchOptions {
                         case_sensitive,
                         regex,
+                        whole_word,
                         mask: mask.as_deref(),
                     };
                     search_files(
@@ -670,6 +683,19 @@ fn query_row(p: Palette) -> impl IntoElement {
             },
         ))
         .child(toggle_button(
+            "content-search-word",
+            "W",
+            "仅匹配整个单词",
+            p,
+            || with_state(|s| s.whole_word),
+            || {
+                if replacement_input_changed() {
+                    update_state(|s| s.whole_word = !s.whole_word);
+                    schedule();
+                }
+            },
+        ))
+        .child(toggle_button(
             "content-search-mask-toggle",
             "文件掩码",
             "按文件名过滤",
@@ -770,6 +796,7 @@ fn start_replacement(all: bool) {
                 pattern: s.query.clone(),
                 replacement: s.replacement.clone(),
                 regex: s.regex,
+                whole_word: s.whole_word,
                 case_sensitive: s.case_sensitive,
                 mask: mask_of(s),
             },

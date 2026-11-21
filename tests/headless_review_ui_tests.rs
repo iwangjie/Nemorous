@@ -1167,6 +1167,28 @@ fn ui_replace_in_files_checks_selection_confirmation_and_external_changes() {
 }
 
 #[test]
+fn ui_replace_in_files_word_option_controls_disk_replacement() {
+    let _guard = lock_env();
+    let fx = Fixture::new("replace-whole-word");
+    let path = fx.repo_dir.join("README.md");
+    fs::write(&path, "token tokenized token_id\r\n").unwrap();
+
+    let mut app = fx.start_headless(1040.0, 660.0);
+    app.press_key("mod+shift+r").unwrap();
+    app.type_text("id:content-search-input", "token").unwrap();
+    app.wait_for("3 条匹配").unwrap();
+    app.press("id:content-search-word").unwrap();
+    app.wait_for("1 条匹配").unwrap();
+    app.type_text("id:content-search-replacement-input", "entry").unwrap();
+    app.press("id:replace-all").unwrap();
+    app.wait_for("确认替换 1 个文件，共 1 处？").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "token tokenized token_id\r\n");
+    app.press("id:replace-confirm").unwrap();
+    app.wait_for("已替换 1 个文件，共 1 处").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "entry tokenized token_id\r\n");
+}
+
+#[test]
 fn ui_project_follow_editor_selects_open_file_without_focus_shift() {
     let _guard = lock_env();
     let fx = Fixture::new("project-follow-editor");
