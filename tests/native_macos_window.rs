@@ -326,6 +326,71 @@ mod macos {
         }
     }
 
+    fn batch2_search_and_replace(
+        app: &NSApplication,
+        window: &NSWindow,
+        root: &NSView,
+        repo: &Path,
+        evidence: &Path,
+    ) {
+        fs::create_dir_all(evidence).unwrap();
+        let shortcut = NSEventModifierFlags::Command | NSEventModifierFlags::Shift;
+        let type_work = || {
+            for (ch, code) in [("w", 13), ("o", 31), ("r", 15), ("k", 40)] {
+                send_key(app, window, ch, ch, code, NSEventModifierFlags::empty());
+            }
+        };
+
+        send_key(app, window, "F", "f", 3, shortcut);
+        wait_until("Find in Files search input", Duration::from_secs(4), || {
+            view_with_id(root, "content-search-input").is_some()
+        });
+        send_click(window, &view_with_id(root, "content-search-input").unwrap(), 1);
+        type_work();
+        wait_until("workspace search result", Duration::from_secs(4), || {
+            view_with_id(root, "content-search-hit-0").is_some()
+        });
+        save_window_png(window, &evidence.join("native-find-in-files.png"));
+        send_click(window, &view_with_id(root, "content-search-pin").unwrap(), 1);
+        wait_until("pinned Find result", Duration::from_secs(4), || {
+            view_with_id(root, "find-results-hit-0").is_some()
+        });
+        send_click(window, &view_with_id(root, "find-results-hit-0").unwrap(), 1);
+        wait_until("opened source caret at matching line", Duration::from_secs(4), || {
+            view_with_id(root, "editor-tab-file-tracked.txt").is_some()
+                && view_with_id(root, "status-cursor-pos")
+                    .is_some_and(|view| view_a11y_text(&view) == "2:1")
+        });
+        println!("BATCH2_NATIVE_FIND_AND_PIN ok");
+
+        send_key(app, window, "R", "r", 15, shortcut);
+        wait_until("Replace in Files fields", Duration::from_secs(4), || {
+            view_with_id(root, "content-search-replacement-input").is_some()
+        });
+        send_click(window, &view_with_id(root, "content-search-input").unwrap(), 1);
+        type_work();
+        let replacement = view_with_id(root, "content-search-replacement-input").unwrap();
+        send_click(window, &replacement, 1);
+        for (ch, code) in [("e", 14), ("d", 2), ("i", 34), ("t", 17)] {
+            send_key(app, window, ch, ch, code, NSEventModifierFlags::empty());
+        }
+        wait_until("checked replacement available", Duration::from_secs(4), || {
+            view_with_id(root, "replace-all").is_some()
+        });
+        send_click(window, &view_with_id(root, "replace-all").unwrap(), 1);
+        wait_until("checked replacement confirmation", Duration::from_secs(4), || {
+            view_with_id(root, "replace-confirm").is_some()
+        });
+        let tracked = repo.join("tracked.txt");
+        assert_eq!(fs::read_to_string(&tracked).unwrap(), "first\nworking selection\nthird\n");
+        save_window_png(window, &evidence.join("native-replace-confirmation.png"));
+        send_click(window, &view_with_id(root, "replace-confirm").unwrap(), 1);
+        wait_until("confirmed replacement on disk", Duration::from_secs(4), || {
+            fs::read_to_string(&tracked).is_ok_and(|text| text == "first\nediting selection\nthird\n")
+        });
+        println!("BATCH2_NATIVE_REPLACE_CONFIRM ok");
+    }
+
     pub fn run() {
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
@@ -335,8 +400,14 @@ mod macos {
             baseline_repo.display()
         );
 
-        let work_dir = root_dir.join("build/tmp-ab/native-macos-ab");
-        let _ = fs::remove_dir_all(&work_dir);
+        let batch2 = std::env::var_os("NEMOROUS_NATIVE_BATCH2").is_some();
+        let work_dir = if batch2 {
+            root_dir.join(format!("build/tmp-ab/native-batch2-{}", std::process::id()))
+        } else {
+            let dir = root_dir.join("build/tmp-ab/native-macos-ab");
+            let _ = fs::remove_dir_all(&dir);
+            dir
+        };
         let repo_copy = work_dir.join("repo");
         copy_dir_all(&baseline_repo, &repo_copy);
 
@@ -405,6 +476,22 @@ mod macos {
         }
 
         let root = surface.view();
+        if batch2 {
+            wait_until("workspace file loaded", Duration::from_secs(6), || {
+                view_with_id(&root, "change-row-unstaged-tracked.txt").is_some()
+            });
+            batch2_search_and_replace(
+                &app,
+                &window,
+                &root,
+                &repo_copy,
+                &root_dir.join("build/migration-evidence/batch-2"),
+            );
+            window.close();
+            pump(150);
+            println!("NATIVE_BATCH2_SEARCH_REPLACE PASS");
+            return;
+        }
         let pb_usable = probe_pasteboard_usable();
         println!(
             "WINDOW_STATE visible={} key={} main={} active={} pasteboard_usable={}",
@@ -776,7 +863,8 @@ mod macos {
         pump(150);
 
         // 12. 真实前台窗口验证 100px 极窄左栏自动折叠至 More 按钮
-        let cfg_100 = work_dir.join("config-100px.json");
+        let cfg_100 = work_dir.join("narrow/config.json");
+        fs::create_dir_all(cfg_100.parent().unwrap()).unwrap();
         let cfg_100_json = serde_json::json!({
             "workspace_path": repo_copy.to_string_lossy(),
             "theme": "light",
