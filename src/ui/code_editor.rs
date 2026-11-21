@@ -595,6 +595,10 @@ pub fn code_editor_pane() -> impl IntoElement {
                         if let Some(tab) = s.code_tabs.get_mut(s.active_code_tab_idx) {
                             if tab.editable {
                                 tab.text = s_val;
+                                // 编辑使预览标签转正：后续预览不会替换掉未保存缓冲。
+                                if tab.is_dirty() {
+                                    tab.preview = false;
+                                }
                             }
                         }
                     });

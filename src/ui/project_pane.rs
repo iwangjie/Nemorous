@@ -7,7 +7,9 @@ use nsh_core::prelude::*;
 
 use crate::git::WorkspaceFile;
 use crate::paths::basename;
-use crate::state::{FocusZone, app_signal, current_palette, open_code_file};
+use crate::state::{
+    FocusZone, app_signal, current_palette, open_code_file, open_code_file_preview,
+};
 use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
@@ -446,9 +448,13 @@ fn render_project_dir(
                 .on_context_menu(move |e: &ContextMenuEvent| {
                     let f = wf_cm.clone();
                     let f_open = f.clone();
+                    let f_preview = f.clone();
                     let mut items = vec![
                         MenuItem::new("打开源码").on_select(move || {
                             open_code_file(f_open.clone(), None, true);
+                        }),
+                        MenuItem::new("预览").on_select(move || {
+                            open_code_file_preview(f_preview.clone());
                         }),
                         MenuItem::new("复制").on_select({
                             let name = basename(&f.rel_path);

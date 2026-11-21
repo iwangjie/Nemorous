@@ -478,6 +478,56 @@ fn ui_commit_context_menu_copy_path_variants_and_locate() {
 }
 
 #[test]
+fn ui_project_preview_tab_reuse_pin_and_buffer_retention() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-preview");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 在文件树中定位 src/app.go，再通过 Project 右键「预览」打开预览标签
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("在文件树中定位").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    app.right_click("id:project-file-src/app.go").unwrap();
+    app.choose_menu_item("预览").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+
+    // 干净的预览标签被下一次预览复用替换
+    app.right_click("id:project-file-README.md").unwrap();
+    app.choose_menu_item("预览").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+    app.wait_for_gone("id:editor-tab-file-src/app.go", Duration::from_secs(2))
+        .unwrap();
+
+    // 编辑使预览标签钉住
+    app.press_key("mod+alt+f").unwrap();
+    app.type_text("id:code-find-input", "Sample").unwrap();
+    app.type_text("id:code-replace-input", "PinnedSample").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+    app.press_key("escape").unwrap();
+
+    // 再预览另一个文件：已钉住的 README 标签保留，新预览正常打开
+    app.right_click("id:project-file-src/app.go").unwrap();
+    app.choose_menu_item("预览").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+
+    // 从文件树正常「打开源码」钉住 app.go 标签，不影响 README
+    app.right_click("id:project-file-src/app.go").unwrap();
+    app.choose_menu_item("打开源码").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+
+    app.right_click("id:project-file-notes.txt").unwrap();
+    app.choose_menu_item("预览").unwrap();
+    app.wait_for("id:editor-tab-file-notes.txt").unwrap();
+    assert!(app.screen().matches("id:editor-tab-file-src/app.go").unwrap());
+
+    // 回到 README 标签，替换后的未保存缓冲仍在
+    app.press("id:editor-tab-file-README.md").unwrap();
+    app.wait_for("# PinnedSample").unwrap();
+}
+
+#[test]
 fn ui_working_diff_scope_switch_single_column_and_collapse() {
     let _guard = lock_env();
     let fx = Fixture::new("diff-modes");

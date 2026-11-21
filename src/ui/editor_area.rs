@@ -51,6 +51,12 @@ pub fn editor_tab_bar() -> impl IntoElement {
             let f_cm = tab.file.clone();
             let line_cm = tab.cursor.line + 1;
 
+            let title_el = text(title)
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if active { p.text_primary } else { p.text_secondary })
+                .number_of_lines(1u32);
+            let title_el = if tab.preview { title_el.italic() } else { title_el };
             tab_els.push(
                 view()
                     .test_id(&format!("editor-tab-file-{}", tab.file.rel_path))
@@ -65,13 +71,16 @@ pub fn editor_tab_bar() -> impl IntoElement {
                     .border_color(if active { p.border } else { transparent_black() })
                     .cursor(Cursor::Pointer)
                     .hover(move |s| if active { s } else { s.bg(p.surface2) })
-                    .on_press(move || {
+                    .on_press(move |e: &PressEvent| {
                         state::set_text_input_focused(false);
                         app_signal().update(|s| {
                             s.active_code_tab_idx = idx;
                             state::sync_dirty_working_diff_into_code_tab(s, idx);
                             s.editor_tab = EditorTabKind::File;
                             s.focus_zone = FocusZone::CodeEditor;
+                            if e.clicks >= 2 && let Some(tab) = s.code_tabs.get_mut(idx) {
+                                tab.preview = false;
+                            }
                         });
                     })
                     .on_context_menu(move |e: &ContextMenuEvent| {
@@ -104,13 +113,7 @@ pub fn editor_tab_bar() -> impl IntoElement {
                             .rounded(px(3.0))
                             .bg(badge.text),
                     )
-                    .child(
-                        text(title)
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(if active { p.text_primary } else { p.text_secondary })
-                            .number_of_lines(1u32),
-                    )
+                    .child(title_el)
                     .child(dirty.then(|| {
                         view()
                             .w(px(6.0))

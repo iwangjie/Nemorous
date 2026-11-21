@@ -104,6 +104,8 @@ pub struct CodeTab {
     pub cursor: EditorPosition,
     pub scroll_y: f32,
     pub external_changed: bool,
+    /// 未钉住的预览标签：斜体显示，可被后续预览复用替换；编辑或双击后转为普通标签
+    pub preview: bool,
     /// 递增版本号，用于受控同步外部刷新/恢复内容到 Editor
     pub content_rev: u64,
 }
@@ -1563,6 +1565,21 @@ fn move_commit_diff_file_with_hunk(delta: i32, land_on_last_hunk: bool) -> bool 
 // ============================================================================
 
 pub fn open_code_file(file: WorkspaceFile, target_pos: Option<EditorPosition>, focus_editor: bool) {
+    open_code_file_mode(file, target_pos, focus_editor, false)
+}
+
+/// 以预览方式打开：未钉住的预览标签为斜体，可被下一次预览复用替换；
+/// 已钉住（或脏）的标签一律保留，不会丢缓冲。
+pub fn open_code_file_preview(file: WorkspaceFile) {
+    open_code_file_mode(file, None, true, true)
+}
+
+fn open_code_file_mode(
+    file: WorkspaceFile,
+    target_pos: Option<EditorPosition>,
+    focus_editor: bool,
+    preview: bool,
+) {
     push_nav_back_current();
     let tab_id = format!("file::{}::{}", file.repo_id, file.rel_path);
 
@@ -1577,6 +1594,9 @@ pub fn open_code_file(file: WorkspaceFile, target_pos: Option<EditorPosition>, f
             s.active_code_tab_idx = idx;
             sync_dirty_working_diff_into_code_tab(s, idx);
             s.editor_tab = EditorTabKind::File;
+            if !preview {
+                s.code_tabs[idx].preview = false;
+            }
             if let Some(pos) = target_pos {
                 s.code_tabs[idx].cursor = pos;
             }
@@ -1601,10 +1621,19 @@ pub fn open_code_file(file: WorkspaceFile, target_pos: Option<EditorPosition>, f
             too_large: wt.too_large,
             cursor,
             scroll_y: 0.0,
+            preview,
             external_changed: false,
             content_rev: 1,
         };
         app_signal().update(|s| {
+            if preview {
+                s.code_tabs.retain_mut(|tab| {
+                    if tab.is_dirty() {
+                        tab.preview = false;
+                    }
+                    !tab.preview
+                });
+            }
             s.code_tabs.push(tab);
             let idx = s.code_tabs.len() - 1;
             s.active_code_tab_idx = idx;
@@ -1671,6 +1700,7 @@ pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
             too_large,
             cursor: EditorPosition::new(0, 0),
             scroll_y: 0.0,
+            preview: false,
             external_changed: false,
             content_rev: 1,
         });
@@ -1962,6 +1992,7 @@ pub fn restore_nav_target(nav: NavTarget) {
                             too_large: wt.too_large,
                             cursor: pos,
                             scroll_y: 0.0,
+                            preview: false,
                             external_changed: false,
                             content_rev: 1,
                         });
