@@ -3315,10 +3315,11 @@ pub fn close_active_modal() {
     set_text_input_focused(false);
     editor_refs_signal().update(|r| r.modal_active = None);
     let content_search_closed = crate::ui::content_search::close_if_open();
+    let editor_tool_closed = crate::ui::editor_tools::close_active();
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if content_search_closed {
+        if editor_tool_closed || content_search_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;

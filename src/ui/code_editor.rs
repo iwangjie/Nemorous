@@ -626,6 +626,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                     if let Some(f) = info {
                         let mut items = vec![
                             MenuItem::new("复制").on_select(state::copy_for_current_focus),
+                            MenuItem::new("文件结构…").on_select(crate::ui::editor_tools::open_structure),
                             MenuItem::separator(),
                         ];
                         items.extend(build_location_menu_items(

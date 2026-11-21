@@ -478,6 +478,32 @@ fn ui_commit_context_menu_copy_path_variants_and_locate() {
 }
 
 #[test]
+fn ui_editor_structure_and_todo_navigate_to_source_lines() {
+    let _guard = lock_env();
+    let fx = Fixture::new("editor-tools");
+    fs::write(fx.repo_dir.join("README.md"), "# Sample\nTODO project setup\n").unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.press_key("mod+f12").unwrap();
+    app.wait_for("id:structure-modal").unwrap();
+    app.press("id:structure-row-7").unwrap();
+    app.wait_for_gone("id:structure-modal", Duration::from_secs(2)).unwrap();
+    app.wait_for("7:1").unwrap();
+
+    app.press_key("mod+shift+t").unwrap();
+    app.wait_for("id:todos-modal").unwrap();
+    app.wait_for("README.md:2").unwrap();
+    app.press("id:todo-row-0").unwrap();
+    app.wait_for_gone("id:todos-modal", Duration::from_secs(2)).unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+    app.wait_for("2:1").unwrap();
+}
+
+#[test]
 fn ui_find_results_pin_preserves_snapshot_and_reopens() {
     let _guard = lock_env();
     let fx = Fixture::new("find-results-pin");
