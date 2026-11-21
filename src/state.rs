@@ -288,6 +288,7 @@ pub struct AppState {
 
     // Project 树状态
     pub project_filter: String,
+    pub project_workspace_expanded: bool,
     pub expanded_project_repos: HashSet<String>,
     pub expanded_project_dirs: HashSet<String>,
     pub(crate) project_compare_keys: Vec<String>,
@@ -378,6 +379,7 @@ impl Default for AppState {
             collapsed_change_repos: HashSet::new(),
             collapsed_change_dirs: HashSet::new(),
             project_filter: String::new(),
+            project_workspace_expanded: true,
             expanded_project_repos: HashSet::new(),
             expanded_project_dirs: HashSet::new(),
             project_compare_keys: Vec::new(),
@@ -831,6 +833,13 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
     app_signal().update(|s| {
         s.is_refreshing = false;
         s.last_refresh_ms = snap.elapsed_ms;
+        for repo in &snap.repos {
+            if !s.repos.iter().any(|previous| previous.path == repo.path) {
+                s.expanded_project_repos.insert(repo.id.clone());
+            }
+        }
+        s.expanded_project_repos
+            .retain(|id| snap.repos.iter().any(|repo| &repo.id == id));
         s.repos = snap.repos;
         if let Some(ref ids) = snap.partial_repo_ids {
             let mut by_id: HashMap<String, RepoStatus> = snap
@@ -854,13 +863,6 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
         s.workspace_files = snap.workspace_files;
         s.git_commits = snap.commits;
         s.stashes = snap.stashes;
-
-        // 默认展开所有仓库根结点（仅首次）
-        if s.expanded_project_repos.is_empty() {
-            for r in &s.repos {
-                s.expanded_project_repos.insert(r.id.clone());
-            }
-        }
 
         // 同步所有当前存在的变更文件 key：
         // 对齐基线 state.go:1261,1439 —— 新发现的变更默认勾选，用户手动取消勾选的保留未勾选状态，已消失的变更清理。
@@ -2939,6 +2941,7 @@ pub fn copy_path_variant(
 
 fn select_project_file_in_tree(s: &mut AppState, repo_id: &str, rel_path: &str) {
     let norm = paths::normalize_slashes(rel_path);
+    s.project_workspace_expanded = true;
     s.expanded_project_repos.insert(repo_id.to_string());
 
     let mut parent = Path::new(&norm).parent();
@@ -2946,13 +2949,19 @@ fn select_project_file_in_tree(s: &mut AppState, repo_id: &str, rel_path: &str) 
         s.expanded_project_dirs.insert(format!("{repo_id}::{}", dir.display()));
         parent = dir.parent();
     }
-    s.project_located_key = Some(format!("{repo_id}::{norm}"));
+    let key = format!("{repo_id}::{norm}");
+    s.project_located_key = Some(key.clone());
     if let Some(file) = s.workspace_files.iter()
         .find(|file| file.repo_id == repo_id && file.rel_path == norm)
         .cloned()
     {
         s.project_selected_file = Some(file);
         s.project_selected_dir = None;
+        s.project_compare_keys = vec![key];
+    } else {
+        s.project_selected_file = None;
+        s.project_selected_dir = None;
+        s.project_compare_keys.clear();
     }
 }
 
@@ -3510,6 +3519,9 @@ pub fn move_project_selection(delta: i32) {
         let q = s.project_filter.trim().to_ascii_lowercase();
         let force_expand = !q.is_empty();
         let mut out = Vec::new();
+        if !force_expand && !s.project_workspace_expanded {
+            return (out, None);
+        }
         for repo in &s.repos {
             let repo_files: Vec<WorkspaceFile> = s
                 .workspace_files
@@ -3609,15 +3621,17 @@ pub fn move_project_selection(delta: i32) {
                 s.project_located_key = Some(k);
                 s.project_selected_dir = Some((rid, r));
                 s.project_selected_file = None;
+                s.project_compare_keys.clear();
                 s.focus_zone = FocusZone::ProjectTree;
             });
         }
         ProjNode::File { wf, key } => {
             let (f, k) = (wf.clone(), key.clone());
             app_signal().update(|s| {
-                s.project_located_key = Some(k);
+                s.project_located_key = Some(k.clone());
                 s.project_selected_file = Some(f);
                 s.project_selected_dir = None;
+                s.project_compare_keys = vec![k];
                 s.focus_zone = FocusZone::ProjectTree;
             });
         }

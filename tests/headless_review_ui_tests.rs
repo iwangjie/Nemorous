@@ -1189,6 +1189,34 @@ fn ui_replace_in_files_word_option_controls_disk_replacement() {
 }
 
 #[test]
+fn ui_project_collapse_survives_refresh_and_filter_then_locate_expands() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-collapse");
+    let mut app = fx.start_headless(1040.0, 660.0);
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("在文件树中定位").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+
+    app.press("id:project-collapse-all").unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
+    app.wait_for_gone("id:project-repo-sample-repo", Duration::from_secs(2)).unwrap();
+    app.press_key("mod+alt+y").unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
+    app.type_text("id:project-filter-input", "app.go").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    app.clear("id:project-filter-input").unwrap();
+    app.wait_for_gone("id:project-repo-sample-repo", Duration::from_secs(2)).unwrap();
+
+    app.press("id:project-workspace-root").unwrap();
+    app.wait_for("id:project-repo-sample-repo").unwrap();
+    assert!(!app.screen().matches("id:project-file-src/app.go").unwrap());
+    app.press("id:project-repo-sample-repo").unwrap();
+    app.wait_for("id:project-dir-src").unwrap();
+    app.press("id:project-dir-toggle-src").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+}
+
+#[test]
 fn ui_project_follow_editor_selects_open_file_without_focus_shift() {
     let _guard = lock_env();
     let fx = Fixture::new("project-follow-editor");

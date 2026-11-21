@@ -111,6 +111,35 @@ pub fn project_pane() -> impl IntoElement {
                         )
                         .child(
                             view()
+                                .test_id("project-collapse-all")
+                                .h(px(20.0))
+                                .px(px(4.0))
+                                .rounded(px(4.0))
+                                .flex_row()
+                                .items_center()
+                                .cursor(Cursor::Pointer)
+                                .hover(move |s| s.bg(current_palette().surface_hover))
+                                .label("全部收起")
+                                .on_press(|| {
+                                    app_signal().update(|s| {
+                                        s.expanded_project_repos.clear();
+                                        s.expanded_project_dirs.clear();
+                                        s.project_workspace_expanded = false;
+                                        s.project_located_key = None;
+                                        s.project_selected_file = None;
+                                        s.project_selected_dir = None;
+                                        s.project_compare_keys.clear();
+                                        s.focus_zone = FocusZone::ProjectTree;
+                                    });
+                                })
+                                .child(
+                                    text("全部收起")
+                                        .text_size(px(10.5))
+                                        .text_color(move || current_palette().text_muted),
+                                ),
+                        )
+                        .child(
+                            view()
                                 .test_id("project-options-button")
                                 .h(px(20.0))
                                 .px(px(4.0))
@@ -184,6 +213,8 @@ pub fn project_pane() -> impl IntoElement {
                             s.expanded_project_repos.clone(),
                             s.expanded_project_dirs.clone(),
                             (s.project_located_key.clone(), s.project_compare_keys.clone()),
+                            s.project_workspace_expanded,
+                            basename(&s.cfg.workspace_path),
                             status_map,
                             dirty_dirs,
                         )
@@ -195,6 +226,8 @@ pub fn project_pane() -> impl IntoElement {
                         expanded_repos,
                         expanded_dirs,
                         located_key,
+                        workspace_expanded_state,
+                        workspace_name,
                         status_map,
                         dirty_dirs,
                     ) = snap;
@@ -209,6 +242,43 @@ pub fn project_pane() -> impl IntoElement {
 
                     let force_expand = !filter_q.is_empty();
                     let mut rows: Vec<AnyElement> = Vec::new();
+                    let workspace_expanded = force_expand || workspace_expanded_state;
+                    rows.push(
+                        view()
+                            .test_id("project-workspace-root")
+                            .h(px(26.0))
+                            .px(px(8.0))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(5.0))
+                            .cursor(Cursor::Pointer)
+                            .hover(move |s| s.bg(p.surface_hover))
+                            .on_press(move || {
+                                app_signal().update(|s| {
+                                    if !force_expand {
+                                        s.project_workspace_expanded = !s.project_workspace_expanded;
+                                    }
+                                    s.focus_zone = FocusZone::ProjectTree;
+                                });
+                            })
+                            .child(icons::icon(
+                                if workspace_expanded {
+                                    ICO_CHEVRON_DOWN
+                                } else {
+                                    ICO_CHEVRON_RIGHT
+                                },
+                                10.0,
+                                p.text_muted,
+                            ))
+                            .child(
+                                text(if workspace_name.is_empty() { "工作区".into() } else { workspace_name })
+                                    .text_size(px(11.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.text_primary),
+                            )
+                            .into_element(),
+                    );
+                    let repos = if workspace_expanded { repos } else { Vec::new() };
                     for repo in repos {
                         let repo_files: Vec<WorkspaceFile> = files
                             .iter()
@@ -228,6 +298,7 @@ pub fn project_pane() -> impl IntoElement {
 
                         rows.push(
                             view()
+                                .test_id(&format!("project-repo-{}", repo.id))
                                 .h(px(26.0))
                                 .px(px(8.0))
                                 .flex_row()
