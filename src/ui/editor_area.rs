@@ -36,7 +36,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
             )
         });
         let (code_tabs, active_idx, editor_tab, work_diff, commit_diff) = snap;
-        if code_tabs.is_empty() && work_diff.is_none() && commit_diff.is_none() {
+        let comparison = super::comparison::title();
+        if code_tabs.is_empty() && work_diff.is_none() && commit_diff.is_none() && comparison.is_none() {
             return view().h(px(0.0)).into_element();
         }
 
@@ -285,6 +286,19 @@ pub fn editor_tab_bar() -> impl IntoElement {
             );
         }
 
+        if let Some(title) = comparison {
+            tab_els.push(view()
+                .test_id("editor-tab-comparison")
+                .h(px(28.0)).px(px(8.0)).gap(px(6.0)).flex_row().items_center().rounded(px(6.0))
+                .bg(if editor_tab == EditorTabKind::Comparison { p.surface } else { transparent_black() })
+                .cursor(Cursor::Pointer)
+                .on_press(super::comparison::activate)
+                .child(text(title).text_size(px(11.5)).text_color(p.text_primary).number_of_lines(1u32))
+                .child(view().test_id("close-comparison-tab").label("关闭比较")
+                    .on_press(super::comparison::close)
+                    .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted))).into_element());
+        }
+
         view()
             .test_id("editor-tab-bar")
             .h(px(36.0))
@@ -389,6 +403,10 @@ pub fn editor_tab_bar() -> impl IntoElement {
                                         });
                                     }),
                             );
+                        }
+                        if let Some(title) = super::comparison::title() {
+                            menu_items.push(MenuItem::new(title).checked(cur_tab == EditorTabKind::Comparison)
+                                .on_select(super::comparison::activate));
                         }
                         crate::state::show_popup_menu(menu_items);
                     })

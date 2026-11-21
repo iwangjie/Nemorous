@@ -36,6 +36,7 @@ pub enum EditorTabKind {
     File,
     WorkingDiff,
     CommitDiff,
+    Comparison,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,8 @@ pub enum FocusZone {
     WorkingDiffNew,
     CommitDiffOld,
     CommitDiffNew,
+    ComparisonOld,
+    ComparisonNew,
     Modal,
 }
 
@@ -259,6 +262,8 @@ pub struct EditorRefs {
     pub commit_old: Option<ComponentRef<nsh_base::Editor>>,
     pub commit_new: Option<ComponentRef<nsh_base::Editor>>,
     pub commit_unified: Option<ComponentRef<nsh_base::Editor>>,
+    pub compare_old: Option<ComponentRef<nsh_base::Editor>>,
+    pub compare_new: Option<ComponentRef<nsh_base::Editor>>,
     pub modal_active: Option<ComponentRef<nsh_base::Editor>>,
 }
 
@@ -295,6 +300,7 @@ pub struct AppState {
     pub project_filter: String,
     pub expanded_project_repos: HashSet<String>,
     pub expanded_project_dirs: HashSet<String>,
+    pub(crate) project_compare_keys: Vec<String>,
     pub project_located_key: Option<String>,
     pub project_selected_file: Option<WorkspaceFile>,
     pub project_selected_dir: Option<(String, String)>, // (repo_id, rel_dir)
@@ -385,6 +391,7 @@ impl Default for AppState {
             project_filter: String::new(),
             expanded_project_repos: HashSet::new(),
             expanded_project_dirs: HashSet::new(),
+            project_compare_keys: Vec::new(),
             project_located_key: None,
             project_selected_file: None,
             project_selected_dir: None,
@@ -1939,7 +1946,7 @@ fn current_nav_target() -> Option<NavTarget> {
                 DiffSide::New => c.new_scroll_y.round() as i32,
             },
         }),
-        EditorTabKind::Welcome => None,
+        EditorTabKind::Welcome | EditorTabKind::Comparison => None,
     })
 }
 
@@ -2509,6 +2516,7 @@ pub fn close_active_tab() {
     match tab {
         EditorTabKind::WorkingDiff => request_close_working_diff(),
         EditorTabKind::CommitDiff => close_commit_diff_now(),
+        EditorTabKind::Comparison => crate::ui::comparison::close(),
         EditorTabKind::File => {
             if let Some(id) = app_signal().with_untracked(|s| {
                 s.code_tabs
@@ -2760,7 +2768,9 @@ pub fn copy_for_current_focus() {
         | FocusZone::WorkingDiffOld
         | FocusZone::WorkingDiffNew
         | FocusZone::CommitDiffOld
-        | FocusZone::CommitDiffNew => {
+        | FocusZone::CommitDiffNew
+        | FocusZone::ComparisonOld
+        | FocusZone::ComparisonNew => {
             if let Some(ed) = active_editor_api(focus) {
                 let selected = ed.selected_text();
                 if !selected.is_empty() {
@@ -2897,7 +2907,7 @@ pub fn current_location_info() -> Option<(String, String, String, u32)> {
                 .to_string();
             Some((commit.repo_path.clone(), file.path.clone(), abs, 1))
         }
-        FocusZone::Modal => None,
+        FocusZone::Modal | FocusZone::ComparisonOld | FocusZone::ComparisonNew => None,
     })
 }
 
@@ -3002,6 +3012,7 @@ pub fn locate_current_in_project_tree() {
             .change_selection
             .as_ref()
             .map(|sel| (sel.file.repo_id.clone(), sel.file.path.clone())),
+        EditorTabKind::Comparison => None,
     });
     if let Some((repo_id, rel)) = info {
         locate_in_project_tree(&repo_id, &rel);
@@ -3351,7 +3362,7 @@ pub fn open_find_bar(with_replace: bool) {
                 s.diff_find_side = side;
             });
         }
-        EditorTabKind::Welcome => {}
+        EditorTabKind::Welcome | EditorTabKind::Comparison => {}
     }
 }
 
@@ -3378,6 +3389,7 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
             Some(DiffSide::Old) => FocusZone::CommitDiffOld,
             _ => FocusZone::CommitDiffNew,
         },
+        EditorTabKind::Comparison => FocusZone::ComparisonNew,
         EditorTabKind::Welcome => match s.left_tab {
             LeftTab::Commit => FocusZone::CommitTree,
             LeftTab::Project => FocusZone::ProjectTree,
@@ -3457,9 +3469,15 @@ pub fn close_active_modal() {
 pub fn run_active_find_nav(next: bool) {
     let (tab, side, single) =
         app_signal().with_untracked(|s| (s.editor_tab, s.diff_find_side, s.cfg.diff_single_column));
+    if tab == EditorTabKind::File {
+        if let Some(editor) = active_editor_api(FocusZone::CodeEditor) {
+            editor.run(if next { nsh_base::EditorCommand::FindNext } else { nsh_base::EditorCommand::FindPrevious });
+        }
+        return;
+    }
     let refs = editor_refs_signal().get_untracked();
     let target = match tab {
-        EditorTabKind::File => refs.code,
+        EditorTabKind::File => None,
         EditorTabKind::WorkingDiff => {
             if single {
                 refs.work_unified
@@ -3480,7 +3498,7 @@ pub fn run_active_find_nav(next: bool) {
                 }
             }
         }
-        EditorTabKind::Welcome => None,
+        EditorTabKind::Welcome | EditorTabKind::Comparison => None,
     };
     if let Some(api) = target.and_then(|r| r.api::<EditorApi>()) {
         api.run(if next {
@@ -3690,6 +3708,7 @@ pub fn submit_goto_line() {
                     DiffSide::New => FocusZone::CommitDiffNew,
                 };
             }
+            EditorTabKind::Comparison => restore_focus_after_modal(s),
             EditorTabKind::Welcome => {}
         }
     });
@@ -3698,6 +3717,13 @@ pub fn submit_goto_line() {
         EditorTabKind::File => reveal_in_code_editor(pos),
         EditorTabKind::WorkingDiff => reveal_in_active_diff(w_side, pos, None),
         EditorTabKind::CommitDiff => reveal_in_active_diff(c_side, pos, None),
+        EditorTabKind::Comparison => {
+            let focus = app_signal().with_untracked(|s| s.focus_zone);
+            if let Some(api) = active_editor_api(focus) {
+                api.set_selections(vec![EditorSelection::caret(pos)]);
+                api.reveal_position(pos, true);
+            }
+        }
         EditorTabKind::Welcome => {}
     }
     focus_active_editor_ref();
@@ -3914,6 +3940,8 @@ pub fn active_editor_api(zone: FocusZone) -> Option<Rc<EditorApi>> {
                 None => refs.code,
             }.and_then(|reference| reference.api::<EditorApi>())
         },
+        FocusZone::ComparisonOld => refs.compare_old.and_then(|reference| reference.api::<EditorApi>()),
+        FocusZone::ComparisonNew => refs.compare_new.and_then(|reference| reference.api::<EditorApi>()),
         FocusZone::WorkingDiffOld => {
             if single {
                 refs.work_unified.and_then(|r| r.api::<EditorApi>())

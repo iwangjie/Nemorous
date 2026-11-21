@@ -183,7 +183,7 @@ pub fn project_pane() -> impl IntoElement {
                             s.project_filter.trim().to_ascii_lowercase(),
                             s.expanded_project_repos.clone(),
                             s.expanded_project_dirs.clone(),
-                            s.project_located_key.clone(),
+                            (s.project_located_key.clone(), s.project_compare_keys.clone()),
                             status_map,
                             dirty_dirs,
                         )
@@ -308,7 +308,7 @@ fn render_project_dir(
     depth: usize,
     force_expand: bool,
     expanded_dirs: &HashSet<String>,
-    located_key: &Option<String>,
+    located_key: &(Option<String>, Vec<String>),
     status_map: &HashMap<String, String>,
     dirty_dirs: &HashSet<String>,
     p: Palette,
@@ -318,7 +318,7 @@ fn render_project_dir(
     for sub in node.subdirs.values() {
         let dir_key = format!("{repo_id}::{}", sub.rel_path);
         let expanded = force_expand || expanded_dirs.contains(&dir_key);
-        let selected = located_key.as_deref() == Some(dir_key.as_str());
+        let selected = located_key.0.as_deref() == Some(dir_key.as_str());
         let folder_col = if dirty_dirs.contains(&dir_key) {
             p.blue
         } else {
@@ -363,6 +363,7 @@ fn render_project_dir(
                 .on_press(move |e: &PressEvent| {
                     app_signal().update(|s| {
                         s.project_located_key = Some(dk_click.clone());
+                        s.project_compare_keys.clear();
                         s.project_selected_file = None;
                         s.project_selected_dir = Some((rid_click.clone(), rel_click.clone()));
                         s.focus_zone = FocusZone::ProjectTree;
@@ -443,7 +444,7 @@ fn render_project_dir(
 
     for wf in &node.files {
         let key = wf.key();
-        let selected = located_key.as_deref() == Some(key.as_str());
+        let selected = located_key.0.as_deref() == Some(key.as_str()) || located_key.1.contains(&key);
         let text_col = status_map
             .get(&key)
             .map(|k| status_text_color(k, p))
@@ -480,13 +481,25 @@ fn render_project_dir(
                 })
                 .on_press(move |e: &PressEvent| {
                     let f = wf_click.clone();
+                    let extended = if apple_keys() { e.modifiers.cmd } else { e.modifiers.ctrl };
                     app_signal().update(|s| {
-                        s.project_located_key = Some(f.key());
+                        let key = f.key();
+                        if extended {
+                            if let Some(index) = s.project_compare_keys.iter().position(|existing| existing == &key) {
+                                s.project_compare_keys.remove(index);
+                            } else {
+                                s.project_compare_keys.push(key.clone());
+                            }
+                            s.project_located_key = s.project_compare_keys.last().cloned();
+                        } else {
+                            s.project_compare_keys = vec![key.clone()];
+                            s.project_located_key = Some(key);
+                        }
                         s.project_selected_file = Some(f.clone());
                         s.project_selected_dir = None;
                         s.focus_zone = FocusZone::ProjectTree;
                     });
-                    if e.clicks >= 2 {
+                    if !extended && e.clicks >= 2 {
                         open_code_file(f, None, true);
                     }
                 })
@@ -507,6 +520,11 @@ fn render_project_dir(
                         }),
                         MenuItem::separator(),
                     ];
+                    if app_signal().with_untracked(|s| s.project_compare_keys.len() == 2 && s.project_compare_keys.contains(&f.key())) {
+                        items.push(MenuItem::new("比较选中的文件").on_select(|| {
+                            super::comparison::open_project_selection();
+                        }));
+                    }
                     items.extend(build_location_menu_items(
                         f.repo_id.clone(),
                         f.repo_path.clone(),

@@ -2,6 +2,7 @@ pub mod bookmarks;
 pub mod code_editor;
 pub mod commit_pane;
 pub mod content_search;
+pub(crate) mod comparison;
 mod replacement_flow;
 mod split_code_view;
 pub mod diff_view;
@@ -457,6 +458,9 @@ fn setup_shortcuts() {
                         open_working_diff(first.file, first.staged, true);
                     }
                 }
+                FocusZone::ProjectTree => {
+                    comparison::open_project_selection();
+                }
                 FocusZone::GitFiles => {
                     let pair = app_signal().with_untracked(|s| {
                         s.selected_commit
@@ -834,7 +838,7 @@ fn status_bar() -> impl IntoElement {
                     let pos = c.active_cursor();
                     format!("{}:{}", pos.line + 1, pos.column + 1)
                 }),
-                EditorTabKind::Welcome => None,
+                EditorTabKind::Welcome | EditorTabKind::Comparison => None,
             };
             let hint = if s.left_tab == LeftTab::Commit {
                 "↑↓ 选择 · 空格勾选 · ⌘D 差异 · F4 源码 · ⌘[ 返回"
@@ -937,6 +941,7 @@ fn main_editor_content() -> impl IntoElement {
         EditorTabKind::WorkingDiff => diff_view::diff_pane(false).into_element(),
         EditorTabKind::CommitDiff => diff_view::diff_pane(true).into_element(),
         EditorTabKind::Welcome => editor_area::welcome_view().into_element(),
+        EditorTabKind::Comparison => comparison::pane().into_element(),
     })
 }
 

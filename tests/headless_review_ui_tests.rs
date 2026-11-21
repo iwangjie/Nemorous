@@ -609,6 +609,52 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_compare_selected_project_files_and_clipboard_reads_unsaved_text() {
+    let _guard = lock_env();
+    let fx = Fixture::new("file-comparison");
+    let path = fx.repo_dir.join("src/app.go");
+    let original = fs::read_to_string(&path).unwrap();
+    fs::write(
+        fx.repo_dir.join("README.md"),
+        original.replace("new-greeting", "dirty-comparison").replace('\t', "  "),
+    ).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press_key("mod+r").unwrap();
+    app.type_text("id:code-find-input", "new-greeting").unwrap();
+    app.type_text("id:code-replace-input", "dirty-comparison").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("未保存").unwrap();
+    app.press_key("escape").unwrap();
+    app.press_key("alt+f1").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    app.press("id:project-file-src/app.go").unwrap();
+    app.hold_keys("cmd", true).unwrap();
+    app.press("id:project-file-README.md").unwrap();
+    app.hold_keys("cmd", false).unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:comparison-pane").unwrap();
+    assert!(app.screen().matches("id:comparison-left-editor").unwrap());
+    app.wait_for("变更 2").unwrap();
+    app.press("id:comparison-whitespace").unwrap();
+    app.choose_menu_item("忽略首尾空白").unwrap();
+    app.wait_for("变更 0").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    app.press_key("mod+w").unwrap();
+    app.wait_for_gone("id:comparison-pane", Duration::from_secs(2)).unwrap();
+    app.set_clipboard(Some("clipboard snapshot\n".to_string()));
+    app.right_click(r#"return "dirty-comparison""#).unwrap();
+    app.choose_menu_item("与剪贴板比较").unwrap();
+    app.wait_for("id:comparison-pane").unwrap();
+    app.wait_for("clipboard snapshot").unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn ui_format_file_and_format_on_save_use_checked_writes() {
     use std::os::unix::fs::PermissionsExt;
 

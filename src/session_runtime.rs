@@ -108,7 +108,7 @@ fn live_state(s: &AppState) -> State {
             match s.editor_tab {
                 EditorTabKind::File => "code",
                 EditorTabKind::WorkingDiff | EditorTabKind::CommitDiff => "changes",
-                EditorTabKind::Welcome => {
+                EditorTabKind::Welcome | EditorTabKind::Comparison => {
                     if s.left_tab == LeftTab::Project {
                         "code"
                     } else {
