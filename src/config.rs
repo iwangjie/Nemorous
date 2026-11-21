@@ -21,12 +21,26 @@ impl Default for BranchPreset {
     }
 }
 
+/// 旧版内置行书签；`line` 为 1 起始行号。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Bookmark {
+    #[serde(default)]
+    pub repo_id: String,
+    #[serde(default)]
+    pub rel_path: String,
+    #[serde(default)]
+    pub line: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub workspace_path: String,
     pub recent_workspaces: Vec<String>,
     pub hidden_repos: Vec<String>,
+    pub bookmarks: Vec<Bookmark>,
     pub theme: String,
     pub release_branch: String,
     pub default_base_branch: String,
@@ -58,6 +72,7 @@ impl Default for Config {
             workspace_path: String::new(),
             recent_workspaces: Vec::new(),
             hidden_repos: Vec::new(),
+            bookmarks: Vec::new(),
             theme: "light".to_string(),
             release_branch: "release".to_string(),
             default_base_branch: "main".to_string(),

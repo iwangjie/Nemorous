@@ -584,6 +584,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                         }
                     })
                 })
+                .decorations(move || crate::ui::bookmarks::editor_decorations())
                 .on_focus(|| {
                     state::set_text_input_focused(false);
                     app_signal().update(|s| s.focus_zone = FocusZone::CodeEditor);
@@ -627,6 +628,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                         let mut items = vec![
                             MenuItem::new("复制").on_select(state::copy_for_current_focus),
                             MenuItem::new("文件结构…").on_select(crate::ui::editor_tools::open_structure),
+                            MenuItem::new("书签…").on_select(crate::ui::bookmarks::open_modal),
                             MenuItem::separator(),
                         ];
                         items.extend(build_location_menu_items(

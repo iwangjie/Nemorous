@@ -1,3 +1,4 @@
+pub mod bookmarks;
 pub mod code_editor;
 pub mod commit_pane;
 pub mod content_search;
@@ -265,6 +266,9 @@ fn setup_shortcuts() {
         });
         on_key_with("mod+shift+t", always, |_| {
             editor_tools::open_todos();
+        });
+        on_key_with("mod+shift+b", always, |_| {
+            bookmarks::toggle_current_line();
         });
         on_key_with("mod+f", always, |_| {
             open_find_bar(false);
@@ -1005,5 +1009,6 @@ pub fn shell() -> impl IntoElement {
         .child(toast_layer())
         .child(content_search::modal_layer())
         .child(editor_tools::modal_layer())
+        .child(bookmarks::modal_layer())
         .child(modals::modals_layer())
 }

@@ -609,6 +609,57 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_line_bookmarks_persist_jump_and_remove_by_repository() {
+    let _guard = lock_env();
+    let fx = Fixture::new("line-bookmarks");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    config["bookmarks"] = serde_json::json!([
+        {"repo_id":"other", "rel_path":"src/app.go", "line":7, "note":"keep"}
+    ]);
+    fs::write(&fx.config_file, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:7").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("7:1").unwrap();
+    app.press_key("mod+shift+b").unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(config["bookmarks"][1]["repo_id"], "sample-repo");
+    assert_eq!(config["bookmarks"][1]["line"], 7);
+    drop(app);
+
+    let mut app = fx.start_app(1440.0, 900.0);
+    app.wait_for("id:nemorous-root").unwrap();
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:3").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("3:1").unwrap();
+    app.right_click(r#"return "new-greeting""#).unwrap();
+    app.choose_menu_item("书签…").unwrap();
+    app.wait_for("id:bookmarks-modal").unwrap();
+    app.type_text("id:bookmarks-filter", "foo").unwrap();
+    app.wait_for("暂无书签").unwrap();
+    app.clear("id:bookmarks-filter").unwrap();
+    app.type_text("id:bookmarks-filter", "src/app.go").unwrap();
+    app.press("id:bookmark-jump-sample-repo-src/app.go-7").unwrap();
+    app.wait_for("7:1").unwrap();
+
+    app.right_click(r#"return "new-greeting""#).unwrap();
+    app.choose_menu_item("书签…").unwrap();
+    app.press("id:bookmark-remove-sample-repo-src/app.go-7").unwrap();
+    app.wait_for("暂无书签").unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(config["bookmarks"].as_array().unwrap().len(), 1);
+    assert_eq!(config["bookmarks"][0]["note"], "keep");
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:bookmarks-modal", Duration::from_secs(2)).unwrap();
+}
+
+#[test]
 fn ui_legacy_workspace_session_restores_and_persists_after_reopen() {
     let _guard = lock_env();
     let fx = Fixture::new("legacy-session");
