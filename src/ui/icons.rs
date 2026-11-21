@@ -28,6 +28,12 @@ pub const ICO_LIST: &str = r#"<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M
 pub const ICO_ARCHIVE: &str = r#"<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9M10 13h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>"#;
 pub const ICO_ALERT: &str = r#"<svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></svg>"#;
 
+pub const ICO_MORE_VERTICAL: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>"#;
+pub const ICO_LOCATE: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 2v5m0 10v5M2 12h5m10 0h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>"#;
+pub const ICO_EXPAND: &str = r#"<svg viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+pub const ICO_EYE: &str = r#"<svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>"#;
+pub const ICO_UNDO: &str = r#"<svg viewBox="0 0 24 24"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10h-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+
 pub fn icon(markup: &'static str, size_px: f32, color: Hsla) -> impl IntoElement {
     svg(ImageSrc::svg_markup(markup))
         .w(px(size_px))

@@ -8,11 +8,13 @@ use nsh_core::prelude::*;
 use crate::git::WorkspaceFile;
 use crate::paths::basename;
 use crate::state::{
-    FocusZone, app_signal, current_palette, open_code_file, open_code_file_preview,
+    self, FocusZone, LeftTab, app_signal, current_palette, open_code_file, open_code_file_preview,
 };
 use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
+
+use super::left_tool_window::{ToolWindow, button};
 
 #[derive(Default)]
 struct ProjectDir {
@@ -60,104 +62,104 @@ fn sort_dir(node: &mut ProjectDir) {
     }
 }
 
-fn open_project_options_menu() {
-    let follow_editor = app_signal().with_untracked(|s| s.cfg.project_follow_editor);
-    crate::state::show_popup_menu(vec![MenuItem::submenu("行为", [
+const FULL_PROJECT_HEADER: f32 = 172.0;
+
+fn project_options(width: f32) -> Vec<MenuItem> {
+    let (follow_editor, has_directory) = app_signal().with_untracked(|s| {
+        (s.cfg.project_follow_editor, s.project_selected_dir.is_some())
+    });
+    let mut items = vec![MenuItem::submenu("行为", [
         MenuItem::new("始终选中打开的文件")
             .checked(follow_editor)
-            .on_select(move || {
+            .on_select(|| {
                 app_signal().update(|s| {
                     s.cfg.project_follow_editor = !s.cfg.project_follow_editor;
                 });
-                crate::state::save_config_quiet();
+                state::save_config_quiet();
             }),
-    ])]);
+    ])];
+    if width < FULL_PROJECT_HEADER {
+        items.extend([
+            MenuItem::separator(),
+            MenuItem::new("定位当前编辑文件").on_select(state::locate_current_in_project_tree),
+            MenuItem::new("展开选中目录").disabled(!has_directory).on_select(expand_selected),
+            MenuItem::new("全部折叠").on_select(collapse_all),
+        ]);
+    }
+    items
+}
+
+fn expand_selected() {
+    app_signal().update(|s| {
+        let Some((repo_id, directory)) = &s.project_selected_dir else {
+            return;
+        };
+        let directory = Path::new(directory);
+        s.project_workspace_expanded = true;
+        s.expanded_project_repos.insert(repo_id.clone());
+        for parent in directory.ancestors().take_while(|path| !path.as_os_str().is_empty()) {
+            let parent = crate::paths::normalize_slashes(&parent.to_string_lossy());
+            s.expanded_project_dirs.insert(format!("{repo_id}::{parent}"));
+        }
+        for file in &s.workspace_files {
+            let path = Path::new(&file.rel_path);
+            if file.repo_id == *repo_id && path.starts_with(directory) {
+                for parent in path.ancestors().skip(1).take_while(|parent| parent.starts_with(directory)) {
+                    let parent = crate::paths::normalize_slashes(&parent.to_string_lossy());
+                    s.expanded_project_dirs.insert(format!("{repo_id}::{parent}"));
+                }
+            }
+        }
+    });
+}
+
+fn collapse_all() {
+    app_signal().update(|s| {
+        s.expanded_project_repos.clear();
+        s.expanded_project_dirs.clear();
+        s.project_workspace_expanded = false;
+        s.focus_zone = FocusZone::ProjectTree;
+    });
 }
 
 pub fn project_pane() -> impl IntoElement {
-    view()
-        .test_id("project-pane")
+    let tool = ToolWindow::new(LeftTab::Project);
+    let located_row = element_ref();
+    let reveal_request = computed(|| app_signal().with(|s| s.project_reveal_request));
+    effect(move || {
+        if reveal_request.get() != 0 {
+            after_answer(move || {
+                located_row.reveal(nsh_core::RevealOptions::default()
+                    .vertical(nsh_core::ScrollAlignment::Nearest)
+                    .animated(false));
+            });
+        }
+    });
+    let title = text(move || if tool.width.get() < 116.0 { "文件" } else { "文件树" })
+        .text_size(px(12.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(move || current_palette().text_primary)
+        .number_of_lines(1u32);
+    let header = tool.header(title, move || {
+        if tool.width.get() < FULL_PROJECT_HEADER {
+            return None;
+        }
+        let p = current_palette();
+        let selected = app_signal().with(|s| s.project_selected_dir.is_some());
+        Some(view().flex_row().gap(px(2.0))
+            .child(button("project-locate-current", "定位当前编辑文件", ICO_LOCATE, p,
+                          false, true, state::locate_current_in_project_tree))
+            .child(button("project-expand-selected", "展开选中目录", ICO_EXPAND, p,
+                          false, selected, expand_selected))
+            .child(button("project-collapse-all", "全部折叠", ICO_COLLAPSE, p,
+                          false, true, collapse_all))
+            .into_element())
+    }, move || project_options(tool.width.get_untracked()));
+    tool.panel("project-pane", view()
         .flex_1()
         .flex_col()
         .overflow_hidden()
-        .bg(move || current_palette().rail_bg)
-        .child(
-            view()
-                .h(px(34.0))
-                .px(px(10.0))
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .border_b_1()
-                .border_color(move || current_palette().border)
-                .child(
-                    text("文件树")
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(move || current_palette().text_primary),
-                )
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .child(
-                            text(move || {
-                                let cnt = app_signal().with(|s| s.workspace_files.len());
-                                format!("{cnt} 个文件")
-                            })
-                            .text_size(px(10.5))
-                            .text_color(move || current_palette().text_muted),
-                        )
-                        .child(
-                            view()
-                                .test_id("project-collapse-all")
-                                .h(px(20.0))
-                                .px(px(4.0))
-                                .rounded(px(4.0))
-                                .flex_row()
-                                .items_center()
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(current_palette().surface_hover))
-                                .label("全部收起")
-                                .on_press(|| {
-                                    app_signal().update(|s| {
-                                        s.expanded_project_repos.clear();
-                                        s.expanded_project_dirs.clear();
-                                        s.project_workspace_expanded = false;
-                                        s.project_located_key = None;
-                                        s.project_selected_file = None;
-                                        s.project_selected_dir = None;
-                                        s.project_compare_keys.clear();
-                                        s.focus_zone = FocusZone::ProjectTree;
-                                    });
-                                })
-                                .child(
-                                    text("全部收起")
-                                        .text_size(px(10.5))
-                                        .text_color(move || current_palette().text_muted),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .test_id("project-options-button")
-                                .h(px(20.0))
-                                .px(px(4.0))
-                                .rounded(px(4.0))
-                                .flex_row()
-                                .items_center()
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(current_palette().surface_hover))
-                                .label("Project 选项")
-                                .on_press(open_project_options_menu)
-                                .child(
-                                    text("选项")
-                                        .text_size(px(10.5))
-                                        .text_color(move || current_palette().text_muted),
-                                ),
-                        ),
-                ),
-        )
+        .child(header)
         .child(
             view()
                 .px(px(8.0))
@@ -177,7 +179,10 @@ pub fn project_pane() -> impl IntoElement {
                         .text_color(move || current_palette().text_primary)
                         .placeholder("过滤文件…")
                         .value(move || app_signal().with(|s| s.project_filter.clone()))
-                        .on_focus(|| crate::state::set_text_input_focused(true))
+                        .on_focus(|| {
+                            app_signal().update(|s| s.focus_zone = FocusZone::ProjectTree);
+                            state::set_text_input_focused(true);
+                        })
                         .on_blur(|| crate::state::set_text_input_focused(false))
                         .on_change(|v: &str| {
                             app_signal().update(|s| s.project_filter = v.to_string());
@@ -186,6 +191,7 @@ pub fn project_pane() -> impl IntoElement {
         )
         .child(
             scroll()
+                .test_id("project-tree-scroll")
                 .flex_1()
                 .child(dynamic(move || {
                     let p = current_palette();
@@ -368,6 +374,7 @@ pub fn project_pane() -> impl IntoElement {
                                 force_expand,
                                 &expanded_dirs,
                                 &located_key,
+                                located_row,
                                 &status_map,
                                 &dirty_dirs,
                                 p,
@@ -378,7 +385,7 @@ pub fn project_pane() -> impl IntoElement {
 
                     view().flex_col().py(px(4.0)).children(rows).into_element()
                 })),
-        )
+        ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -390,6 +397,7 @@ fn render_project_dir(
     force_expand: bool,
     expanded_dirs: &HashSet<String>,
     located_key: &(Option<String>, Vec<String>),
+    located_row: nsh_core::element::ElementRef,
     status_map: &HashMap<String, String>,
     dirty_dirs: &HashSet<String>,
     p: Palette,
@@ -515,6 +523,7 @@ fn render_project_dir(
                 force_expand,
                 expanded_dirs,
                 located_key,
+                located_row,
                 status_map,
                 dirty_dirs,
                 p,
@@ -541,6 +550,7 @@ fn render_project_dir(
         out.push(
             view()
                 .test_id(&format!("project-file-{}", wf.rel_path))
+                .when(located_key.0.as_deref() == Some(key.as_str()), |row| row.element_ref(&located_row))
                 .h(px(24.0))
                 .pl(px(indent + 16.0))
                 .pr(px(8.0))

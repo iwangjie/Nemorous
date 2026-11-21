@@ -7,12 +7,14 @@ use nsh_core::prelude::*;
 use crate::git::{ChangedFile, RepoStatus, WorkspaceFile};
 use crate::paths::{basename, display_path};
 use crate::state::{
-    self, FocusZone, app_signal, click_change_row, current_palette, open_code_file,
+    self, FocusZone, LeftTab, app_signal, click_change_row, current_palette, open_code_file,
     open_working_diff, set_group_checked, stage_selected_change_sync,
     tri_state_for_keys,
 };
 use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::icons::{self, *};
+
+use super::left_tool_window::{ToolWindow, button};
 
 #[derive(Default)]
 struct ChangeDirNode {
@@ -180,50 +182,18 @@ fn tri_checkbox(state_val: Option<bool>, p: Palette, on_toggle: impl Fn(bool) + 
         })
 }
 
-fn compact_toolbar_btn(
-    label: &'static str,
-    icon_svg: &'static str,
-    active: bool,
-    p: Palette,
-    test_id_str: &'static str,
-    on_click: impl Fn() + 'static,
-) -> impl IntoElement {
-    let bg = if active { p.accent_soft } else { p.surface2 };
-    let fg = if active { p.accent_soft_text } else { p.text_control };
-    view()
-        .test_id(test_id_str)
-        .h(px(22.0))
-        .px(px(6.0))
-        .gap(px(4.0))
-        .flex_row()
-        .items_center()
-        .rounded(px(4.0))
-        .bg(bg)
-        .cursor(Cursor::Pointer)
-        .hover(move |s| s.bg(p.surface_hover))
-        .label(label)
-        .on_press(move || on_click())
-        .child(icons::icon(icon_svg, 11.0, fg))
-        .child(
-            text(label)
-                .text_size(px(10.5))
-                .text_color(fg)
-                .number_of_lines(1u32),
-        )
-}
-
-fn open_view_options_menu() {
-    let preview = app_signal().with_untracked(|s| s.cfg.change_diff_preview);
-    crate::state::show_popup_menu(vec![
-        MenuItem::new("单击时预览差异")
-            .checked(preview)
-            .on_select(move || {
-                app_signal().update(|s| {
-                    s.cfg.change_diff_preview = !s.cfg.change_diff_preview;
-                });
-                state::save_config_quiet();
-            }),
-    ]);
+fn view_option_items() -> Vec<MenuItem> {
+    let (preview, flat) = app_signal().with_untracked(|s| (s.cfg.change_diff_preview, s.cfg.changes_flat));
+    vec![
+        MenuItem::new("按目录分组").checked(!flat).on_select(|| {
+            app_signal().update(|s| s.cfg.changes_flat = !s.cfg.changes_flat);
+            state::save_config_quiet();
+        }),
+        MenuItem::new("单击时预览差异").checked(preview).on_select(|| {
+            app_signal().update(|s| s.cfg.change_diff_preview = !s.cfg.change_diff_preview);
+            state::save_config_quiet();
+        }),
+    ]
 }
 
 fn stash_menu_items() -> Vec<MenuItem> {
@@ -273,7 +243,7 @@ fn edit_change_list(existing: Option<String>) {
     );
 }
 
-fn open_changelist_menu() {
+fn changelist_menu_items() -> Vec<MenuItem> {
     let (names, counts, active) = app_signal().with_untracked(|s| {
         let keys: HashSet<String> = s.statuses.iter()
             .flat_map(|st| st.files.iter().map(ChangedFile::key))
@@ -308,7 +278,7 @@ fn open_changelist_menu() {
             state::save_config_quiet();
         }));
     }
-    state::show_popup_menu(items);
+    items
 }
 
 const DEFAULT_CHANGE_LIST_FILTER: &str = "__default__";
@@ -335,192 +305,107 @@ fn assign_to_list_menu(file: &ChangedFile) -> MenuItem {
     MenuItem::submenu("移到变更列表", items)
 }
 
-fn open_narrow_overflow_menu() {
-    let (preview, flat) =
-        app_signal().with_untracked(|s| (s.cfg.change_diff_preview, s.cfg.changes_flat));
-    crate::state::show_popup_menu(vec![
-        MenuItem::submenu(
-            "变更视图选项",
-            [MenuItem::new("单击时预览差异")
-                .checked(preview)
-                .on_select(|| {
-                    app_signal().update(|s| {
-                        s.cfg.change_diff_preview = !s.cfg.change_diff_preview;
-                    });
-                    state::save_config_quiet();
-                })],
-        ),
-        MenuItem::new(if flat { "切换为树形视图" } else { "切换为平铺视图" }).on_select(|| {
-            app_signal().update(|s| {
-                s.cfg.changes_flat = !s.cfg.changes_flat;
-            });
-            state::save_config_quiet();
-        }),
-        MenuItem::new("变更列表").on_select(open_changelist_menu),
+fn refresh_changes() {
+    state::refresh_workspace_async(None);
+}
+
+fn rollback_selection() {
+    if let Some(selection) = app_signal().with_untracked(|s| s.change_selection.clone()) {
+        super::git_review::rollback_file(selection.file);
+    }
+}
+
+fn commit_panel_options() -> Vec<MenuItem> {
+    vec![
+        MenuItem::submenu("变更视图选项", view_option_items()),
+        MenuItem::submenu("变更列表", changelist_menu_items()),
         MenuItem::submenu("Stash", stash_menu_items()),
-    ]);
+    ]
+}
+
+fn open_narrow_overflow_menu() {
+    let has_selection = app_signal().with_untracked(|s| s.change_selection.is_some());
+    let mut items = vec![
+        MenuItem::new("回滚所选变更…").disabled(!has_selection).on_select(rollback_selection),
+        MenuItem::new("全部展开").on_select(|| state::set_change_tree_expanded(true)),
+        MenuItem::new("全部折叠").on_select(|| state::set_change_tree_expanded(false)),
+        MenuItem::separator(),
+    ];
+    items.extend(commit_panel_options());
+    state::show_popup_menu(items);
 }
 
 pub fn commit_pane() -> impl IntoElement {
-    let pane_width = signal(320.0_f32);
+    let tool = ToolWindow::new(LeftTab::Commit);
+    let selected_keys = computed(|| app_signal().with(|s| {
+        s.statuses.iter()
+            .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)).map(ChangedFile::key))
+            .collect::<Vec<_>>()
+    }));
+    let title = view().flex_row().items_center().gap(px(6.0))
+        .child(text(move || if tool.width.get() < 122.0 { "变更" } else { "本地变更" })
+            .text_size(px(12.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(move || current_palette().text_primary)
+            .number_of_lines(1u32))
+        .child(when(move || tool.width.get() >= 174.0, move || {
+            text(move || format!("{} 个文件", selected_keys.with(Vec::len)))
+                .test_id("changes-file-count")
+                .text_size(px(11.0))
+                .text_color(move || current_palette().text_muted)
+                .number_of_lines(1u32)
+        }));
 
-    view()
-        .test_id("commit-pane")
+    tool.panel("commit-pane", view()
         .flex_1()
         .flex_col()
         .overflow_hidden()
-        .bg(move || current_palette().rail_bg)
-        .on_layout(move |b: &Bounds<Points>| {
-            if b.size.width.0 > 0.0 {
-                pane_width.set(b.size.width.0);
-            }
-        })
-        // 顶部头部：第 1 行“本地变更 + N 个文件”（绝不折行），第 2 行工具栏（窄栏自动溢出 More）
+        .child(tool.header(title, || None, commit_panel_options))
         .child(dynamic(move || {
             let p = current_palette();
-            let w = pane_width.get();
-            let (all_keys, checked_set, flat, is_refreshing) = app_signal().with(|s| {
-                let keys: Vec<String> = s
-                    .statuses
-                    .iter()
-                    .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)).map(ChangedFile::key))
-                    .collect();
-                (keys, s.checked_changes.clone(), s.cfg.changes_flat, s.is_refreshing)
-            });
-            let total_files = all_keys.len();
-            let root_tri = commit_tri_state(&all_keys, &checked_set);
-            let toggle_keys = all_keys.clone();
-            let narrow = w < 220.0;
-
+            let keys = selected_keys.get();
+            let (root_tri, refreshing, can_rollback, compact) = (
+                app_signal().with(|s| commit_tri_state(&keys, &s.checked_changes)),
+                app_signal().with(|s| s.is_refreshing),
+                app_signal().with(|s| s.change_selection.is_some()),
+                tool.width.get() < 208.0,
+            );
             view()
-                .flex_col()
-                .w_full()
-                .px(px(10.0))
-                .py(px(6.0))
-                .gap(px(5.0))
+                .test_id("changes-header-toolbar-row")
+                .h(px(30.0))
+                .px(px(8.0))
+                .flex_none()
+                .flex_row()
+                .items_center()
+                .gap(px(2.0))
                 .border_b_1()
                 .border_color(p.border)
-                .child(
-                    // 第 1 行：高度严格 22px，单行展示
-                    view()
-                        .test_id("changes-header-title-row")
-                        .h(px(22.0))
-                        .w_full()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .overflow_hidden()
-                        .child(tri_checkbox(root_tri, p, move |_| {
-                            let target = root_tri != Some(true);
-                            set_group_checked(toggle_keys.clone(), target);
+                .child(tri_checkbox(root_tri, p, move |_| {
+                    set_group_checked(keys.clone(), root_tri != Some(true));
+                }))
+                .child(button("changes-refresh-btn", "刷新变更", ICO_REFRESH, p, refreshing, true, refresh_changes))
+                .child(if compact {
+                    button("changes-toolbar-more", "更多变更操作", ICO_MORE, p, false, true, open_narrow_overflow_menu)
+                        .into_element()
+                } else {
+                    view().flex_row().gap(px(2.0))
+                        .child(button("changes-rollback-btn", "回滚所选变更…", ICO_UNDO, p, false, can_rollback, rollback_selection))
+                        .child(button("changes-expand-all", "全部展开", ICO_EXPAND, p, false, true, || {
+                            state::set_change_tree_expanded(true);
                         }))
-                        .child(
-                            text("本地变更")
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(p.text_primary)
-                                .number_of_lines(1u32),
-                        )
-                        .child(
-                            text(format!("{total_files} 个文件"))
-                                .test_id("changes-file-count")
-                                .text_size(px(11.0))
-                                .text_color(p.text_muted)
-                                .number_of_lines(1u32),
-                        )
-                        .child(view().flex_1())
-                        .child(
-                            view()
-                                .test_id("changes-refresh-btn")
-                                .w(px(20.0))
-                                .h(px(20.0))
-                                .rounded(px(4.0))
-                                .items_center()
-                                .justify_center()
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .label("刷新变更")
-                                .on_press(|| state::refresh_workspace_async(None))
-                                .child(icons::icon(
-                                    ICO_REFRESH,
-                                    12.0,
-                                    if is_refreshing { p.accent } else { p.text_control },
-                                )),
-                        ),
-                )
-                .child(
-                    // 第 2 行工具栏：宽 >= 220 显示完整按钮，极窄 (<220，如 100px) 收入 More 菜单
-                    view()
-                        .test_id("changes-header-toolbar-row")
-                        .h(px(24.0))
-                        .w_full()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .overflow_hidden()
-                        .child(if narrow {
-                            view()
-                                .test_id("changes-toolbar-more")
-                                .h(px(22.0))
-                                .px(px(6.0))
-                                .gap(px(4.0))
-                                .flex_row()
-                                .items_center()
-                                .rounded(px(4.0))
-                                .bg(p.surface2)
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .label("More")
-                                .on_press(open_narrow_overflow_menu)
-                                .child(icons::icon(ICO_MORE, 12.0, p.text_control))
-                                .child(text("More").text_size(px(10.5)).text_color(p.text_control))
-                                .into_element()
-                        } else {
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(4.0))
-                                .overflow_hidden()
-                                .child(compact_toolbar_btn(
-                                    "变更视图选项",
-                                    ICO_SETTINGS,
-                                    false,
-                                    p,
-                                    "changes-view-options-btn",
-                                    open_view_options_menu,
-                                ))
-                                .child(compact_toolbar_btn(
-                                    if flat { "平铺" } else { "树形" },
-                                    ICO_LIST,
-                                    flat,
-                                    p,
-                                    "changes-flat-toggle-btn",
-                                    || {
-                                        app_signal().update(|s| {
-                                            s.cfg.changes_flat = !s.cfg.changes_flat;
-                                        });
-                                        state::save_config_quiet();
-                                    },
-                                ))
-                                .child(compact_toolbar_btn(
-                                    "变更列表",
-                                    ICO_FOLDER,
-                                    false,
-                                    p,
-                                    "changes-list-btn",
-                                    open_changelist_menu,
-                                ))
-                                .child(compact_toolbar_btn(
-                                    "Stash",
-                                    ICO_ARCHIVE,
-                                    false,
-                                    p,
-                                    "changes-stash-btn",
-                                    open_stash_menu,
-                                ))
-                                .into_element()
-                        }),
-                )
+                        .child(button("changes-collapse-all", "全部折叠", ICO_COLLAPSE, p, false, true, || {
+                            state::set_change_tree_expanded(false);
+                        }))
+                        .child(button("changes-view-options-btn", "变更视图选项", ICO_EYE, p, false, true, || {
+                            state::show_popup_menu(view_option_items());
+                        }))
+                        .child(button("changes-list-btn", "变更列表", ICO_FOLDER, p, false, true, || {
+                            state::show_popup_menu(changelist_menu_items());
+                        }))
+                        .child(button("changes-stash-btn", "Stash", ICO_ARCHIVE, p, false, true, open_stash_menu))
+                        .into_element()
+                })
+                .into_element()
         }))
         // 过滤输入框
         .child(
@@ -552,6 +437,7 @@ pub fn commit_pane() -> impl IntoElement {
         // 双分区变更列表
         .child(
             scroll()
+                .test_id("changes-tree-scroll")
                 .flex_1()
                 .child(dynamic(move || {
                     let p = current_palette();
@@ -594,7 +480,7 @@ pub fn commit_pane() -> impl IntoElement {
                             .files
                             .iter()
                             .filter(|f| {
-                                f.staged
+                                state::change_in_section(f, true)
                                     && (filter_q.is_empty()
                                         || f.path.to_ascii_lowercase().contains(&filter_q)
                                         || f.repo_name.to_ascii_lowercase().contains(&filter_q))
@@ -605,7 +491,7 @@ pub fn commit_pane() -> impl IntoElement {
                             .files
                             .iter()
                             .filter(|f| {
-                                (f.unstaged || f.untracked || !f.staged)
+                                state::change_in_section(f, false)
                                     && (filter_q.is_empty()
                                         || f.path.to_ascii_lowercase().contains(&filter_q)
                                         || f.repo_name.to_ascii_lowercase().contains(&filter_q))
@@ -679,6 +565,7 @@ pub fn commit_pane() -> impl IntoElement {
                 })),
         )
         .child(super::commit_form::form())
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -755,7 +642,7 @@ fn render_section(
     if !collapsed {
         for (st, files) in repo_groups {
             let repo_key = format!("{section_prefix}::{}", st.repo.id);
-            let repo_collapsed = collapsed_repos.contains(&repo_key);
+            let repo_collapsed = multi_repo && collapsed_repos.contains(&repo_key);
             let repo_keys: Vec<String> = files.iter().map(|f| f.key()).collect();
             let repo_tri = commit_tri_state(&repo_keys, checked_set);
             let badge = repo_badge_colors(st.repo.color_idx, p.is_dark);

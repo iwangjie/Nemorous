@@ -752,12 +752,94 @@ mod macos {
         println!("NATIVE_REVIEW_CLEANUP PASS");
     }
 
+    fn left_tool_windows(app: &NSApplication, window: &NSWindow, root: &NSView, evidence: &Path, width: f32) {
+        let wait = |id: &str| wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+        let input_surface = root.subviews().firstObject().expect("AppKit input surface");
+        let click = |id: &str| {
+            wait(id);
+            send_click(window, &view_with_id(root, id).unwrap(), 1);
+        };
+        let hover = |id: &str| {
+            wait(id);
+            let target = view_with_id(root, id).unwrap();
+            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                NSEventType::MouseMoved, center_in_window(&target), NSEventModifierFlags::empty(),
+                NSProcessInfo::processInfo().systemUptime(), window.windowNumber(), None, 0, 0, 0.0,
+            ).unwrap();
+            input_surface.mouseMoved(&event);
+            pump(120);
+        };
+        let command = NSEventModifierFlags::Command;
+        wait("changes-header-title-row");
+        wait("change-row-unstaged-src/nested/tracked.txt");
+        assert!((view_with_id(root, "commit-pane").unwrap().bounds().size.width - f64::from(width)).abs() < 2.0);
+        if width < 150.0 {
+            wait("changes-toolbar-more");
+            wait("changes-hide");
+            save_window_png(window, &evidence.join("commit-narrow.png"));
+            send_key(app, window, "1", "1", 18, command);
+            wait("project-options-button");
+            wait("project-hide");
+            wait("project-workspace-root");
+            assert!((view_with_id(root, "project-pane").unwrap().bounds().size.width - f64::from(width)).abs() < 2.0);
+            save_window_png(window, &evidence.join("project-narrow.png"));
+        } else {
+            click("change-row-unstaged-src/nested/tracked.txt");
+            send_key(app, window, "d", "d", 2, command);
+            wait("working-diff-new-editor");
+            hover("working-diff-new-editor");
+            assert!(view_with_id(root, "changes-title-actions").is_none());
+            let tree = view_with_id(root, "changes-tree-scroll").unwrap().frame();
+            hover("changes-tree-scroll");
+            wait("changes-title-actions");
+            assert_eq!(view_with_id(root, "changes-tree-scroll").unwrap().frame(), tree);
+            save_window_png(window, &evidence.join("commit-350.png"));
+            hover("working-diff-new-editor");
+            assert!(view_with_id(root, "changes-title-actions").is_none());
+            wait("changes-refresh-btn");
+            wait("changes-rollback-btn");
+            send_key(app, window, "0", "0", 29, command);
+            wait("changes-title-actions");
+            click("changes-hide");
+            wait("working-diff-new-editor");
+            send_key(app, window, "0", "0", 29, command);
+            wait("changes-title-actions");
+
+            click("diff-jump-source-btn");
+            wait("code-editor-view");
+            send_key(app, window, "1", "1", 18, command);
+            click("editor-tab-file-src/nested/tracked.txt");
+            hover("code-editor-view");
+            assert!(view_with_id(root, "project-title-actions").is_none());
+            hover("project-tree-scroll");
+            wait("project-title-actions");
+            click("project-locate-current");
+            wait("project-file-src/nested/tracked.txt");
+            click("project-dir-src");
+            click("project-expand-selected");
+            wait("project-file-src/nested/deeper/leaf.txt");
+            assert!(view_with_id(root, "project-file-docs/nested/guide.md").is_none());
+            click("project-collapse-all");
+            assert!(view_with_id(root, "project-file-src/nested/tracked.txt").is_none());
+            click("project-locate-current");
+            wait("project-file-src/nested/tracked.txt");
+            save_window_png(window, &evidence.join("project-350.png"));
+            click("project-hide");
+            wait("code-editor-view");
+            click("rail-project-btn");
+            wait("project-file-src/nested/tracked.txt");
+        }
+        println!("NATIVE_LEFT_TOOL_WINDOWS PASS width={width}");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
+        let left_tools = std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
+            .map(|width| width.parse::<f32>().expect("left tool window width"));
         assert!(
-            baseline_repo.exists(),
+            left_tools.is_some() || baseline_repo.exists(),
             "baseline repo fixture missing: {}",
             baseline_repo.display()
         );
@@ -768,7 +850,9 @@ mod macos {
         let batch5 = std::env::var_os("NEMOROUS_NATIVE_BATCH5").is_some();
         let batch6 = std::env::var_os("NEMOROUS_NATIVE_BATCH6").is_some();
         let cleanup = std::env::var_os("NEMOROUS_NATIVE_REVIEW_CLEANUP").is_some();
-        let work_dir = if cleanup {
+        let work_dir = if left_tools.is_some() {
+            root_dir.join(format!("build/tmp-ab/native-left-tools-{}", std::process::id()))
+        } else if cleanup {
             root_dir.join(format!("build/tmp-ab/native-review-cleanup-{}", std::process::id()))
         } else if batch6 {
             root_dir.join(format!("build/tmp-ab/native-batch6-{}", std::process::id()))
@@ -786,7 +870,24 @@ mod macos {
             dir
         };
         let repo_copy = work_dir.join("repo");
-        copy_dir_all(&baseline_repo, &repo_copy);
+        if left_tools.is_some() {
+            for (name, text) in [
+                ("src/nested/tracked.txt", "first\nbase\nlast\n"),
+                ("src/nested/deeper/leaf.txt", "leaf\n"),
+                ("docs/nested/guide.md", "guide\n"),
+            ] {
+                let path = repo_copy.join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(path, text).unwrap();
+            }
+            git_run(&repo_copy, &["init", "-b", "main"]);
+            git_run(&repo_copy, &["add", "."]);
+            git_run(&repo_copy, &["-c", "user.name=Nemorous QA", "-c", "user.email=native@example.invalid",
+                "-c", "commit.gpgsign=false", "commit", "-m", "Left tool window fixture"]);
+            fs::write(repo_copy.join("src/nested/tracked.txt"), "first\nworking edit\nlast\n").unwrap();
+        } else {
+            copy_dir_all(&baseline_repo, &repo_copy);
+        }
         if batch3 {
             let context = (1..20).map(|line| format!("context {line}\n")).collect::<String>();
             let file = repo_copy.join("batch3-ticket.txt");
@@ -831,6 +932,11 @@ mod macos {
             "change_diff_preview": false,
             "editor_font_size": 14.0
         });
+        if let Some(width) = left_tools {
+            cfg_json["commit_left_width"] = width.into();
+            cfg_json["code_left_width"] = width.into();
+            cfg_json["auto_update"] = false.into();
+        }
         if batch6 {
             cfg_json["auto_update"] = false.into();
             cfg_json["app_icon"] = "aero".into();
@@ -902,6 +1008,17 @@ mod macos {
         }
 
         let root = surface.view();
+        if let Some(width) = left_tools {
+            if width < 150.0 {
+                let narrow = NSRect::new(NSPoint::new(80.0, 80.0), NSSize::new(1040.0, 660.0));
+                window.setFrame_display(window.frameRectForContentRect(narrow), true);
+            }
+            let evidence = root_dir.join("build/left-tool-window-evidence");
+            left_tool_windows(&app, &window, &root, &evidence, width);
+            window.close();
+            pump(150);
+            return;
+        }
         if cleanup {
             let evidence = root_dir.join("build/review-cleanup-evidence");
             review_cleanup(&app, &window, &root, &evidence);

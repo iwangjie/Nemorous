@@ -40,6 +40,7 @@ pub(crate) mod merge_menu;
 pub(crate) mod rebase_plan_view;
 pub mod project_pane;
 mod workspace_menu;
+mod left_tool_window;
 pub(crate) mod sync_dialog;
 
 use nsh_base::{EditorCommand, h_resizable, resizable_panel, v_resizable};
@@ -284,24 +285,52 @@ fn setup_application_menu() {
     });
 }
 
-fn focus_tool_window(tab: LeftTab, toggle: bool) {
-    state::set_text_input_focused(false);
+fn tool_window_focus(tab: LeftTab) -> FocusZone {
+    match tab {
+        LeftTab::Commit => FocusZone::CommitTree,
+        LeftTab::Project => FocusZone::ProjectTree,
+    }
+}
+
+fn hide_tool_window(tab: LeftTab) {
+    let refocus = app_signal().with_untracked(|s| s.focus_zone == tool_window_focus(tab));
     app_signal().update(|s| {
-        let focus = match tab {
-            LeftTab::Commit => FocusZone::CommitTree,
-            LeftTab::Project => FocusZone::ProjectTree,
-        };
-        if toggle && s.show_left_panel && s.left_tab == tab && s.focus_zone == focus {
-            s.show_left_panel = false;
-        } else {
-            s.show_left_panel = true;
-            s.left_tab = tab;
-            s.focus_zone = focus;
-            if tab == LeftTab::Commit && s.change_selection.is_none() {
-                s.change_selection = state::visible_change_items(s).into_iter().next();
-            }
+        s.show_left_panel = false;
+        if refocus {
+            s.focus_zone = state::editor_focus_zone(s);
         }
     });
+    if refocus {
+        state::set_text_input_focused(false);
+        state::focus_active_editor_ref();
+    }
+}
+
+fn focus_tool_window(tab: LeftTab, toggle: bool) {
+    let focus = tool_window_focus(tab);
+    if toggle && app_signal().with_untracked(|s| {
+        s.show_left_panel && s.left_tab == tab && s.focus_zone == focus
+    }) {
+        hide_tool_window(tab);
+        return;
+    }
+    state::set_text_input_focused(false);
+    app_signal().update(|s| {
+        s.show_left_panel = true;
+        s.left_tab = tab;
+        s.focus_zone = focus;
+        if tab == LeftTab::Commit && s.change_selection.is_none() && s.change_selected_dir.is_none() {
+            s.change_selection = state::visible_change_items(s).into_iter().next();
+        }
+    });
+}
+
+fn toggle_rail_tool_window(tab: LeftTab) {
+    if app_signal().with_untracked(|s| s.show_left_panel && s.left_tab == tab) {
+        hide_tool_window(tab);
+    } else {
+        focus_tool_window(tab, false);
+    }
 }
 
 /// 绑定全局及焦点感知 IDEA 快捷键。
@@ -921,34 +950,14 @@ fn left_rail() -> impl IntoElement {
                 "Commit (⌘0)",
                 ICO_COMMIT,
                 show_left && left_tab == LeftTab::Commit,
-                || {
-                    app_signal().update(|s| {
-                        if s.show_left_panel && s.left_tab == LeftTab::Commit {
-                            s.show_left_panel = false;
-                        } else {
-                            s.show_left_panel = true;
-                            s.left_tab = LeftTab::Commit;
-                            s.focus_zone = FocusZone::CommitTree;
-                        }
-                    });
-                },
+                || toggle_rail_tool_window(LeftTab::Commit),
             ))
             .child(rail_btn(
                 "rail-project-btn",
                 "Project (⌘1)",
                 ICO_FOLDER,
                 show_left && left_tab == LeftTab::Project,
-                || {
-                    app_signal().update(|s| {
-                        if s.show_left_panel && s.left_tab == LeftTab::Project {
-                            s.show_left_panel = false;
-                        } else {
-                            s.show_left_panel = true;
-                            s.left_tab = LeftTab::Project;
-                            s.focus_zone = FocusZone::ProjectTree;
-                        }
-                    });
-                },
+                || toggle_rail_tool_window(LeftTab::Project),
             ))
             .child(rail_btn(
                 "rail-git-btn",

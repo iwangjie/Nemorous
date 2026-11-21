@@ -298,6 +298,7 @@ pub struct AppState {
     pub expanded_project_dirs: HashSet<String>,
     pub(crate) project_compare_keys: Vec<String>,
     pub project_located_key: Option<String>,
+    pub(crate) project_reveal_request: u64,
     pub project_selected_file: Option<WorkspaceFile>,
     pub project_selected_dir: Option<(String, String)>, // (repo_id, rel_dir)
 
@@ -387,6 +388,7 @@ impl Default for AppState {
             expanded_project_dirs: HashSet::new(),
             project_compare_keys: Vec::new(),
             project_located_key: None,
+            project_reveal_request: 0,
             project_selected_file: None,
             project_selected_dir: None,
             git_commits: Vec::new(),
@@ -1069,6 +1071,41 @@ fn push_rendered_change_files(
     walk(&mut root, section_repo_prefix, collapsed_dirs, staged, out);
 }
 
+pub(crate) fn change_in_section(file: &ChangedFile, staged: bool) -> bool {
+    if staged {
+        file.staged
+    } else {
+        file.unstaged || file.untracked || !file.staged
+    }
+}
+
+pub(crate) fn set_change_tree_expanded(expanded: bool) {
+    app_signal().update(|s| {
+        s.collapsed_staged_section = !expanded;
+        s.collapsed_unstaged_section = !expanded;
+        s.collapsed_change_repos.clear();
+        s.collapsed_change_dirs.clear();
+        if expanded {
+            return;
+        }
+        for status in &s.statuses {
+            for file in &status.files {
+                for staged in [true, false].into_iter().filter(|&side| change_in_section(file, side)) {
+                    let section = if staged { "staged" } else { "unstaged" };
+                    let repo_key = format!("{section}::{}", status.repo.id);
+                    for parent in Path::new(&file.path).ancestors().skip(1)
+                        .take_while(|path| !path.as_os_str().is_empty())
+                    {
+                        let name = paths::normalize_slashes(&parent.to_string_lossy());
+                        s.collapsed_change_dirs.insert(format!("{repo_key}::{name}"));
+                    }
+                    s.collapsed_change_repos.insert(repo_key);
+                }
+            }
+        }
+    });
+}
+
 pub fn visible_change_items(s: &AppState) -> Vec<ChangeSelection> {
     let q = s.changes_filter.trim().to_ascii_lowercase();
     let mut out = Vec::new();
@@ -1078,48 +1115,25 @@ pub fn visible_change_items(s: &AppState) -> Vec<ChangeSelection> {
             || f.repo_name.to_ascii_lowercase().contains(&q))
     };
 
-    if !s.collapsed_staged_section {
-        for st in &s.statuses {
-            let repo_key = format!("staged::{}", st.repo.id);
-            if s.collapsed_change_repos.contains(&repo_key) {
-                continue;
-            }
-            let files: Vec<ChangedFile> = st
-                .files
-                .iter()
-                .filter(|f| f.staged && matches_query(f))
-                .cloned()
-                .collect();
-            push_rendered_change_files(
-                &files,
-                s.cfg.changes_flat,
-                &repo_key,
-                &s.collapsed_change_dirs,
-                true,
-                &mut out,
-            );
+    for (staged, collapsed) in [(true, s.collapsed_staged_section), (false, s.collapsed_unstaged_section)] {
+        if collapsed {
+            continue;
         }
-    }
-
-    if !s.collapsed_unstaged_section {
-        for st in &s.statuses {
-            let repo_key = format!("unstaged::{}", st.repo.id);
-            if s.collapsed_change_repos.contains(&repo_key) {
+        let section = if staged { "staged" } else { "unstaged" };
+        let groups: Vec<_> = s.statuses.iter().filter_map(|status| {
+            let files: Vec<_> = status.files.iter()
+                .filter(|file| change_in_section(file, staged) && matches_query(file))
+                .cloned().collect();
+            (!files.is_empty()).then_some((&status.repo.id, files))
+        }).collect();
+        let multi_repo = groups.len() > 1;
+        for (repo_id, files) in groups {
+            let repo_key = format!("{section}::{repo_id}");
+            if multi_repo && s.collapsed_change_repos.contains(&repo_key) {
                 continue;
             }
-            let files: Vec<ChangedFile> = st
-                .files
-                .iter()
-                .filter(|f| (f.unstaged || f.untracked || !f.staged) && matches_query(f))
-                .cloned()
-                .collect();
             push_rendered_change_files(
-                &files,
-                s.cfg.changes_flat,
-                &repo_key,
-                &s.collapsed_change_dirs,
-                false,
-                &mut out,
+                &files, s.cfg.changes_flat, &repo_key, &s.collapsed_change_dirs, staged, &mut out,
             );
         }
     }
@@ -3007,7 +3021,12 @@ pub fn locate_in_project_tree(repo_id: &str, rel_path: &str) {
     app_signal().update(|s| {
         s.show_left_panel = true;
         s.left_tab = LeftTab::Project;
+        let filter = s.project_filter.trim().to_ascii_lowercase();
+        if !paths::normalize_slashes(rel_path).to_ascii_lowercase().contains(&filter) {
+            s.project_filter.clear();
+        }
         select_project_file_in_tree(s, repo_id, rel_path);
+        s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
         s.focus_zone = FocusZone::ProjectTree;
     });
 }
@@ -3388,12 +3407,8 @@ pub fn enter_modal_focus(s: &mut AppState) {
     s.focus_zone = FocusZone::Modal;
 }
 
-/// 关闭弹窗后恢复先前焦点（若原焦点对应的编辑页已关闭则回退到 Commit 树）。
-pub fn restore_focus_after_modal(s: &mut AppState) {
-    if s.focus_zone != FocusZone::Modal {
-        return;
-    }
-    let fallback = match s.editor_tab {
+pub(crate) fn editor_focus_zone(s: &AppState) -> FocusZone {
+    match s.editor_tab {
         EditorTabKind::File => FocusZone::CodeEditor,
         EditorTabKind::WorkingDiff => match s.working_diff.as_ref().map(|w| w.active_side) {
             Some(DiffSide::Old) => FocusZone::WorkingDiffOld,
@@ -3408,7 +3423,15 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
             LeftTab::Commit => FocusZone::CommitTree,
             LeftTab::Project => FocusZone::ProjectTree,
         },
-    };
+    }
+}
+
+/// 关闭弹窗后恢复先前焦点（若原焦点对应的编辑页已关闭则回退到 Commit 树）。
+pub fn restore_focus_after_modal(s: &mut AppState) {
+    if s.focus_zone != FocusZone::Modal {
+        return;
+    }
+    let fallback = editor_focus_zone(s);
     let candidate = s.prev_focus_zone;
     s.focus_zone = match candidate {
         FocusZone::Modal => fallback,

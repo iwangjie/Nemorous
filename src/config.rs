@@ -172,7 +172,7 @@ impl Config {
         if self.commit_left_width < 80.0 || self.commit_left_width > 900.0 {
             self.commit_left_width = 320.0;
         }
-        if self.code_left_width < 120.0 || self.code_left_width > 900.0 {
+        if self.code_left_width < 90.0 || self.code_left_width > 900.0 {
             self.code_left_width = 260.0;
         }
         if self.git_panel_height < 120.0 || self.git_panel_height > 900.0 {

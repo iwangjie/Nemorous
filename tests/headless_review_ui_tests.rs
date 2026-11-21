@@ -110,7 +110,7 @@ impl Fixture {
 
     fn start_headless_expect(&self, width: f32, height: f32, wait_sel: &str) -> Headless {
         let mut app = self.start_app(width, height);
-        app.wait_for("本地变更").expect("wait for commit header");
+        app.wait_for("id:changes-header-title-row").expect("wait for commit header");
         app.wait_for(wait_sel).expect("wait for expected element");
         app
     }
@@ -404,14 +404,15 @@ fn ui_narrow_pane_1040x660_and_100px_more_menu_stash() {
 
     // 1. 1040x660 默认左栏 320px：标题行与计数单行展示且按钮可见
     app.wait_for("id:changes-header-title-row").unwrap();
-    app.wait_for("变更视图选项").unwrap();
-    app.wait_for("Stash").unwrap();
+    app.wait_for("id:changes-view-options-btn").unwrap();
+    app.wait_for("id:changes-stash-btn").unwrap();
 
     // 2. 通过配置以极窄左栏 100px 启动，验证工具栏自动收入 More 菜单且可直达 Stash -> 管理 Stash…
     let narrow_cfg = serde_json::json!({
         "workspace_path": fx.repo_dir.to_string_lossy(),
         "theme": "light",
-        "commit_left_width": 100.0
+        "commit_left_width": 100.0,
+        "code_left_width": 100.0
     });
     fs::write(&fx.config_file, serde_json::to_string_pretty(&narrow_cfg).unwrap()).unwrap();
     drop(app);
@@ -420,6 +421,12 @@ fn ui_narrow_pane_1040x660_and_100px_more_menu_stash() {
     narrow_app.press("id:changes-toolbar-more").unwrap();
     narrow_app.choose_menu_item("Stash > 管理 Stash… (0)").unwrap();
     narrow_app.wait_for("id:stash-modal").unwrap();
+    narrow_app.press_key("escape").unwrap();
+    narrow_app.press_key("mod+1").unwrap();
+    narrow_app.wait_for("id:project-hide").unwrap();
+    narrow_app.press("id:project-options-button").unwrap();
+    narrow_app.choose_menu_item("全部折叠").unwrap();
+    narrow_app.wait_for("id:project-workspace-root").unwrap();
 }
 
 #[test]
@@ -484,8 +491,9 @@ fn ui_commit_view_options_preview_and_flat_toggle() {
     app.wait_for("id:working-diff-pane").unwrap();
 
     // 切换树形 -> 平铺，验证显示完整路径 src/app.go
-    app.press("id:changes-flat-toggle-btn").unwrap();
-    app.wait_for("平铺").unwrap();
+    app.press("id:changes-view-options-btn").unwrap();
+    app.choose_menu_item("按目录分组").unwrap();
+    app.wait_for_gone("id:change-dir-unstaged-src", Duration::from_secs(2)).unwrap();
     app.wait_for("src/app.go").unwrap();
 }
 
@@ -1251,6 +1259,131 @@ fn ui_project_collapse_survives_refresh_and_filter_then_locate_expands() {
 }
 
 #[test]
+fn ui_left_tool_titles_follow_hover_keyboard_and_open_menu() {
+    let _guard = lock_env();
+    let fx = Fixture::new("tool-window-titles");
+    let mut cfg = nemorous::config::load_from(&fx.config_file).unwrap();
+    cfg.commit_left_width = 350.0;
+    cfg.code_left_width = 350.0;
+    nemorous::config::save_to(&fx.config_file, &cfg).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    let bounds = |app: &Headless, id: &str| {
+        app.screen().layout_nodes().iter()
+            .find(|node| node.test_id.as_deref() == Some(id) && !node.hidden)
+            .unwrap_or_else(|| panic!("missing layout for {id}"))
+            .bounds
+    };
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-new-editor").unwrap();
+    for (key, toolbar, scroll, options, hide) in [
+        ("mod+0", "changes-title-actions", "changes-tree-scroll", "changes-title-options", "changes-hide"),
+        ("mod+1", "project-title-actions", "project-tree-scroll", "project-options-button", "project-hide"),
+    ] {
+        if key == "mod+1" {
+            app.press_key(key).unwrap();
+        }
+        app.press("id:editor-tab-working-diff").unwrap();
+        app.hover("id:working-diff-new-editor").unwrap();
+        let actions = format!("id:{toolbar}");
+        app.wait_for_gone(&actions, Duration::from_secs(2)).unwrap();
+        let tree = bounds(&app, scroll);
+        assert_eq!(tree.size.width.0, 350.0);
+        app.hover(&format!("id:{scroll}")).unwrap();
+        app.wait_for(&actions).unwrap();
+        assert_eq!(bounds(&app, scroll), tree);
+        app.press(&format!("id:{options}")).unwrap();
+        assert!(app.menu().is_some());
+        app.hover("id:working-diff-new-editor").unwrap();
+        app.wait_for(&actions).unwrap();
+        app.close_menu().unwrap();
+        app.wait_for_gone(&actions, Duration::from_secs(2)).unwrap();
+        assert_eq!(bounds(&app, scroll), tree);
+        if key == "mod+0" {
+            for id in ["changes-refresh-btn", "changes-rollback-btn", "changes-expand-all", "changes-collapse-all"] {
+                app.wait_for(&format!("id:{id}")).unwrap();
+            }
+        }
+        app.press_key(key).unwrap();
+        app.wait_for(&actions).unwrap();
+        app.press(&format!("id:{hide}")).unwrap();
+        app.wait_for_gone(&format!("id:{scroll}"), Duration::from_secs(2)).unwrap();
+        app.wait_for("id:working-diff-new-editor").unwrap();
+        app.press_key(key).unwrap();
+        app.wait_for(&format!("id:{scroll}")).unwrap();
+        app.wait_for(&actions).unwrap();
+    }
+    app.press("id:rail-commit-btn").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("Diff: app.go").unwrap();
+}
+
+#[test]
+fn ui_project_header_locates_and_expands_only_the_selected_branch() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-header-actions");
+    for (dir, path) in [("src/deep", "src/deep/leaf.go"), ("docs/nested", "docs/nested/guide.md")] {
+        fs::create_dir_all(fx.repo_dir.join(dir)).unwrap();
+        fs::write(fx.repo_dir.join(path), "fixture\n").unwrap();
+    }
+    for number in 0..40 {
+        fs::write(fx.repo_dir.join(format!("src/a-{number:02}.go")), "// fixture\n").unwrap();
+    }
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.press_key("f4").unwrap();
+    app.wait_for("id:code-editor-pane").unwrap();
+    app.press_key("mod+1").unwrap();
+    app.press("id:project-locate-current").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    let nodes = app.screen().layout_nodes();
+    let bounds = |id| nodes.iter().find(|node| node.test_id.as_deref() == Some(id)).unwrap().bounds;
+    let file = bounds("project-file-src/app.go");
+    let scroll = bounds("project-tree-scroll");
+    assert!(file.origin.y >= scroll.origin.y);
+    assert!(file.origin.y + file.size.height <= scroll.origin.y + scroll.size.height);
+    app.press("id:project-collapse-all").unwrap();
+    app.press("id:project-workspace-root").unwrap();
+    app.press("id:project-repo-sample-repo").unwrap();
+    app.press("id:project-dir-src").unwrap();
+    app.press("id:project-expand-selected").unwrap();
+    app.wait_for("id:project-file-src/deep/leaf.go").unwrap();
+    assert!(!app.screen().matches("id:project-file-docs/nested/guide.md").unwrap());
+    app.press("id:project-collapse-all").unwrap();
+    app.wait_for_gone("id:project-file-src/app.go", Duration::from_secs(2)).unwrap();
+    app.type_text("id:project-filter-input", "guide.md").unwrap();
+    app.press("id:project-locate-current").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    app.press("id:project-hide").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press("id:rail-project-btn").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+}
+
+#[test]
+fn ui_commit_toolbar_expands_and_rolls_back_selected_file_with_confirmation() {
+    let _guard = lock_env();
+    let fx = Fixture::new("commit-toolbar");
+    let path = fx.repo_dir.join("src/app.go");
+    let before = fs::read(&path).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press("id:changes-collapse-all").unwrap();
+    app.wait_for_gone("id:change-row-unstaged-src/app.go", Duration::from_secs(2)).unwrap();
+    app.press("id:changes-expand-all").unwrap();
+    app.wait_for("id:change-row-unstaged-src/app.go").unwrap();
+    app.press("id:changes-refresh-btn").unwrap();
+    app.press("id:changes-rollback-btn").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("已回滚文件").unwrap();
+    assert!(fs::read_to_string(path).unwrap().contains("old-greeting"));
+    assert!(fx.repo_dir.join("notes.txt").is_file());
+}
+
+#[test]
 fn ui_project_follow_editor_selects_open_file_without_focus_shift() {
     let _guard = lock_env();
     let fx = Fixture::new("project-follow-editor");
@@ -1276,6 +1409,7 @@ fn ui_project_follow_editor_selects_open_file_without_focus_shift() {
         .unwrap();
 
     // 开启：立即按活动文件展开祖先并选中，不切换当前工具窗口。
+    app.hover("id:project-tree-scroll").unwrap();
     app.press("id:project-options-button").unwrap();
     app.choose_menu_item("行为 > 始终选中打开的文件").unwrap();
     app.wait_for("id:project-file-src/app.go").unwrap();
@@ -1291,6 +1425,7 @@ fn ui_project_follow_editor_selects_open_file_without_focus_shift() {
     app.wait_for("id:project-file-src/app.go").unwrap();
 
     // 关闭：再次切换标签不再展开/选中。
+    app.hover("id:project-tree-scroll").unwrap();
     app.press("id:project-options-button").unwrap();
     app.choose_menu_item("行为 > 始终选中打开的文件").unwrap();
     app.press("id:project-dir-toggle-src").unwrap();
