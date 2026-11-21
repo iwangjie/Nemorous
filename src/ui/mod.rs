@@ -5,7 +5,7 @@ pub mod commit_pane;
 pub mod content_search;
 pub(crate) mod comparison;
 mod replacement_flow;
-mod key_gestures;
+pub(crate) mod key_gestures;
 mod local_history_view;
 pub(crate) mod keymap_settings;
 pub(crate) mod navigation_picker;
@@ -89,6 +89,12 @@ fn bind_action(
 ) {
     let handler = std::rc::Rc::new(handler);
     for key in keymap.keys(action).iter().filter(|key| key.as_str() != crate::keymap::DOUBLE_SHIFT) {
+        #[cfg(target_os = "macos")]
+        if action == "switcher" && matches!(key.as_str(), "ctrl+tab" | "ctrl+shift+tab")
+            && crate::macos_gestures::is_installed()
+        {
+            continue;
+        }
         let handler = handler.clone();
         on_key_with(key, options, move |key| handler(key));
     }
@@ -159,6 +165,12 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
                             state::enter_modal_focus(s);
                         });
                     }))
+                    .disabled(modal_open),
+                menu_binding(MenuItem::new("最近文件…"), keymap, "recentFiles")
+                    .on_select(guard_app_command(|| navigation_picker::open(navigation_picker::Mode::RecentFiles)))
+                    .disabled(modal_open),
+                menu_binding(MenuItem::new("查找操作…"), keymap, "actions")
+                    .on_select(guard_app_command(|| navigation_picker::open(navigation_picker::Mode::Actions)))
                     .disabled(modal_open),
                 menu_binding(MenuItem::new("最近位置…"), keymap, "recentLocations")
                     .on_select(guard_app_command(|| {
@@ -1023,6 +1035,8 @@ pub fn shell() -> impl IntoElement {
     setup_hidden_title_bar();
     setup_application_menu();
     setup_shortcuts();
+    #[cfg(target_os = "macos")]
+    key_gestures::observe_macos();
     setup_window_focus_refresh();
     crate::session_runtime::observe();
     init_workspace();

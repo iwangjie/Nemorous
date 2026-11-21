@@ -39,6 +39,7 @@ nsh-core = { path = "build/nsh-v0.6.1/crates/nsh-core", features = ["svg"] }
 nsh-base = { path = "build/nsh-v0.6.1/crates/nsh-base", default-features = false, features = ["editor", "highlight"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
 nsh-platform-macos = { path = "build/nsh-v0.6.1/crates/nsh-platform-macos", default-features = false, features = ["editor", "highlight", "svg"] }
 
 [dev-dependencies]

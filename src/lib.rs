@@ -9,6 +9,8 @@ mod formatter;
 pub mod git;
 mod git_log_query;
 mod keymap;
+#[cfg(target_os = "macos")]
+pub mod macos_gestures;
 pub mod local_history;
 mod local_history_legacy;
 mod history_restore;

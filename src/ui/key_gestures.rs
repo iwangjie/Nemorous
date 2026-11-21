@@ -9,13 +9,13 @@ const MAX_TAP: Duration = Duration::from_millis(350);
 const MAX_BETWEEN_TAPS: Duration = Duration::from_millis(450);
 
 #[derive(Clone, Default)]
-struct ShiftTap {
+pub(crate) struct ShiftTap {
     down: Option<Instant>,
     previous: Option<Instant>,
 }
 
 impl ShiftTap {
-    fn push(&mut self, down: bool, now: Instant) -> bool {
+    pub(crate) fn push(&mut self, down: bool, now: Instant) -> bool {
         if down {
             self.down = Some(now);
             return false;
@@ -41,6 +41,10 @@ impl ShiftTap {
 }
 
 pub fn key_down(event: &KeyEvent) {
+    #[cfg(target_os = "macos")]
+    if crate::macos_gestures::is_installed() {
+        return;
+    }
     let gesture = global::<ShiftTap>();
     if matches!(event.key.as_ref(), "Shift")
         && !event.modifiers.ctrl
@@ -57,6 +61,10 @@ pub fn key_down(event: &KeyEvent) {
 }
 
 pub fn key_up(event: &KeyEvent) {
+    #[cfg(target_os = "macos")]
+    if crate::macos_gestures::is_installed() {
+        return;
+    }
     if event.key.as_ref() == "Control" && !event.modifiers.ctrl {
         navigation_picker::release_control();
     }
@@ -65,15 +73,61 @@ pub fn key_up(event: &KeyEvent) {
         global::<ShiftTap>().update(|gesture| {
             double = gesture.push(false, Instant::now());
         });
-        if double
-            && super::configured_keymap()
-                .keys("searchEverywhere")
-                .iter()
-                .any(|key| key == crate::keymap::DOUBLE_SHIFT)
-        {
-            navigation_picker::open(Mode::Everywhere);
+        if double {
+            open_everywhere_if_bound();
         }
     }
+}
+
+fn open_everywhere_if_bound() {
+    let modal = crate::state::app_signal()
+        .with_untracked(|s| s.focus_zone == crate::state::FocusZone::Modal);
+    if !modal
+        && super::configured_keymap()
+            .keys("searchEverywhere")
+            .iter()
+            .any(|key| key == crate::keymap::DOUBLE_SHIFT)
+    {
+        navigation_picker::open(Mode::Everywhere);
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn observe_macos() {
+    use crate::macos_gestures::{self, Gesture};
+    use tokio::sync::broadcast::error::RecvError;
+
+    if !macos_gestures::is_installed() {
+        return;
+    }
+    let keymap = super::keymap_memo();
+    effect(move || {
+        let keys = keymap.get();
+        let bindings = keys.keys("switcher");
+        let allowed = crate::state::app_signal()
+            .with(|s| s.focus_zone != crate::state::FocusZone::Modal)
+            || navigation_picker::is_switcher();
+        macos_gestures::configure_switcher(
+            allowed && bindings.iter().any(|key| key == "ctrl+tab"),
+            allowed && bindings.iter().any(|key| key == "ctrl+shift+tab"),
+        );
+    });
+    let mut gestures = macos_gestures::subscribe();
+    spawn(async move {
+        loop {
+            match gestures.recv().await {
+                Ok(Gesture::DoubleShift) => open_everywhere_if_bound(),
+                Ok(Gesture::SwitcherPressed { reverse }) => {
+                    if !super::modal_owns_focus() || navigation_picker::is_switcher() {
+                        navigation_picker::start_or_move_switcher(reverse);
+                    }
+                }
+                Ok(Gesture::ControlReleased) => navigation_picker::release_control(),
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 #[cfg(test)]

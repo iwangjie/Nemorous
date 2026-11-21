@@ -26,6 +26,7 @@ fn main() -> impl std::process::Termination {
             .unwrap_or(0);
         eprintln!("NEMOROUS_TIMING event=main_start epoch_ms={now_ms}");
     }
+    let _gesture_monitor = nemorous::macos_gestures::install();
     platform::run_app(
         platform::AppSource::Rust(platform::Root::of::<nemorous::App>()),
         platform::AppOptions {

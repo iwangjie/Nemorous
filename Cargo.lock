@@ -1563,6 +1563,7 @@ name = "nemorous"
 version = "0.10.21"
 dependencies = [
  "anyhow",
+ "block2",
  "chrono",
  "env_logger",
  "imara-diff",

@@ -101,6 +101,29 @@ mod macos {
         sent
     }
 
+    fn activate_menu(app: &NSApplication, path: &[&str]) -> bool {
+        let Some(mut menu) = app.mainMenu() else { return false };
+        for (index, title) in path.iter().enumerate() {
+            let item = menu.itemArray().iter().find(|item| item.title().to_string() == *title);
+            let Some(item) = item else { return false };
+            if index + 1 == path.len() {
+                let Some(action) = item.action() else { return false };
+                let target = item.target();
+                let sent = unsafe { app.sendAction_to_from(action, target.as_deref(), Some(&*item)) };
+                pump(120);
+                return sent;
+            }
+            let Some(submenu) = item.submenu() else { return false };
+            menu = submenu;
+        }
+        false
+    }
+
+    fn a11y_contains(view: &NSView, expected: &str) -> bool {
+        view_a11y_text(view).contains(expected)
+            || view.subviews().iter().any(|child| a11y_contains(&child, expected))
+    }
+
     fn git_run(repo: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .arg("-C")
@@ -271,8 +294,11 @@ mod macos {
         let up = make_key_event(window, NSEventType::KeyUp, flags, ts + 0.01, &c, &ig, key_code);
         app.postEvent_atStart(&down, false);
         app.postEvent_atStart(&up, false);
-        // Pump NSApplication event loop so local event monitors (nsh/keymap) process posted NSEvents!
-        let deadline = Instant::now() + Duration::from_millis(220);
+        drain_native_keys(app, 220);
+    }
+
+    fn drain_native_keys(app: &NSApplication, millis: u64) {
+        let deadline = Instant::now() + Duration::from_millis(millis);
         while Instant::now() < deadline {
             if let Some(ev) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
                 platform::objc2_app_kit::NSEventMask::Any,
@@ -283,6 +309,14 @@ mod macos {
                 app.sendEvent(&ev);
             }
         }
+    }
+
+    fn post_modifier(app: &NSApplication, window: &NSWindow, code: u16, flags: NSEventModifierFlags) {
+        let empty = NSString::from_str("");
+        let time = NSProcessInfo::processInfo().systemUptime();
+        let event = make_key_event(window, NSEventType::FlagsChanged, flags, time, &empty, &empty, code);
+        app.postEvent_atStart(&event, false);
+        drain_native_keys(app, 30);
     }
 
     fn save_window_png(window: &NSWindow, out_path: &Path) {
@@ -391,7 +425,103 @@ mod macos {
         println!("BATCH2_NATIVE_REPLACE_CONFIRM ok");
     }
 
+    fn batch2_project_and_keyboard(
+        app: &NSApplication,
+        window: &NSWindow,
+        root: &NSView,
+        evidence: &Path,
+    ) {
+        let empty = NSEventModifierFlags::empty();
+        let command = NSEventModifierFlags::Command;
+        let visible = |id: &str| view_with_id(root, id).is_some();
+        let wait = |id: &str| wait_until(id, Duration::from_secs(4), || visible(id));
+        let click = |id: &str, count| {
+            wait(id);
+            send_click(window, &view_with_id(root, id).unwrap(), count);
+        };
+        if visible("content-search-modal") {
+            send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+        }
+        send_key(app, window, "1", "1", 18, command);
+        wait("project-workspace-root");
+        click("project-file-tracked.txt", 2);
+        wait("code-editor-view");
+        save_window_png(window, &evidence.join("native-project-tree.png"));
+        click("project-collapse-all", 1);
+        assert!(!visible("project-file-tracked.txt"));
+        click("project-workspace-root", 1);
+        click("project-repo-repo", 1);
+        click("project-file-new.txt", 2);
+        wait("editor-tab-file-new.txt");
+        println!("BATCH2_NATIVE_PROJECT ok");
+
+        click("code-editor-view", 1);
+        println!("BATCH2_NATIVE_FLAGS_WINDOW visible={} key={} active={}",
+            window.isVisible(), window.isKeyWindow(), app.isActive());
+        post_modifier(app, window, 56, NSEventModifierFlags::Shift);
+        post_modifier(app, window, 56, empty);
+        post_modifier(app, window, 56, NSEventModifierFlags::Shift);
+        post_modifier(app, window, 56, empty);
+        wait("navigation-picker-modal");
+        save_window_png(window, &evidence.join("native-search-everywhere.png"));
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+        wait_until("Search Everywhere closed", Duration::from_secs(4), || !visible("navigation-picker-modal"));
+
+        click("code-editor-view", 1);
+        post_modifier(app, window, 59, NSEventModifierFlags::Control);
+        send_key(app, window, "\t", "\t", 48, NSEventModifierFlags::Control);
+        wait_until("Control+Tab opened the Switcher", Duration::from_secs(4), || visible("navigation-picker-modal"));
+        println!("BATCH2_NATIVE_SWITCHER_OPEN ok");
+        post_modifier(app, window, 59, empty);
+        wait_until("Switcher accepts on Control release", Duration::from_secs(4), || {
+            !visible("navigation-picker-modal")
+                && view_with_id(root, "code-editor-view")
+                    .is_some_and(|editor| a11y_contains(&editor, "editing selection"))
+        });
+        println!("BATCH2_NATIVE_SWITCHER_RELEASE ok");
+
+        click("code-editor-view", 1);
+        send_key(app, window, "P", "p", 35, command | NSEventModifierFlags::Shift);
+        wait_until("Command+Shift+P opened Action Search", Duration::from_secs(4), || visible("navigation-picker-modal"));
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+        click("code-editor-view", 1);
+        send_key(app, window, "e", "e", 14, command);
+        wait_until("Command+E opened Recent Files", Duration::from_secs(4), || visible("navigation-picker-modal"));
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+        println!("BATCH2_NATIVE_KEYBOARD double-Shift Control-release Action-Search Recent-Files ok");
+
+        assert!(activate_menu(app, &["窗口", "向右拆分"]));
+        wait("split-editor-left");
+        wait("split-editor-right");
+        click("split-editor-right", 1);
+        send_key(app, window, "l", "l", 37, command);
+        wait("goto-line-input");
+        send_key(app, window, "2", "2", 19, empty);
+        send_key(app, window, "\r", "\r", 36, empty);
+        send_key(app, window, "z", "z", 6, empty);
+        let editors_have = |value: &str| ["split-editor-left", "split-editor-right"].into_iter()
+            .all(|id| view_with_id(root, id).is_some_and(|editor| a11y_contains(&editor, value)));
+        wait_until("both native panes share the edit", Duration::from_secs(4), || editors_have("zediting selection"));
+        save_window_png(window, &evidence.join("native-editor-split.png"));
+        send_key(app, window, "z", "z", 6, command);
+        wait_until("undo reaches both panes", Duration::from_secs(4), || {
+            editors_have("editing selection") && !editors_have("zediting selection")
+        });
+        click("split-code-merge", 1);
+        wait("code-editor-view");
+        println!("BATCH2_NATIVE_SPLIT_SHARED_UNDO ok");
+
+        assert!(activate_menu(app, &["Git", "选中的文件", "查看历史"]));
+        wait("git-bottom-pane");
+        wait("git-history-affected");
+        wait("git-commit-file-tracked.txt");
+        save_window_png(window, &evidence.join("native-file-history.png"));
+        println!("BATCH2_NATIVE_HISTORY_MENU ok");
+
+    }
+
     pub fn run() {
+        let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
         assert!(
@@ -429,6 +559,7 @@ mod macos {
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
         app.finishLaunching();
+        let _gesture_monitor = nemorous::macos_gestures::install().expect("local gesture monitor");
 
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -480,13 +611,9 @@ mod macos {
             wait_until("workspace file loaded", Duration::from_secs(6), || {
                 view_with_id(&root, "change-row-unstaged-tracked.txt").is_some()
             });
-            batch2_search_and_replace(
-                &app,
-                &window,
-                &root,
-                &repo_copy,
-                &root_dir.join("build/migration-evidence/batch-2"),
-            );
+            let evidence = root_dir.join("build/migration-evidence/batch-2");
+            batch2_search_and_replace(&app, &window, &root, &repo_copy, &evidence);
+            batch2_project_and_keyboard(&app, &window, &root, &evidence);
             window.close();
             pump(150);
             println!("NATIVE_BATCH2_SEARCH_REPLACE PASS");
