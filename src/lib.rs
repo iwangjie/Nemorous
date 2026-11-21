@@ -1,3 +1,5 @@
+mod code_split_runtime;
+mod editor_split;
 pub mod config;
 pub mod diff_model;
 pub mod git;

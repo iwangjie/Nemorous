@@ -3,6 +3,7 @@ pub mod code_editor;
 pub mod commit_pane;
 pub mod content_search;
 mod replacement_flow;
+mod split_code_view;
 pub mod diff_view;
 pub mod editor_area;
 pub mod editor_tools;
@@ -58,7 +59,7 @@ fn guard_app_command(f: impl Fn() + 'static) -> impl Fn() + 'static {
     }
 }
 
-fn build_application_menu(text_input_focused: bool, modal_open: bool) -> Vec<MenuItem> {
+fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo: bool) -> Vec<MenuItem> {
     let copy_item = if text_input_focused {
         // 焦点位于原生 <input>（筛选框、查找/替换框、转到行/文件框）时，使用标准 responder copy:，绝不劫持输入框 ⌘C
         MenuItem::role(MenuRole::Copy)
@@ -84,8 +85,14 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool) -> Vec<Men
         MenuItem::submenu(
             "编辑",
             [
-                MenuItem::role(MenuRole::Undo),
-                MenuItem::role(MenuRole::Redo),
+                if code_undo {
+                    MenuItem::new("撤销").shortcut("mod+z")
+                        .on_select(guard_app_command(|| crate::code_split_runtime::undo(false)))
+                } else { MenuItem::role(MenuRole::Undo) },
+                if code_undo {
+                    MenuItem::new("重做").shortcut("mod+shift+z")
+                        .on_select(guard_app_command(|| crate::code_split_runtime::undo(true)))
+                } else { MenuItem::role(MenuRole::Redo) },
                 MenuItem::separator(),
                 MenuItem::role(MenuRole::Cut),
                 copy_item,
@@ -178,14 +185,17 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool) -> Vec<Men
 }
 
 fn setup_application_menu() {
-    let last_mode = stored(None::<(bool, bool)>);
+    let last_mode = stored(None::<(bool, bool, bool)>);
     let modal_memo = computed(|| app_signal().with(|s| s.focus_zone == FocusZone::Modal));
     effect(move || {
         let input_focused = state::text_input_focus_signal().with(|f| f.focused);
         let modal_open = modal_memo.get();
-        if last_mode.get() != Some((input_focused, modal_open)) {
-            last_mode.replace(Some((input_focused, modal_open)));
-            set_application_menu(build_application_menu(input_focused, modal_open));
+        let code_undo = !input_focused
+            && app_signal().with(|s| s.focus_zone == FocusZone::CodeEditor);
+        let mode = (input_focused, modal_open, code_undo);
+        if last_mode.get() != Some(mode) {
+            last_mode.replace(Some(mode));
+            set_application_menu(build_application_menu(input_focused, modal_open, code_undo));
         }
     });
 }
@@ -248,6 +258,10 @@ fn setup_shortcuts() {
         on_key_with("mod+s", always, |_| {
             save_active_document();
         });
+        if zone == FocusZone::CodeEditor && !text_input_focused {
+            on_key_with("mod+z", always, |_| crate::code_split_runtime::undo(false));
+            on_key_with("mod+shift+z", always, |_| crate::code_split_runtime::undo(true));
+        }
         on_key_with("mod+w", always, |_| {
             close_active_tab();
         });

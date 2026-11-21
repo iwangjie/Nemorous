@@ -14,6 +14,7 @@ use crate::ui::icons::{self, *};
 
 pub fn code_editor_pane() -> impl IntoElement {
     let ed_ref = component_ref::<Editor>();
+    let split = computed(|| app_signal().with(|s| s.code_split.is_some()));
     editor_refs_signal().update(|r| r.code = Some(ed_ref));
 
     // 仅在活动标签 ID 或外部内容版本变化时同步 Editor，避免光标/打字抖动
@@ -37,35 +38,44 @@ pub fn code_editor_pane() -> impl IntoElement {
             })
         })
     });
-    let last_sync = stored((String::new(), 0u64));
+    let last_sync = stored(None::<(String, u64)>);
     effect(move || {
-        let Some((id, rev)) = tab_sync_memo.get() else {
+        if split.get() {
+            last_sync.replace(None);
             return;
-        };
-        let need = last_sync.with(|st| st.0 != id || st.1 != rev);
-        if need {
-            last_sync.replace((id, rev));
-            let info = app_signal().with_untracked(|s| {
-                s.code_tabs
-                    .get(s.active_code_tab_idx)
-                    .map(|t| (t.text.clone(), t.cursor))
-            });
-            if let Some((content, cursor)) = info {
-                if let Some(api) = ed_ref.api::<EditorApi>() {
-                    if api.value() != content {
-                        api.set_value(content);
-                    }
-                    api.set_selections(vec![EditorSelection::caret(cursor)]);
+        }
+        let Some((id, revision)) = tab_sync_memo.get() else { return };
+        let old = last_sync.with(|last| last.clone());
+        if old.as_ref().is_some_and(|last| last.0 == id && last.1 == revision) {
+            return;
+        }
+        let info = app_signal().with_untracked(|s| s.code_tabs.get(s.active_code_tab_idx)
+            .map(|tab| (tab.text.clone(), tab.cursor, tab.scroll_x, tab.scroll_y)));
+        if let Some((content, cursor, x, y)) = info
+            && let Some(api) = ed_ref.api::<EditorApi>()
+        {
+            let new_tab = old.as_ref().is_none_or(|last| last.0 != id);
+            last_sync.replace(Some((id, revision)));
+            let changed = api.value() != content;
+            if changed {
+                api.set_value(content);
+            }
+            if new_tab || changed {
+                api.set_selections(vec![EditorSelection::caret(cursor)]);
+                if x == 0.0 && y == 0.0 {
                     api.reveal_position(cursor, true);
-                    let should_focus = app_signal().with_untracked(|s| s.focus_zone == FocusZone::CodeEditor)
-                        && !state::text_input_focus_signal().with_untracked(|f| f.focused);
-                    if should_focus {
-                        api.focus();
-                    }
+                } else {
+                    api.set_scroll_offset(point(px(x), px(y)));
                 }
+            }
+            if new_tab && app_signal().with_untracked(|s| s.focus_zone == FocusZone::CodeEditor)
+                && !state::text_input_focus_signal().with_untracked(|f| f.focused)
+            {
+                api.focus();
             }
         }
     });
+
 
     view()
         .test_id("code-editor-pane")
@@ -351,7 +361,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         app_signal().update(|s| s.code_find_query = v.to_string());
                                     })
                                     .on_submit(move |_: &str| {
-                                        if let Some(api) = ed_ref.api::<EditorApi>() {
+                                        if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
                                             api.run(EditorCommand::FindNext);
                                         }
                                     }),
@@ -381,7 +391,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     .justify_center()
                                     .cursor(Cursor::Pointer)
                                     .on_press(move || {
-                                        if let Some(api) = ed_ref.api::<EditorApi>() {
+                                        if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
                                             api.run(EditorCommand::FindPrevious);
                                         }
                                     })
@@ -402,7 +412,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     .justify_center()
                                     .cursor(Cursor::Pointer)
                                     .on_press(move || {
-                                        if let Some(api) = ed_ref.api::<EditorApi>() {
+                                        if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
                                             api.run(EditorCommand::FindNext);
                                         }
                                     })
@@ -494,7 +504,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         .cursor(Cursor::Pointer)
                                         .on_press(move || {
                                             let repl = app_signal().with_untracked(|s| s.code_replace_text.clone());
-                                            if let Some(api) = ed_ref.api::<EditorApi>() {
+                                            if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
                                                 api.replace(repl);
                                             }
                                         })
@@ -516,7 +526,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         .cursor(Cursor::Pointer)
                                         .on_press(move || {
                                             let repl = app_signal().with_untracked(|s| s.code_replace_text.clone());
-                                            if let Some(api) = ed_ref.api::<EditorApi>() {
+                                            if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
                                                 api.replace_all(repl);
                                             }
                                         })
@@ -533,6 +543,9 @@ pub fn code_editor_pane() -> impl IntoElement {
         // 主编辑器或拦截提示（仅在拦截态变化时切换，保持 Editor 稳定）
         .child(dynamic(move || {
             let p = current_palette();
+            if split.get() {
+                return super::split_code_view::split_code_view().into_element();
+            }
             let block = block_memo.get();
             if let Some(msg) = block {
                 return view()
@@ -590,19 +603,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                     app_signal().update(|s| s.focus_zone = FocusZone::CodeEditor);
                     state::request_shortcut_rebind();
                 })
-                .on_change(|val: &SharedString| {
-                    let s_val = val.to_string();
-                    app_signal().update(|s| {
-                        if let Some(tab) = s.code_tabs.get_mut(s.active_code_tab_idx) {
-                            if tab.editable {
-                                tab.text = s_val;
-                                // 编辑使预览标签转正：后续预览不会替换掉未保存缓冲。
-                                if tab.is_dirty() {
-                                    tab.preview = false;
-                                }
-                            }
-                        }
-                    });
+                .on_change(|value: &SharedString| {
+                    let id = app_signal().with_untracked(|s| s.code_tabs.get(s.active_code_tab_idx)
+                        .map(|tab| tab.id.clone()));
+                    if let Some(id) = id {
+                        crate::code_split_runtime::record_editor_change(&id, value.as_ref());
+                    }
                 })
                 .on_selection_change(|sels: &Vec<EditorSelection>| {
                     if let Some(last) = sels.last() {

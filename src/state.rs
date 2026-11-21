@@ -7,6 +7,7 @@ use nsh_base::{EditorApi, EditorPosition, EditorSelection};
 use nsh_core::prelude::*;
 
 use crate::config::{self, Config};
+use crate::editor_split::{EditorSplit, UndoLog};
 use crate::diff_model::{
     ComputedDiff, DiffSide, InlineHighlightMode, WhitespaceMode, compute_diff,
     compute_unified_layout, map_side_line_to_unified, source_position,
@@ -103,6 +104,7 @@ pub struct CodeTab {
     pub too_large: bool,
     pub cursor: EditorPosition,
     pub scroll_y: f32,
+    pub(crate) scroll_x: f32,
     pub external_changed: bool,
     /// 未钉住的预览标签：斜体显示，可被后续预览复用替换；编辑或双击后转为普通标签
     pub preview: bool,
@@ -249,6 +251,8 @@ pub struct FileRevisionHistory {
 #[derive(Clone, Default)]
 pub struct EditorRefs {
     pub code: Option<ComponentRef<nsh_base::Editor>>,
+    pub split_left: Option<ComponentRef<nsh_base::Editor>>,
+    pub split_right: Option<ComponentRef<nsh_base::Editor>>,
     pub work_old: Option<ComponentRef<nsh_base::Editor>>,
     pub work_new: Option<ComponentRef<nsh_base::Editor>>,
     pub work_unified: Option<ComponentRef<nsh_base::Editor>>,
@@ -306,6 +310,8 @@ pub struct AppState {
 
     // 统一编辑区状态
     pub code_tabs: Vec<CodeTab>,
+    pub(crate) code_split: Option<EditorSplit>,
+    pub(crate) code_undo: HashMap<String, UndoLog>,
     pub active_code_tab_idx: usize,
     pub working_diff: Option<WorkingDiffSession>,
     pub commit_diff: Option<CommitDiffSession>,
@@ -390,6 +396,8 @@ impl Default for AppState {
             selected_commit_file: None,
             file_history: None,
             code_tabs: Vec::new(),
+            code_split: None,
+            code_undo: HashMap::new(),
             active_code_tab_idx: 0,
             working_diff: None,
             commit_diff: None,
@@ -563,6 +571,7 @@ pub fn sync_dirty_working_diff_into_code_tab(s: &mut AppState, tab_idx: usize) {
             && tab.version.sha256 == w_sha
             && tab.text != w_text
         {
+            s.code_undo.remove(&tab.id);
             tab.text = w_text;
             tab.content_rev += 1;
         }
@@ -894,6 +903,7 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
                 if tab.is_dirty() {
                     tab.external_changed = true;
                 } else {
+                    s.code_undo.remove(&tab.id);
                     tab.text = wt.text.clone();
                     tab.saved_text = wt.text;
                     tab.line_ending = wt.line_ending;
@@ -1314,6 +1324,7 @@ fn open_working_diff_with_hunk(
     focus_diff: bool,
     land_on_last_hunk: bool,
 ) {
+    crate::code_split_runtime::capture_views();
     // 若当前已有脏工作区 Diff 且目标不同，先自动保存
     let need_autosave = app_signal().with_untracked(|s| {
         s.working_diff.as_ref().is_some_and(|w| {
@@ -1446,6 +1457,7 @@ fn open_commit_diff_with_hunk(
     focus_diff: bool,
     land_on_last_hunk: bool,
 ) {
+    crate::code_split_runtime::capture_views();
     push_nav_back_current();
     let ws_mode =
         app_signal().with_untracked(|s| WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode));
@@ -1581,6 +1593,7 @@ fn open_code_file_mode(
     focus_editor: bool,
     preview: bool,
 ) {
+    crate::code_split_runtime::capture_views();
     push_nav_back_current();
     let tab_id = format!("file::{}::{}", file.repo_id, file.rel_path);
 
@@ -1592,14 +1605,14 @@ fn open_code_file_mode(
 
     if let Some(idx) = existing_idx {
         app_signal().update(|s| {
-            s.active_code_tab_idx = idx;
+            crate::code_split_runtime::select_tab_in_model(s, idx);
             sync_dirty_working_diff_into_code_tab(s, idx);
             s.editor_tab = EditorTabKind::File;
             if !preview {
                 s.code_tabs[idx].preview = false;
             }
             if let Some(pos) = target_pos {
-                s.code_tabs[idx].cursor = pos;
+                crate::code_split_runtime::set_active_position(s, pos);
             }
             if focus_editor {
                 s.focus_zone = FocusZone::CodeEditor;
@@ -1622,6 +1635,7 @@ fn open_code_file_mode(
             too_large: wt.too_large,
             cursor,
             scroll_y: 0.0,
+            scroll_x: 0.0,
             preview,
             external_changed: false,
             content_rev: 1,
@@ -1637,7 +1651,10 @@ fn open_code_file_mode(
             }
             s.code_tabs.push(tab);
             let idx = s.code_tabs.len() - 1;
-            s.active_code_tab_idx = idx;
+            crate::code_split_runtime::select_tab_in_model(s, idx);
+            if preview {
+                crate::code_split_runtime::prune_closed_tabs(s);
+            }
             sync_dirty_working_diff_into_code_tab(s, idx);
             s.editor_tab = EditorTabKind::File;
             if focus_editor {
@@ -1664,6 +1681,7 @@ fn open_code_file_mode(
 
 /// 打开指定 Git 提交版本的只读源码标签（用于右键「打开仓库版本」）。
 pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
+    crate::code_split_runtime::capture_views();
     let spec = format!("{}:{rel_path}", commit.hash);
     let (text, binary, too_large) =
         git::read_git_object_text(Path::new(&commit.repo_path), &spec).unwrap_or_default();
@@ -1675,7 +1693,7 @@ pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
 
     app_signal().update(|s| {
         if let Some(idx) = s.code_tabs.iter().position(|t| t.id == tab_id) {
-            s.active_code_tab_idx = idx;
+            crate::code_split_runtime::select_tab_in_model(s, idx);
             s.editor_tab = EditorTabKind::File;
             s.focus_zone = FocusZone::CodeEditor;
             return;
@@ -1701,11 +1719,12 @@ pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
             too_large,
             cursor: EditorPosition::new(0, 0),
             scroll_y: 0.0,
+            scroll_x: 0.0,
             preview: false,
             external_changed: false,
             content_rev: 1,
         });
-        s.active_code_tab_idx = s.code_tabs.len() - 1;
+        crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
         s.editor_tab = EditorTabKind::File;
         s.focus_zone = FocusZone::CodeEditor;
     });
@@ -1801,6 +1820,9 @@ pub fn jump_from_diff_to_source() {
                 .iter_mut()
                 .find(|t| t.id == tab_id && t.revision.is_empty())
             {
+                if t.text != dirty.current_text {
+                    s.code_undo.remove(&t.id);
+                }
                 t.text = dirty.current_text;
                 t.saved_text = dirty.saved_text;
                 t.version = dirty.version;
@@ -1938,6 +1960,7 @@ fn record_recent_location(loc: NavTarget) {
 }
 
 pub fn restore_nav_target(nav: NavTarget) {
+    crate::code_split_runtime::capture_views();
     match nav {
         NavTarget::CodeFile {
             repo_id,
@@ -1971,8 +1994,8 @@ pub fn restore_nav_target(nav: NavTarget) {
                     .with_untracked(|s| s.code_tabs.iter().position(|t| t.id == tab_id));
                 if let Some(idx) = existing {
                     app_signal().update(|s| {
-                        s.active_code_tab_idx = idx;
-                        s.code_tabs[idx].cursor = pos;
+                        crate::code_split_runtime::select_tab_in_model(s, idx);
+                        crate::code_split_runtime::set_active_position(s, pos);
                         s.editor_tab = EditorTabKind::File;
                         s.focus_zone = FocusZone::CodeEditor;
                     });
@@ -1993,11 +2016,12 @@ pub fn restore_nav_target(nav: NavTarget) {
                             too_large: wt.too_large,
                             cursor: pos,
                             scroll_y: 0.0,
+                            scroll_x: 0.0,
                             preview: false,
                             external_changed: false,
                             content_rev: 1,
                         });
-                        s.active_code_tab_idx = s.code_tabs.len() - 1;
+                        crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
                         s.editor_tab = EditorTabKind::File;
                         s.focus_zone = FocusZone::CodeEditor;
                     });
@@ -2202,6 +2226,9 @@ pub fn save_working_diff_now() -> bool {
                             || t.text == text
                             || t.version.sha256 == expected.sha256)
                     {
+                        if t.text != text {
+                            s.code_undo.remove(&t.id);
+                        }
                         t.text = text.clone();
                         t.saved_text = text.clone();
                         t.version = version.clone();
@@ -2386,8 +2413,9 @@ pub fn accept_disk_version_in_conflict() {
             match &modal.target {
                 ConflictTarget::CodeTab { tab_id } => {
                     s.code_tabs.retain(|t| &t.id != tab_id);
+                    crate::code_split_runtime::prune_closed_tabs(s);
                     if s.active_code_tab_idx >= s.code_tabs.len() && !s.code_tabs.is_empty() {
-                        s.active_code_tab_idx = s.code_tabs.len() - 1;
+                        crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
                     }
                     if s.code_tabs.is_empty() && s.editor_tab == EditorTabKind::File {
                         s.editor_tab = if s.working_diff.is_some() {
@@ -2418,6 +2446,7 @@ pub fn accept_disk_version_in_conflict() {
         match &modal.target {
             ConflictTarget::CodeTab { tab_id } => {
                 if let Some(t) = s.code_tabs.iter_mut().find(|t| &t.id == tab_id) {
+                    s.code_undo.remove(&t.id);
                     t.text = latest.text.clone();
                     t.saved_text = latest.text;
                     t.line_ending = latest.line_ending;
@@ -2653,6 +2682,7 @@ pub fn resolve_dirty_close(save_first: bool) {
 fn force_close_code_tabs(should_close: impl Fn(&CodeTab) -> bool) {
     app_signal().update(|s| {
         s.code_tabs.retain(|t| !should_close(t));
+        crate::code_split_runtime::prune_closed_tabs(s);
         if s.code_tabs.is_empty() {
             s.active_code_tab_idx = 0;
             if s.editor_tab == EditorTabKind::File {
@@ -2665,7 +2695,7 @@ fn force_close_code_tabs(should_close: impl Fn(&CodeTab) -> bool) {
                 };
             }
         } else if s.active_code_tab_idx >= s.code_tabs.len() {
-            s.active_code_tab_idx = s.code_tabs.len() - 1;
+            crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
         }
     });
 }
@@ -3832,7 +3862,14 @@ pub fn active_editor_api(zone: FocusZone) -> Option<Rc<EditorApi>> {
     let refs = editor_refs_signal().get_untracked();
     let single = app_signal().with_untracked(|s| s.cfg.diff_single_column);
     match zone {
-        FocusZone::CodeEditor => refs.code.and_then(|r| r.api::<EditorApi>()),
+        FocusZone::CodeEditor => {
+            let focus = app_signal().with_untracked(|s| s.code_split.as_ref().map(|split| split.focused));
+            match focus {
+                Some(crate::editor_split::PaneId::Left) => refs.split_left,
+                Some(crate::editor_split::PaneId::Right) => refs.split_right,
+                None => refs.code,
+            }.and_then(|reference| reference.api::<EditorApi>())
+        },
         FocusZone::WorkingDiffOld => {
             if single {
                 refs.work_unified.and_then(|r| r.api::<EditorApi>())
@@ -3892,11 +3929,8 @@ pub fn focus_active_editor_ref() {
 }
 
 pub fn reveal_in_code_editor(pos: EditorPosition) {
-    if let Some(api) = editor_refs_signal()
-        .get_untracked()
-        .code
-        .and_then(|r| r.api::<EditorApi>())
-    {
+    app_signal().update(|s| crate::code_split_runtime::set_active_position(s, pos));
+    if let Some(api) = active_editor_api(FocusZone::CodeEditor) {
         api.set_selections(vec![EditorSelection::caret(pos)]);
         api.reveal_position(pos, true);
     }

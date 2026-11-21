@@ -72,9 +72,10 @@ pub fn editor_tab_bar() -> impl IntoElement {
                     .cursor(Cursor::Pointer)
                     .hover(move |s| if active { s } else { s.bg(p.surface2) })
                     .on_press(move |e: &PressEvent| {
+                        crate::code_split_runtime::capture_views();
                         state::set_text_input_focused(false);
                         app_signal().update(|s| {
-                            s.active_code_tab_idx = idx;
+                            crate::code_split_runtime::select_tab_in_model(s, idx);
                             state::sync_dirty_working_diff_into_code_tab(s, idx);
                             s.editor_tab = EditorTabKind::File;
                             s.focus_zone = FocusZone::CodeEditor;
@@ -95,6 +96,10 @@ pub fn editor_tab_bar() -> impl IntoElement {
                             false,
                         );
                         items.push(MenuItem::separator());
+                        let split_id = tid_cm.clone();
+                        items.push(MenuItem::new("向右拆分").on_select(move || {
+                            crate::code_split_runtime::split_for_tab(&split_id);
+                        }));
                         items.push(MenuItem::new("关闭").on_select(move || {
                             request_close_code_tab(&id1);
                         }));
@@ -326,7 +331,7 @@ pub fn editor_tab_bar() -> impl IntoElement {
                                     .on_select(move || {
                                         state::set_text_input_focused(false);
                                         app_signal().update(|s| {
-                                            s.active_code_tab_idx = i;
+                                            crate::code_split_runtime::select_tab_in_model(s, i);
                                             state::sync_dirty_working_diff_into_code_tab(s, i);
                                             s.editor_tab = EditorTabKind::File;
                                             s.focus_zone = FocusZone::CodeEditor;

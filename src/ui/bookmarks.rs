@@ -143,12 +143,26 @@ fn line_index(line: i64) -> u32 {
 }
 
 pub fn editor_decorations() -> Vec<EditorDecoration> {
+    decorations(None)
+}
+
+pub(crate) fn editor_decorations_for_split(
+    side: crate::editor_split::PaneId,
+) -> Vec<EditorDecoration> {
+    decorations(Some(side))
+}
+
+fn decorations(side: Option<crate::editor_split::PaneId>) -> Vec<EditorDecoration> {
     app_signal().with(|s| {
-        let Some(tab) = s
-            .code_tabs
-            .get(s.active_code_tab_idx)
-            .filter(|tab| tab.revision.is_empty())
-        else {
+        let tab = match side {
+            Some(side) => s
+                .code_split
+                .as_ref()
+                .and_then(|split| split.pane(side).active())
+                .and_then(|id| s.code_tabs.iter().find(|tab| tab.id == id)),
+            None => s.code_tabs.get(s.active_code_tab_idx),
+        };
+        let Some(tab) = tab.filter(|tab| tab.revision.is_empty()) else {
             return Vec::new();
         };
         s.cfg

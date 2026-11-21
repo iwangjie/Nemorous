@@ -235,6 +235,7 @@ fn read_plan(path: &Path, workspace: &str, files: Vec<WorkspaceFile>) -> Option<
                 too_large: wt.too_large,
                 cursor: EditorPosition::new(0, 0),
                 scroll_y: 0.0,
+                scroll_x: 0.0,
                 external_changed: false,
                 preview: false,
                 content_rev: 1,

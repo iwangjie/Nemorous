@@ -609,6 +609,60 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_editor_split_shares_text_undo_and_distinct_tab_groups() {
+    let _guard = lock_env();
+    let fx = Fixture::new("code-split");
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:3").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("3:1").unwrap();
+    app.right_click("id:editor-tab-file-src/app.go").unwrap();
+    app.choose_menu_item("向右拆分").unwrap();
+    app.wait_for("id:split-editor-left").unwrap();
+    app.wait_for("id:split-editor-right").unwrap();
+    let left = "id:split-tab-left-file::sample-repo::src/app.go";
+    let right = "id:split-tab-right-file::sample-repo::src/app.go";
+
+    app.press(right).unwrap();
+    app.press_key("mod+l").unwrap();
+    app.type_text("id:goto-line-input", "7").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("7:1").unwrap();
+    app.press(left).unwrap();
+    app.wait_for("3:1").unwrap();
+    app.press_key("z").unwrap();
+    app.press(right).unwrap();
+    app.wait_for("7:1").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert!(app.screen().clipboard().unwrap_or_default().contains("zfunc hello"));
+
+    app.press_key("mod+z").unwrap();
+    app.press(left).unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert!(!app.screen().clipboard().unwrap_or_default().contains("zfunc hello"));
+    app.press_key("mod+shift+z").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert!(app.screen().clipboard().unwrap_or_default().contains("zfunc hello"));
+
+    app.press(right).unwrap();
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "README.md:2").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:split-tab-right-file::sample-repo::README.md").unwrap();
+    app.wait_for("id:split-tab-left-file::sample-repo::src/app.go").unwrap();
+    assert!(!app.screen().matches("id:split-tab-left-file::sample-repo::README.md").unwrap());
+    app.press("id:split-code-merge").unwrap();
+    app.wait_for_gone("id:split-editor-right", Duration::from_secs(2)).unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for("2:1").unwrap();
+}
+
+#[test]
 fn ui_workspace_search_prefills_cross_line_selection() {
     let _guard = lock_env();
     let fx = Fixture::new("multiline-search");
