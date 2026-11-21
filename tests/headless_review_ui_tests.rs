@@ -730,6 +730,62 @@ fn ui_replace_in_files_checks_selection_confirmation_and_external_changes() {
 }
 
 #[test]
+fn ui_project_follow_editor_selects_open_file_without_focus_shift() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-follow-editor");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 变更行打开 src/app.go，再切到 Project 并打开 README。
+    app.press("id:change-row-unstaged-src/app.go").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.press_key("f4").unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("在文件树中定位").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    app.right_click("id:project-file-README.md").unwrap();
+    app.choose_menu_item("打开源码").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+
+    // 回到 app.go 并折叠 src，为跟随展开做前置。
+    app.press("id:editor-tab-file-src/app.go").unwrap();
+    app.press("id:project-dir-toggle-src").unwrap();
+    app.wait_for_gone("id:project-file-src/app.go", Duration::from_secs(2))
+        .unwrap();
+
+    // 开启：立即按活动文件展开祖先并选中，不切换当前工具窗口。
+    app.press("id:project-options-button").unwrap();
+    app.choose_menu_item("行为 > 始终选中打开的文件").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+    assert!(app.screen().matches("id:editor-tab-file-src/app.go").unwrap());
+    let saved_on: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(saved_on["project_follow_editor"], serde_json::json!(true));
+
+    // 切换标签：跟随 README；折叠 src 后切回 app.go 会重新展开。
+    app.press("id:editor-tab-file-README.md").unwrap();
+    app.press("id:project-dir-toggle-src").unwrap();
+    app.press("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for("id:project-file-src/app.go").unwrap();
+
+    // 关闭：再次切换标签不再展开/选中。
+    app.press("id:project-options-button").unwrap();
+    app.choose_menu_item("行为 > 始终选中打开的文件").unwrap();
+    app.press("id:project-dir-toggle-src").unwrap();
+    app.wait_for_gone("id:project-file-src/app.go", Duration::from_secs(2))
+        .unwrap();
+    app.press("id:editor-tab-file-README.md").unwrap();
+    app.press("id:editor-tab-file-src/app.go").unwrap();
+    app.wait_for_gone("id:project-file-src/app.go", Duration::from_secs(2))
+        .unwrap();
+
+    let saved_off: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(saved_off["project_follow_editor"], serde_json::json!(false));
+}
+
+#[test]
 fn ui_project_preview_tab_reuse_pin_and_buffer_retention() {
     let _guard = lock_env();
     let fx = Fixture::new("project-preview");

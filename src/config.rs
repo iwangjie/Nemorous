@@ -45,6 +45,7 @@ pub struct Config {
     pub code_left_width: f32,
     pub git_panel_height: f32,
     pub terminal_panel_height: f32,
+    pub project_follow_editor: bool,
     pub keymap_overrides: BTreeMap<String, String>,
     /// 保留旧版或未来批次的其余配置字段，避免读写时丢失数据。
     #[serde(flatten)]
@@ -75,6 +76,7 @@ impl Default for Config {
             code_left_width: 260.0,
             git_panel_height: 290.0,
             terminal_panel_height: 240.0,
+            project_follow_editor: false,
             keymap_overrides: BTreeMap::new(),
             extra: BTreeMap::new(),
         }

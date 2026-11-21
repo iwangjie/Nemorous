@@ -60,6 +60,20 @@ fn sort_dir(node: &mut ProjectDir) {
     }
 }
 
+fn open_project_options_menu() {
+    let follow_editor = app_signal().with_untracked(|s| s.cfg.project_follow_editor);
+    crate::state::show_popup_menu(vec![MenuItem::submenu("行为", [
+        MenuItem::new("始终选中打开的文件")
+            .checked(follow_editor)
+            .on_select(move || {
+                app_signal().update(|s| {
+                    s.cfg.project_follow_editor = !s.cfg.project_follow_editor;
+                });
+                crate::state::save_config_quiet();
+            }),
+    ])]);
+}
+
 pub fn project_pane() -> impl IntoElement {
     view()
         .test_id("project-pane")
@@ -83,12 +97,36 @@ pub fn project_pane() -> impl IntoElement {
                         .text_color(move || current_palette().text_primary),
                 )
                 .child(
-                    text(move || {
-                        let cnt = app_signal().with(|s| s.workspace_files.len());
-                        format!("{cnt} 个文件")
-                    })
-                    .text_size(px(10.5))
-                    .text_color(move || current_palette().text_muted),
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            text(move || {
+                                let cnt = app_signal().with(|s| s.workspace_files.len());
+                                format!("{cnt} 个文件")
+                            })
+                            .text_size(px(10.5))
+                            .text_color(move || current_palette().text_muted),
+                        )
+                        .child(
+                            view()
+                                .test_id("project-options-button")
+                                .h(px(20.0))
+                                .px(px(4.0))
+                                .rounded(px(4.0))
+                                .flex_row()
+                                .items_center()
+                                .cursor(Cursor::Pointer)
+                                .hover(move |s| s.bg(current_palette().surface_hover))
+                                .label("Project 选项")
+                                .on_press(open_project_options_menu)
+                                .child(
+                                    text("选项")
+                                        .text_size(px(10.5))
+                                        .text_color(move || current_palette().text_muted),
+                                ),
+                        ),
                 ),
         )
         .child(
@@ -354,6 +392,7 @@ fn render_project_dir(
                 })
                 .child(
                     view()
+                        .test_id(&format!("project-dir-toggle-{}", sub.rel_path))
                         .w(px(14.0))
                         .h(px(16.0))
                         .items_center()

@@ -2865,37 +2865,47 @@ pub fn copy_path_variant(
     show_toast("ok", format!("已复制: {text}"));
 }
 
-/// 在文件树中定位（`⌥F1` 或右键「在文件树中定位」）：切到 Project、展开所有祖先目录并高亮目标。
-pub fn locate_in_project_tree(repo_id: &str, rel_path: &str) {
+fn select_project_file_in_tree(s: &mut AppState, repo_id: &str, rel_path: &str) {
     let norm = paths::normalize_slashes(rel_path);
+    s.expanded_project_repos.insert(repo_id.to_string());
+
+    let mut parent = Path::new(&norm).parent();
+    while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
+        s.expanded_project_dirs.insert(format!("{repo_id}::{}", dir.display()));
+        parent = dir.parent();
+    }
+    s.project_located_key = Some(format!("{repo_id}::{norm}"));
+    if let Some(file) = s.workspace_files.iter()
+        .find(|file| file.repo_id == repo_id && file.rel_path == norm)
+        .cloned()
+    {
+        s.project_selected_file = Some(file);
+        s.project_selected_dir = None;
+    }
+}
+
+pub(crate) fn setup_project_follow() {
+    let target = computed(|| app_signal().with(|s| {
+        if !s.cfg.project_follow_editor || s.editor_tab != EditorTabKind::File {
+            return None;
+        }
+        s.code_tabs.get(s.active_code_tab_idx)
+            .filter(|tab| tab.revision.is_empty())
+            .map(|tab| (tab.file.repo_id.clone(), tab.file.rel_path.clone()))
+    }));
+    effect(move || {
+        if let Some((repo_id, path)) = target.get() {
+            app_signal().update(|s| select_project_file_in_tree(s, &repo_id, &path));
+        }
+    });
+}
+
+/// 在文件树中定位（`⌥F1` 或右键「在文件树中定位」）：显示 Project 并聚焦目标。
+pub fn locate_in_project_tree(repo_id: &str, rel_path: &str) {
     app_signal().update(|s| {
         s.show_left_panel = true;
         s.left_tab = LeftTab::Project;
-        s.expanded_project_repos.insert(repo_id.to_string());
-
-        let parts: Vec<&str> = norm.split('/').collect();
-        if parts.len() > 1 {
-            let mut acc = String::new();
-            for seg in &parts[..parts.len() - 1] {
-                if !acc.is_empty() {
-                    acc.push('/');
-                }
-                acc.push_str(seg);
-                s.expanded_project_dirs
-                    .insert(format!("{repo_id}::{acc}"));
-            }
-        }
-        let key = format!("{repo_id}::{norm}");
-        s.project_located_key = Some(key);
-        if let Some(wf) = s
-            .workspace_files
-            .iter()
-            .find(|f| f.repo_id == repo_id && f.rel_path == norm)
-            .cloned()
-        {
-            s.project_selected_file = Some(wf);
-            s.project_selected_dir = None;
-        }
+        select_project_file_in_tree(s, repo_id, rel_path);
         s.focus_zone = FocusZone::ProjectTree;
     });
 }

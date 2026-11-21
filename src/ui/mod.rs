@@ -939,6 +939,7 @@ pub fn shell() -> impl IntoElement {
     init_workspace();
     let left_tab_memo = computed(|| app_signal().with(|s| s.left_tab));
     let show_git_memo = computed(|| app_signal().with(|s| s.show_git_panel));
+    state::setup_project_follow();
 
     view()
         .test_id("nemorous-root")
