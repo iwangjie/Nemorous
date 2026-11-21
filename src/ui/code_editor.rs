@@ -15,6 +15,9 @@ use crate::ui::icons::{self, *};
 pub fn code_editor_pane() -> impl IntoElement {
     let ed_ref = component_ref::<Editor>();
     let split = computed(|| app_signal().with(|s| s.code_split.is_some()));
+    let editor_options = computed(|| app_signal().with(|s| {
+        (s.cfg.editor_soft_wrap, s.cfg.editor_font_size, s.cfg.format_on_save)
+    }));
     editor_refs_signal().update(|r| r.code = Some(ed_ref));
 
     // 仅在活动标签 ID 或外部内容版本变化时同步 Editor，避免光标/打字抖动
@@ -263,7 +266,7 @@ pub fn code_editor_pane() -> impl IntoElement {
             move || {
                 dynamic(move || {
                     let p = current_palette();
-                    let (wrap, size) = app_signal().with(|s| (s.cfg.editor_soft_wrap, s.cfg.editor_font_size));
+                    let (wrap, size, format_on_save) = editor_options.get();
                     view()
                         .h(px(32.0))
                         .px(px(12.0))
@@ -274,6 +277,43 @@ pub fn code_editor_pane() -> impl IntoElement {
                         .border_b_1()
                         .border_color(p.border)
                         .child(text("显示选项：").text_size(px(11.0)).text_color(p.text_muted))
+                        .child(
+                            view()
+                                .test_id("code-format-on-save")
+                                .h(px(22.0))
+                                .px(px(8.0))
+                                .rounded(px(4.0))
+                                .bg(if format_on_save { p.accent_soft } else { p.surface2 })
+                                .items_center()
+                                .cursor(Cursor::Pointer)
+                                .on_press(|| {
+                                    app_signal().update(|s| s.cfg.format_on_save = !s.cfg.format_on_save);
+                                    state::save_config_quiet();
+                                })
+                                .child(text("保存时格式化").text_size(px(11.0)).text_color(p.text_control)),
+                        )
+                        .child(
+                            input()
+                                .test_id("code-format-command")
+                                .h(px(23.0))
+                                .flex_1()
+                                .px(px(6.0))
+                                .rounded(px(4.0))
+                                .bg(p.surface)
+                                .text_size(px(11.0))
+                                .text_color(p.text_primary)
+                                .placeholder("格式化命令（留空按语言选择）")
+                                .value(|| app_signal().with(|s| s.cfg.format_command.clone()))
+                                .on_change(|value: &str| {
+                                    app_signal().update(|s| s.cfg.format_command = value.to_string());
+                                })
+                                .on_focus(|| state::set_text_input_focused(true))
+                                .on_blur(|| {
+                                    state::set_text_input_focused(false);
+                                    state::save_config_quiet();
+                                })
+                                .on_submit(|_: &str| state::save_config_quiet()),
+                        )
                         .child(
                             view()
                                 .h(px(22.0))
@@ -635,6 +675,13 @@ pub fn code_editor_pane() -> impl IntoElement {
                             MenuItem::new("复制").on_select(state::copy_for_current_focus),
                             MenuItem::new("文件结构…").on_select(crate::ui::editor_tools::open_structure),
                             MenuItem::new("书签…").on_select(crate::ui::bookmarks::open_modal),
+                            MenuItem::new("重新格式化代码").on_select(crate::format_runtime::format_active),
+                            MenuItem::new("保存时自动格式化")
+                                .checked(app_signal().with_untracked(|s| s.cfg.format_on_save))
+                                .on_select(|| {
+                                    app_signal().update(|s| s.cfg.format_on_save = !s.cfg.format_on_save);
+                                    state::save_config_quiet();
+                                }),
                             MenuItem::separator(),
                         ];
                         items.extend(build_location_menu_items(

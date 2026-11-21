@@ -1332,6 +1332,14 @@ fn open_working_diff_with_hunk(
         })
     });
     if need_autosave {
+        if let Some(target) = crate::format_runtime::working_target() {
+            let next = file.clone();
+            if crate::format_runtime::save_if_enabled(vec![target], move || {
+                open_working_diff_with_hunk(next, staged_only, focus_diff, land_on_last_hunk);
+            }) {
+                return;
+            }
+        }
         if !save_working_diff_now() {
             // 发生外部覆盖冲突弹窗或拒绝保存时，阻止切换保护用户编辑
             return;
@@ -2165,10 +2173,19 @@ pub fn restore_nav_target(nav: NavTarget) {
 pub fn save_active_document() -> bool {
     let tab = app_signal().with_untracked(|s| s.editor_tab);
     match tab {
-        EditorTabKind::WorkingDiff => save_working_diff_now(),
+        EditorTabKind::WorkingDiff => save_working_diff_with_format(),
         EditorTabKind::File => save_active_code_tab_now(),
         _ => false,
     }
+}
+
+pub fn save_working_diff_with_format() -> bool {
+    if let Some(target) = crate::format_runtime::working_target()
+        && crate::format_runtime::save_if_enabled(vec![target], || {})
+    {
+        return false;
+    }
+    save_working_diff_now()
 }
 
 pub fn save_working_diff_now() -> bool {
@@ -2276,7 +2293,12 @@ pub fn save_active_code_tab_now() -> bool {
             .map(|t| t.id.clone())
     });
     match tab_id {
-        Some(id) => save_code_tab_by_id(&id),
+        Some(id) => {
+            if crate::format_runtime::save_if_enabled(vec![crate::format_runtime::Target::Code(id.clone())], || {}) {
+                return false;
+            }
+            save_code_tab_by_id(&id)
+        }
         None => false,
     }
 }
@@ -2628,6 +2650,28 @@ pub fn resolve_dirty_close(save_first: bool) {
         s.dirty_close = None;
         restore_focus_after_modal(s);
     });
+
+    if save_first {
+        use crate::format_runtime::Target;
+        let targets = match &modal.action {
+            DirtyCloseAction::CloseWorkingDiff => crate::format_runtime::working_target().into_iter().collect(),
+            DirtyCloseAction::CloseSingleCodeTab(id) => vec![Target::Code(id.clone())],
+            action => app_signal().with_untracked(|s| {
+                s.code_tabs.iter().filter(|tab| {
+                    tab.is_dirty() && !matches!(action, DirtyCloseAction::CloseOtherCodeTabs(keep) if keep == &tab.id)
+                }).map(|tab| Target::Code(tab.id.clone())).collect()
+            }),
+        };
+        let action = modal.action.clone();
+        if crate::format_runtime::save_if_enabled(targets, move || match action {
+            DirtyCloseAction::CloseWorkingDiff => request_close_working_diff(),
+            DirtyCloseAction::CloseSingleCodeTab(id) => request_close_code_tab(&id),
+            DirtyCloseAction::CloseOtherCodeTabs(id) => request_close_other_code_tabs(&id),
+            DirtyCloseAction::CloseAllCodeTabs => request_close_all_code_tabs(),
+        }) {
+            return;
+        }
+    }
 
     match modal.action {
         DirtyCloseAction::CloseWorkingDiff => {

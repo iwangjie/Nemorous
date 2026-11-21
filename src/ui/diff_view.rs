@@ -14,7 +14,7 @@ use crate::diff_model::{
 use crate::state::{
     self, FocusZone, app_signal, current_palette, editor_refs_signal, jump_diff_hunk,
     jump_from_diff_to_source, move_change_selection, move_commit_diff_file, open_find_bar,
-    save_working_diff_now, set_inline_mode, set_whitespace_mode, switch_working_diff_scope,
+    save_working_diff_with_format, set_inline_mode, set_whitespace_mode, switch_working_diff_scope,
 };
 use crate::theme::Palette;
 use crate::ui::commit_pane::build_location_menu_items;
@@ -474,7 +474,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                         .cursor(Cursor::Pointer)
                                         .hover(move |s| s.bg(p.accent_hover))
                                         .on_press(|| {
-                                            save_working_diff_now();
+                                            save_working_diff_with_format();
                                         })
                                         .child(
                                             text("保存 ⌘S")

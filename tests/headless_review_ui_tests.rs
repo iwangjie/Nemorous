@@ -609,6 +609,51 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_format_file_and_format_on_save_use_checked_writes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = lock_env();
+    let fx = Fixture::new("format-on-save");
+    let formatter = fx.root.join("formatter fixture.sh");
+    fs::write(
+        &formatter,
+        "#!/bin/sh\ncat > \"$1\" <<'FORMATTED'\n# Formatted\nsecond line\nFORMATTED\n",
+    )
+    .unwrap();
+    fs::set_permissions(&formatter, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = fx.repo_dir.join("README.md");
+    fs::write(&path, "# Sample\r\nline 2\r\n").unwrap();
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    config["format_command"] = serde_json::json!(format!("'{}' {{}}", formatter.display()));
+    fs::write(&fx.config_file, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "README.md").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press_key("mod+alt+l").unwrap();
+    app.wait_for("已格式化 README.md").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"# Formatted\r\nsecond line\r\n");
+
+    app.right_click("# Formatted").unwrap();
+    app.choose_menu_item("保存时自动格式化").unwrap();
+    app.press_key("mod+r").unwrap();
+    app.type_text("id:code-find-input", "Formatted").unwrap();
+    app.type_text("id:code-replace-input", "Edited").unwrap();
+    app.press("id:code-replace-all").unwrap();
+    app.wait_for("未保存").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"# Formatted\r\nsecond line\r\n");
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("未保存", Duration::from_secs(4)).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"# Formatted\r\nsecond line\r\n");
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(settings["format_on_save"], true);
+}
+
+#[test]
 fn ui_editor_split_shares_text_undo_and_distinct_tab_groups() {
     let _guard = lock_env();
     let fx = Fixture::new("code-split");

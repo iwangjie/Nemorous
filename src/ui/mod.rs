@@ -286,6 +286,9 @@ fn setup_shortcuts() {
         on_key_with("mod+shift+t", always, |_| {
             editor_tools::open_todos();
         });
+        on_key_with("mod+alt+l", always, |_| {
+            crate::format_runtime::format_active();
+        });
         on_key_with("mod+shift+b", always, |_| {
             bookmarks::toggle_current_line();
         });
