@@ -478,6 +478,63 @@ fn ui_commit_context_menu_copy_path_variants_and_locate() {
 }
 
 #[test]
+fn ui_content_search_modal_scope_open_and_close() {
+    let _guard = lock_env();
+    let fx = Fixture::new("content-search");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    // 1. 先回到项目树（此时没有打开任何文件，Changes 面板仍是当前面板）。
+    app.right_click("id:change-row-unstaged-src/app.go").unwrap();
+    app.choose_menu_item("在文件树中定位").unwrap();
+    app.wait_for("id:project-dir-src").unwrap();
+
+    // 2. 目录右键「在目录中查找」：范围锁定 src，命中只来自 src。
+    app.right_click("id:project-dir-src").unwrap();
+    app.choose_menu_item("在目录中查找").unwrap();
+    app.wait_for("id:content-search-modal").unwrap();
+    app.wait_for("id:content-search-scope").unwrap();
+    app.type_text("id:content-search-input", "new-greeting").unwrap();
+    app.wait_for("id:content-search-hit-0").unwrap();
+
+    // README 中的 Sample 不在 src 范围内，新查询也会清掉上一轮的命中。
+    app.clear("id:content-search-input").unwrap();
+    app.type_text("id:content-search-input", "Sample").unwrap();
+    app.wait_for("无匹配结果").unwrap();
+    app.wait_for_gone("id:content-search-hit-0", Duration::from_secs(2))
+        .unwrap();
+
+    // 4. Escape 关闭模态并交还键盘所有权。
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
+        .unwrap();
+
+    // 5. 再次按目录范围搜索，回车直接打开被限定的源码文件。
+    app.right_click("id:project-dir-src").unwrap();
+    app.choose_menu_item("在目录中查找").unwrap();
+    app.wait_for("id:content-search-modal").unwrap();
+    app.type_text("id:content-search-input", "new-greeting").unwrap();
+    app.wait_for("id:content-search-hit-0").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("id:editor-tab-file-src/app.go").unwrap();
+
+    // 6. 工作区搜索仍能找到 README 的 Sample（说明第 3 步是范围排除而非全局缺失）。
+    app.press_key("mod+shift+f").unwrap();
+    app.wait_for("id:content-search-modal").unwrap();
+    app.type_text("id:content-search-input", "Sample").unwrap();
+    app.wait_for("id:content-search-hit-0").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
+        .unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+
+    // 7. Escape 与关闭流程不残留状态。
+    app.press_key("escape").unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+}
+
+#[test]
 fn ui_project_preview_tab_reuse_pin_and_buffer_retention() {
     let _guard = lock_env();
     let fx = Fixture::new("project-preview");

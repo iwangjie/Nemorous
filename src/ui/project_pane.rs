@@ -336,13 +336,19 @@ fn render_project_dir(
                     });
                 })
                 .on_context_menu(move |e: &ContextMenuEvent| {
-                    let items = build_location_menu_items(
+                    let mut items = build_location_menu_items(
                         cm_rid.clone(),
                         cm_rpath.clone(),
                         cm_rel.clone(),
                         cm_abs.clone(),
                         1,
                         true,
+                    );
+                    let search_dir = cm_abs.clone();
+                    items.push(
+                        MenuItem::new("在目录中查找").on_select(move || {
+                            crate::ui::content_search::open_for_directory(search_dir.clone());
+                        }),
                     );
                     crate::state::show_popup_menu_at(items, e.page_position);
                 })

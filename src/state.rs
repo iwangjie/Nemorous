@@ -3314,10 +3314,13 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
 pub fn close_active_modal() {
     set_text_input_focused(false);
     editor_refs_signal().update(|r| r.modal_active = None);
+    let content_search_closed = crate::ui::content_search::close_if_open();
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if s.save_conflict.is_some() {
+        if content_search_closed {
+            closed_modal = true;
+        } else if s.save_conflict.is_some() {
             s.save_conflict = None;
             closed_modal = true;
         } else if s.dirty_close.is_some() {

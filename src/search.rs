@@ -87,6 +87,8 @@ pub struct SearchHit {
     pub line: usize,
     /// One-based column in Unicode scalar values (chars), not bytes.
     pub column: usize,
+    /// Zero-based column in UTF-16 code units, as NSH `EditorPosition` expects.
+    pub column_utf16: usize,
     /// Bounded display text around the match, with `…` for clipped context.
     /// At most `MAX_SNIPPET_BYTES` of line data plus both ellipses.
     pub snippet: String,
@@ -461,6 +463,8 @@ fn make_hit(
         color_idx: wf.color_idx,
         line: line_no,
         column,
+        // 只做 UTF-16 码元计数，不复制整行。
+        column_utf16: line[..start].encode_utf16().count(),
         snippet,
         match_in_snippet,
         snippet_in_line,

@@ -1,5 +1,6 @@
 pub mod code_editor;
 pub mod commit_pane;
+pub mod content_search;
 pub mod diff_view;
 pub mod editor_area;
 pub mod git_pane;
@@ -245,6 +246,9 @@ fn setup_shortcuts() {
         });
         on_key_with("mod+]", always, |_| {
             navigate_forward();
+        });
+        on_key_with("mod+shift+f", always, |_| {
+            content_search::open_workspace();
         });
         on_key_with("mod+f", always, |_| {
             open_find_bar(false);
@@ -966,5 +970,6 @@ pub fn shell() -> impl IntoElement {
         )
         .child(status_bar())
         .child(toast_layer())
+        .child(content_search::modal_layer())
         .child(modals::modals_layer())
 }
