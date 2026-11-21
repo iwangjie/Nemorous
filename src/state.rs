@@ -3475,6 +3475,8 @@ pub fn close_active_modal() {
     let history_closed = crate::history_runtime::close_active();
     let editor_tool_closed = crate::ui::editor_tools::close_active();
     let git_prompt_closed = crate::ui::git_prompt::close_active();
+    let run_config_closed = crate::ui::run_panel::close_active();
+    let github_closed = crate::ui::github_panel::close_active();
     let branches_closed = crate::ui::branch_matrix::close_active();
     let sync_closed = crate::ui::sync_dialog::close_active();
     let index_review_closed = crate::ui::index_review::close_active();
@@ -3486,7 +3488,7 @@ pub fn close_active_modal() {
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if credentials_closed || git_advanced_closed || rebase_plan_closed || merge_menu_closed || conflict_workbench_closed || index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
+        if github_closed || run_config_closed || credentials_closed || git_advanced_closed || rebase_plan_closed || merge_menu_closed || conflict_workbench_closed || index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;

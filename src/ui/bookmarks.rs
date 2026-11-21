@@ -165,7 +165,7 @@ fn decorations(side: Option<crate::editor_split::PaneId>) -> Vec<EditorDecoratio
         let Some(tab) = tab.filter(|tab| tab.revision.is_empty()) else {
             return Vec::new();
         };
-        s.cfg
+        let mut decorations = s.cfg
             .bookmarks
             .iter()
             .filter(|bm| {
@@ -180,7 +180,21 @@ fn decorations(side: Option<crate::editor_split::PaneId>) -> Vec<EditorDecoratio
                 decoration.gutter = Some(gutter);
                 decoration
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(lines) = s.cfg.extra.get("breakpoints")
+            .and_then(|all| all[tab.file.key()].as_array()) {
+            decorations.extend(lines.iter().filter_map(|line| {
+                let line = line.as_u64()?.checked_sub(1)?.try_into().ok()?;
+                let position = EditorPosition::new(line,0);
+                let mut decoration = EditorDecoration::default();
+                decoration.range = EditorRange::new(position,position);
+                let mut gutter = EditorGutterMark::default();
+                gutter.class = Some("bg-red-500".into());
+                decoration.gutter = Some(gutter);
+                Some(decoration)
+            }));
+        }
+        decorations
     })
 }
 

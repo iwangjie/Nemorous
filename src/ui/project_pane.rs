@@ -318,6 +318,10 @@ pub fn project_pane() -> impl IntoElement {
                                 .on_context_menu(move |event: &ContextMenuEvent| {
                                     let mut items = super::sync_dialog::menu(Some(sync_repo.clone()));
                                     items.push(MenuItem::submenu("Git 高级", super::git_advanced::repo_items(sync_repo.clone())));
+                                    if super::mani_panel::enabled() {
+                                        let path = std::path::PathBuf::from(&sync_repo.path);
+                                        items.push(MenuItem::new("运行 Mani 任务…").on_select(move || super::mani_panel::open_project(path.clone())));
+                                    }
                                     crate::state::show_popup_menu_at(items, event.page_position);
                                 })
                                 .child(icons::icon(

@@ -188,6 +188,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                         .flex_row()
                         .items_center()
                         .gap(px(6.0))
+                        .child(super::workbench::button("语言服务", "code-language-tools", super::language_tools::open_menu))
                         .child(can_ret.then(|| {
                             view()
                                 .test_id("code-return-diff-btn")
@@ -722,6 +723,10 @@ pub fn code_editor_pane() -> impl IntoElement {
                             MenuItem::new("与修订版本比较…").on_select(move || super::revision_picker::open(revision.clone())),
                         ]));
                         items.extend(super::blame_view::menu_items(ev.position.line + 1));
+                        let breakpoint_file = f.clone();
+                        let line = ev.position.line + 1;
+                        items.push(MenuItem::new("切换断点").on_select(move || super::debug_panel::toggle_breakpoint(&breakpoint_file,line)));
+                        items.push(super::language_tools::menu());
                         items.push(MenuItem::separator());
                         items.extend(build_location_menu_items(
                             f.repo_id,

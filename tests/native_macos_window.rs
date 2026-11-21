@@ -643,6 +643,42 @@ mod macos {
         println!("NATIVE_BATCH4_CONFLICT PASS");
     }
 
+    fn batch5_workbench(app: &NSApplication, window: &NSWindow, root: &NSView, repo: &Path, evidence: &Path) {
+        let click = |id: &str| {
+            wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+            send_click(window, &view_with_id(root, id).unwrap(), 1);
+        };
+        click("rail-terminal-btn");
+        click("terminal-screen");
+        let command = "echo PTY > terminal-proof";
+        for c in command.chars().chain(std::iter::once('\r')) {
+            let text = NSString::from_str(&c.to_string());
+            let timestamp = NSProcessInfo::processInfo().systemUptime();
+            let keycode = if c == '\r' { 36 } else { 0 };
+            let event = make_key_event(window, NSEventType::KeyDown, NSEventModifierFlags::empty(), timestamp, &text, &text, keycode);
+            app.postEvent_atStart(&event, false);
+        }
+        drain_native_keys(app, 650);
+        wait_until("PTY command wrote the expected bytes in the workspace", Duration::from_secs(6), || {
+            fs::read(repo.join("terminal-proof")).is_ok_and(|bytes| bytes == b"PTY\n")
+        });
+        click("workbench-hide");
+        click("rail-terminal-btn");
+        click("terminal-screen");
+        send_key(app, window, "p", "p", 35, NSEventModifierFlags::empty());
+        click("terminal-stop");
+        click("rail-run-btn");
+        click("run-start");
+        wait_until("native Run stdout", Duration::from_secs(6), || {
+            view_with_id(root, "workbench-run-output").is_some_and(|view| a11y_contains(&view, "NATIVE_RUN_OUTPUT"))
+        });
+        wait_until("native Run exit", Duration::from_secs(6), || a11y_contains(root, "退出码 7"));
+        save_window_png(window, &evidence.join("native-run-output.png"));
+        println!("BATCH5_NATIVE_FIXTURE {}", repo.display());
+        println!("BATCH5_NATIVE_HEAD {}", git_run(repo, &["rev-parse", "HEAD"]));
+        println!("NATIVE_BATCH5_TERMINAL_RUN PASS");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -656,7 +692,10 @@ mod macos {
         let batch2 = std::env::var_os("NEMOROUS_NATIVE_BATCH2").is_some();
         let batch3 = std::env::var_os("NEMOROUS_NATIVE_BATCH3").is_some();
         let batch4 = std::env::var_os("NEMOROUS_NATIVE_BATCH4").is_some();
-        let work_dir = if batch4 {
+        let batch5 = std::env::var_os("NEMOROUS_NATIVE_BATCH5").is_some();
+        let work_dir = if batch5 {
+            root_dir.join(format!("build/tmp-ab/native-batch5-{}", std::process::id()))
+        } else if batch4 {
             root_dir.join(format!("build/tmp-ab/native-batch4-{}", std::process::id()))
         } else if batch3 {
             root_dir.join(format!("build/tmp-ab/native-batch3-{}", std::process::id()))
@@ -704,12 +743,21 @@ mod macos {
         }
 
         let cfg_path = work_dir.join("config-new.json");
-        let cfg_json = serde_json::json!({
+        if batch5 {
+            copy_dir_all(&repo_copy, &work_dir.join("initial-repo"));
+        }
+        let mut cfg_json = serde_json::json!({
             "workspace_path": repo_copy.to_string_lossy(),
             "theme": "light",
             "change_diff_preview": false,
             "editor_font_size": 14.0
         });
+        if batch5 {
+            cfg_json["run_configs"] = serde_json::json!([{
+                "id": "native-run", "name": "Native Run fixture", "kind": "run", "command": "/bin/sh",
+                "args": "-c 'printf NATIVE_RUN_OUTPUT; exit 7'"
+            }]);
+        }
         fs::write(&cfg_path, serde_json::to_string_pretty(&cfg_json).unwrap()).unwrap();
 
         unsafe {
@@ -769,6 +817,13 @@ mod macos {
         }
 
         let root = surface.view();
+        if batch5 {
+            let evidence = root_dir.join("build/migration-evidence/batch-5");
+            batch5_workbench(&app, &window, &root, &repo_copy, &evidence);
+            window.close();
+            pump(200);
+            return;
+        }
         if batch4 {
             let evidence = root_dir.join("build/migration-evidence/batch-4");
             batch4_resolver(&app, &window, &root, &repo_copy, &evidence);

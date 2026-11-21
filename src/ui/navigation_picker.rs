@@ -55,6 +55,11 @@ enum ActionId {
     Refresh,
     FormatCode,
     FindResults,
+    Terminal,
+    Run,
+    RunConfig,
+    Logs,
+    GitHub,
 }
 
 struct ActionDef {
@@ -143,6 +148,11 @@ const ACTIONS: &[ActionDef] = &[
         hint: "format code",
         keywords: "format code 格式化 代码",
     },
+    ActionDef { id: ActionId::Terminal, title: "终端", hint: "", keywords: "terminal shell PTY" },
+    ActionDef { id: ActionId::Run, title: "运行 / 调试 / 测试", hint: "", keywords: "run test debug DAP" },
+    ActionDef { id: ActionId::RunConfig, title: "新建运行配置", hint: "", keywords: "run config" },
+    ActionDef { id: ActionId::Logs, title: "日志", hint: "", keywords: "logs command runtime" },
+    ActionDef { id: ActionId::GitHub, title: "GitHub PR / CI", hint: "", keywords: "pull request checks" },
     ActionDef {
         id: ActionId::FindResults,
         title: "查找结果",
@@ -465,6 +475,11 @@ fn execute(action: ActionId) {
         ActionId::Refresh => state::refresh_workspace_async(None),
         ActionId::FormatCode => crate::format_runtime::format_active(),
         ActionId::FindResults => super::content_search::show_find_panel(),
+        ActionId::Terminal => super::terminal_panel::toggle(),
+        ActionId::Run => super::run_panel::open(),
+        ActionId::RunConfig => { super::run_panel::open(); super::run_panel::edit(true); }
+        ActionId::Logs => super::workbench::reveal(super::workbench::Panel::Logs),
+        ActionId::GitHub => super::github_panel::open(),
     }
 }
 

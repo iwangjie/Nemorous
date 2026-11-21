@@ -60,6 +60,13 @@ fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
                 .filter(|report| report.status == RemoteStatus::Skipped)
                 .count();
             let cancelled = reports.len() - problems - done - skipped;
+            super::workbench::command_log(format!(
+                "{} · 成功 {done}，跳过 {skipped}，失败 {problems}，取消 {cancelled}",
+                label(action)
+            ));
+            for report in reports.iter().filter(|report| report.status == RemoteStatus::Failed) {
+                super::workbench::runtime_log(format!("{} · {}", report.repo.name, report.detail));
+            }
             dialog.update(|dialog| {
                 if let Some(batch) = &mut dialog.state {
                     batch.reports = Some(reports);

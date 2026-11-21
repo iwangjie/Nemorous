@@ -332,6 +332,7 @@ pub fn git_pane() -> impl IntoElement {
                 }))
                 .child(view().flex_1())
                 .child(preview_toggle())
+                .child(super::workbench::button("GitHub PR / CI", "github-pr-ci", super::github_panel::open))
                 .child(when(
                     move || is_history.get(),
                     || {

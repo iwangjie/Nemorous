@@ -69,6 +69,9 @@ pub(crate) const ACTIONS: &[Definition] = &[
     action("commitWindow", "提交 (Commit)", "窗口", &["mod+0"]),
     action("project", "项目 (Project)", "窗口", &["mod+1"]),
     action("gitWindow", "Git", "窗口", &["mod+9"]),
+    action("maniWindow", "Mani", "窗口", &["mod+4"]),
+    action("terminalWindow", "终端", "窗口", &["alt+f12"]),
+    action("breakpoint", "切换断点", "运行", &["mod+f8"]),
     action(
         "actions",
         "查找操作",

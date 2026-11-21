@@ -2292,3 +2292,161 @@ fn ui_rollback_code_block_is_undoable_and_file_rollback_requires_confirmation() 
     app.wait_for("已回滚文件").unwrap();
     assert!(String::from_utf8_lossy(&fs::read(&path).unwrap()).contains("old-greeting"));
 }
+
+fn protocol_fixture(fixture: &Fixture, name: &str) -> (PathBuf, PathBuf) {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/workbench_mock_protocol.py");
+    let proof = fixture.root.join(format!("{name}.log"));
+    (script, proof)
+}
+
+#[test]
+fn ui_debug_adapter_stops_and_displays_variables() {
+    let _guard = lock_env();
+    let fx = Fixture::new("debug-adapter");
+    let (script, proof) = protocol_fixture(&fx, "dap");
+    fs::write(&fx.config_file, serde_json::to_vec(&serde_json::json!({
+        "workspace_path": fx.repo_dir,
+        "theme": "light",
+        "breakpoints": {"sample-repo::src/app.go": [2]},
+        "run_configs": [{
+            "id":"debug", "name":"Fixture debug", "kind":"debug", "adapter":"python3",
+            "adapter_args":format!("\"{}\" dap \"{}\"",script.display(),proof.display()),
+            "network":"stdio", "program":"src/app.go"
+        }]
+    })).unwrap()).unwrap();
+    let mut app = fx.start_headless(1440.0,900.0);
+    app.press("id:rail-run-btn").unwrap();
+    app.press("id:run-start").unwrap();
+    app.wait_for("已暂停 · breakpoint").unwrap();
+    app.wait_for("fixture main:2").unwrap();
+    app.wait_for("ticket = 42").unwrap();
+    app.press("id:debug-continue").unwrap();
+    app.wait_for("调试中").unwrap();
+    app.press("id:run-stop").unwrap();
+    app.wait_for_gone("id:debug-state",Duration::from_secs(2)).unwrap();
+    let requests = fs::read_to_string(proof).unwrap();
+    assert!(requests.contains("initialize "));
+    assert!(requests.contains("configurationDone "));
+    assert!(requests.contains("setBreakpoints "));
+    assert!(requests.contains("continue "));
+}
+
+#[test]
+fn ui_lsp_requests_hover_and_stages_formatting_for_review() {
+    let _guard = lock_env();
+    let fx = Fixture::new("language-server");
+    let (script, proof) = protocol_fixture(&fx,"lsp");
+    fs::write(&fx.config_file, serde_json::to_vec(&serde_json::json!({
+        "workspace_path":fx.repo_dir, "theme":"light", "lsp_enabled":true,
+        "lsp_servers":{"go":format!("python3 \"{}\" lsp \"{}\"",script.display(),proof.display())}
+    })).unwrap()).unwrap();
+    let mut app = fx.start_headless(1440.0,900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input","src/app.go").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    for _ in 0..30 {
+        if fs::read_to_string(&proof).is_ok_and(|text| text.contains("textDocument/didOpen")) { break; }
+        app.idle(Duration::from_millis(60)).unwrap();
+    }
+    assert!(fs::read_to_string(&proof).unwrap().contains("textDocument/didOpen"));
+    app.press("id:code-language-tools").unwrap();
+    app.choose_menu_item("悬停信息").unwrap();
+    app.wait_for("synthetic hover").unwrap();
+    app.press_key("escape").unwrap();
+    app.press("id:code-language-tools").unwrap();
+    app.choose_menu_item("格式化文件").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("已应用到编辑器，可审阅后保存").unwrap();
+    assert!(!fs::read_to_string(fx.repo_dir.join("src/app.go")).unwrap().starts_with("// verified LSP"));
+    app.press_key("mod+s").unwrap();
+    let path = fx.repo_dir.join("src/app.go");
+    for _ in 0..30 {
+        if fs::read_to_string(&path).unwrap().starts_with("// verified LSP") { break; }
+        app.idle(Duration::from_millis(60)).unwrap();
+    }
+    assert!(fs::read_to_string(path).unwrap().starts_with("// verified LSP"));
+}
+
+#[test]
+fn ui_mani_runs_configured_workspace_command() {
+    let _guard = lock_env();
+    let fx = Fixture::new("mani-workspace");
+    fs::write(fx.repo_dir.join("mani.yaml"),
+        "tasks:\n  verify:\n    desc: Fixture proof\n    target: {cwd: true}\n    env: {TOKEN: 'sample value'}\n    cmd: printf '%s' \"$TOKEN\" > mani-proof\n").unwrap();
+    let mut app = fx.start_headless(1440.0,900.0);
+    app.press_key("mod+4").unwrap();
+    app.press("id:mani-select").unwrap();
+    app.choose_menu_item("verify · Fixture proof").unwrap();
+    app.wait_for("workspace (cwd) · 完成").unwrap();
+    assert_eq!(fs::read_to_string(fx.repo_dir.join("mani-proof")).unwrap(),"sample value");
+}
+
+#[cfg(unix)]
+#[test]
+fn ui_github_lists_checks_and_creates_draft_via_mock_gh() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = lock_env();
+    let fx = Fixture::new("mock-gh");
+    git_run(&fx.repo_dir, &["remote","add","origin","https://github.com/fixture/nemorous"]);
+    let bin = fx.root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let gh = bin.join("gh");
+    fs::write(&gh, r#"#!/bin/sh
+printf '%s\n' "$@" > gh-argv
+case "$2" in
+list) printf '%s' '[{"number":7,"title":"Fixture PR"}]' ;;
+view) printf '%s' '{"number":7,"title":"Fixture PR","url":"https://github.com/fixture/nemorous/pull/7","body":"Fixture review body","statusCheckRollup":[{"name":"unit","status":"COMPLETED","conclusion":"SUCCESS"}],"comments":[{"author":{"login":"qa"},"body":"Fixture comment"}]}' ;;
+create) printf '%s' 'https://github.com/fixture/nemorous/pull/8' ;;
+*) exit 1 ;;
+esac
+"#).unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    struct PathGuard(std::ffi::OsString);
+    impl Drop for PathGuard {
+        fn drop(&mut self) { unsafe { std::env::set_var("PATH",&self.0); } }
+    }
+    let path_guard = PathGuard(std::env::var_os("PATH").unwrap_or_default());
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path_guard.0))).unwrap();
+    unsafe { std::env::set_var("PATH",path); }
+    let mut app = fx.start_headless(1440.0,900.0);
+    app.press("id:rail-git-btn").unwrap();
+    app.press("id:github-pr-ci").unwrap();
+    app.wait_for("id:gh-pr-7").unwrap();
+    app.press("id:gh-pr-7").unwrap();
+    app.wait_for("unit · SUCCESS").unwrap();
+    app.wait_for("Fixture comment").unwrap();
+    app.press("id:gh-new").unwrap();
+    app.type_text("id:gh-pr-title","Draft fixture").unwrap();
+    app.press("id:gh-pr-draft").unwrap();
+    app.press("id:gh-submit").unwrap();
+    app.wait_for_gone("id:gh-submit",Duration::from_secs(2)).unwrap();
+    app.wait_for("text:https://github.com/fixture/nemorous/pull/8").unwrap();
+    let command = fs::read_to_string(fx.repo_dir.join("gh-argv")).unwrap();
+    assert!(command.contains("create\n--title\nDraft fixture\n"), "{command:?}");
+    assert!(command.contains("--draft\n--repo\nfixture/nemorous\n"));
+}
+
+#[test]
+fn ui_run_creates_edits_and_removes_legacy_compatible_configuration() {
+    let _guard = lock_env();
+    let fx = Fixture::new("run-config");
+    let mut app = fx.start_headless(1440.0,900.0);
+    app.press("id:rail-run-btn").unwrap();
+    app.press("id:run-new-config").unwrap();
+    app.type_text("id:run-field-name","Fixture Test").unwrap();
+    app.press("id:run-kind-test").unwrap();
+    app.type_text("id:run-field-command","/bin/sh").unwrap();
+    app.type_text("id:run-field-args","-c 'echo configured-run'").unwrap();
+    app.press("id:run-config-save").unwrap();
+    app.wait_for_gone("id:run-config-modal",Duration::from_secs(2)).unwrap();
+    app.press("id:run-start").unwrap();
+    app.wait_for("configured-run").unwrap();
+    app.wait_for("退出码 0").unwrap();
+    app.press("id:run-edit-config").unwrap();
+    app.press("id:run-config-delete").unwrap();
+    app.wait_for_gone("id:run-config-modal",Duration::from_secs(2)).unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert_eq!(stored["run_configs"],serde_json::json!([]));
+}

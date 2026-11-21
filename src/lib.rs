@@ -41,6 +41,16 @@ pub mod state;
 pub mod theme;
 pub mod ui;
 pub mod watcher;
+mod workbench_github;
+mod workbench_lsp;
+mod workbench_mani;
+mod workbench_process;
+mod workbench_protocol;
+#[cfg(unix)]
+mod workbench_terminal_unix;
+#[cfg(windows)]
+mod workbench_terminal_windows;
+mod workbench_run;
 mod workspace_ops;
 
 use nsh_core::prelude::*;

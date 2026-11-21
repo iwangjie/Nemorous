@@ -5,6 +5,13 @@ pub mod code_editor;
 pub mod commit_pane;
 mod commit_form;
 pub(crate) mod conflict_workbench;
+mod debug_panel;
+pub(crate) mod github_panel;
+mod mani_panel;
+mod language_tools;
+pub(crate) mod run_panel;
+mod terminal_panel;
+pub(crate) mod workbench;
 pub(crate) mod credentials_view;
 pub mod content_search;
 pub(crate) mod comparison;
@@ -33,7 +40,7 @@ pub mod project_pane;
 mod workspace_menu;
 pub(crate) mod sync_dialog;
 
-use nsh_base::{EditorCommand, h_resizable, resizable_panel};
+use nsh_base::{EditorCommand, h_resizable, resizable_panel, v_resizable};
 use nsh_core::desktop::{MenuRole, TitleBarOptions, TitleBarStyle, WindowAttributes};
 use nsh_core::element::desktop::{
     MenuItem, current_window, set_application_menu, title_bar, window_state,
@@ -548,7 +555,13 @@ fn setup_shortcuts() {
         // 对齐基线 review_toolwindow.go：当面板已打开但焦点在编辑器/Diff 时，按 ⌘0/⌘1 先切焦点到对应树并保留编辑器，仅当焦点已在对应树内再按才折叠。
         bind_action(&keys, "commitWindow", always, |_| focus_tool_window(LeftTab::Commit, true));
         bind_action(&keys, "project", always, |_| focus_tool_window(LeftTab::Project, true));
+        bind_action(&keys, "maniWindow", always, |_| mani_panel::toggle());
+        bind_action(&keys, "terminalWindow", always, |_| terminal_panel::toggle());
+        if zone == FocusZone::CodeEditor {
+            bind_action(&keys, "breakpoint", always, |_| debug_panel::active_line_breakpoint());
+        }
         bind_action(&keys, "gitWindow", always, |_| {
+            workbench::hide();
             content_search::hide_find_panel();
             app_signal().update(|s| {
                 s.show_git_panel = !s.show_git_panel;
@@ -932,10 +945,19 @@ fn left_rail() -> impl IntoElement {
                 ICO_BRANCH,
                 show_git,
                 || {
+                    workbench::hide();
                     content_search::hide_find_panel();
                     app_signal().update(|s| s.show_git_panel = !s.show_git_panel);
                 },
             ))
+            .child(rail_btn("rail-terminal-btn", "终端", ICO_MONITOR,
+                workbench::active() == Some(workbench::Panel::Terminal), terminal_panel::toggle))
+            .child(rail_btn("rail-run-btn", "运行 / 调试 / 测试", ICO_ARROW_RIGHT,
+                workbench::active() == Some(workbench::Panel::Run), || workbench::toggle(workbench::Panel::Run)))
+            .child(mani_panel::enabled().then(|| rail_btn("rail-mani-btn", "Mani", ICO_LIST,
+                workbench::active() == Some(workbench::Panel::Mani), mani_panel::toggle)))
+            .child(rail_btn("rail-logs-btn", "日志", ICO_ARCHIVE,
+                workbench::active() == Some(workbench::Panel::Logs), || workbench::toggle(workbench::Panel::Logs)))
             .child(content_search::find_panel_available().then(|| {
                 rail_btn(
                     "rail-find-btn",
@@ -1114,6 +1136,11 @@ pub fn shell() -> impl IntoElement {
     let show_git_memo = computed(|| app_signal().with(|s| s.show_git_panel));
     state::setup_project_follow();
     git_forest::setup();
+    workbench::setup();
+    terminal_panel::setup();
+    debug_panel::setup();
+    mani_panel::setup();
+    language_tools::setup();
 
     view()
         .test_id("nemorous-root")
@@ -1137,6 +1164,9 @@ pub fn shell() -> impl IntoElement {
                         .flex_col()
                         .overflow_hidden()
                         .child(
+                            v_resizable()
+                                .flex_1()
+                                .child(resizable_panel().child(
                             h_resizable()
                                 .flex_1()
                                 .child(
@@ -1172,6 +1202,13 @@ pub fn shell() -> impl IntoElement {
                                             .child(main_editor_content()),
                                     ),
                                 ),
+                                ))
+                                .child(resizable_panel()
+                                    .visible(|| workbench::active().is_some())
+                                    .size(workbench::height)
+                                    .size_range(px(130.0)..px(600.0))
+                                    .on_resize(workbench::resize)
+                                    .child(workbench::layer())),
                         )
                         .child(when(move || show_git_memo.get(), git_pane::git_pane)),
                 ),
@@ -1195,5 +1232,7 @@ pub fn shell() -> impl IntoElement {
         .child(rebase_plan_view::layer())
         .child(conflict_workbench::layer())
         .child(git_prompt::layer())
+        .child(run_panel::layer())
+        .child(github_panel::layer())
         .child(modals::modals_layer())
 }
