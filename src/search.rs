@@ -102,6 +102,8 @@ pub struct SearchHit {
     /// included. A later Replace plan reopens the file and verifies the
     /// preimage at this range before writing.
     pub file_range: Range<u64>,
+    /// Digest of the original on-disk bytes. Filled once per matched file.
+    pub raw_sha256: String,
 }
 
 /// Result of one search.
@@ -190,24 +192,14 @@ pub fn search_files(
     options: &SearchOptions<'_>,
     cancel: &CancelToken,
 ) -> Result<SearchOutcome, SearchError> {
-    let mask = match options.mask {
-        Some(raw) if !raw.trim().is_empty() => Some(SearchMask::parse(raw)?),
-        _ => None,
+    let Some(mut scope) = SearchScope::new(scope_dir, options.mask)? else {
+        return Ok(SearchOutcome::empty());
     };
     if query.is_empty() {
         return Ok(SearchOutcome::empty());
     }
     let re = build_regex(query, options)?;
     let multiline = query.contains('\n');
-    let scope = match scope_dir {
-        Some(dir) if !dir.as_os_str().is_empty() => match fs::canonicalize(dir) {
-            Ok(dir) => Some(dir),
-            Err(_) => return Ok(SearchOutcome::completed(Vec::new(), false)),
-        },
-        _ => None,
-    };
-    let mut roots: HashMap<String, Option<PathBuf>> = HashMap::new();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut hits: Vec<SearchHit> = Vec::new();
     if cancel.is_cancelled() {
         return Ok(SearchOutcome::cancelled(hits));
@@ -216,29 +208,9 @@ pub fn search_files(
         if cancel.is_cancelled() {
             return Ok(SearchOutcome::cancelled(hits));
         }
-        let raw = candidate_path(wf);
-        if raw.as_os_str().is_empty() || raw.as_os_str() == OsStr::new(".") {
-            continue;
-        }
-        if let Some(mask) = &mask {
-            if !mask.matches(&raw) {
-                continue;
-            }
-        }
-        if cancel.is_cancelled() {
-            return Ok(SearchOutcome::cancelled(hits));
-        }
-        let Some(path) = resolve_candidate(wf, &raw, &mut roots) else {
+        let Some(path) = scope.resolve(wf, &candidate_path(wf)) else {
             continue;
         };
-        if let Some(scope) = &scope {
-            if !path.starts_with(scope) {
-                continue;
-            }
-        }
-        if !seen.insert(path.clone()) {
-            continue;
-        }
         if cancel.is_cancelled() {
             return Ok(SearchOutcome::cancelled(hits));
         }
@@ -246,7 +218,16 @@ pub fn search_files(
             continue;
         };
         let abs = path.to_string_lossy();
-        match scan(wf, abs.as_ref(), &text, &re, multiline, cancel, &mut hits) {
+        let first_hit = hits.len();
+        let result = scan(wf, abs.as_ref(), &text, &re, multiline, cancel, &mut hits);
+        let new_hits = &mut hits[first_hit..];
+        if !new_hits.is_empty() {
+            let digest = crate::local_history::sha256_hex(text.as_bytes());
+            for hit in new_hits {
+                hit.raw_sha256.clone_from(&digest);
+            }
+        }
+        match result {
             ScanResult::Finished => {}
             ScanResult::Cancelled => return Ok(SearchOutcome::cancelled(hits)),
             ScanResult::Truncated => return Ok(SearchOutcome::completed(hits, true)),
@@ -325,7 +306,7 @@ fn scan(
     ScanResult::Finished
 }
 
-fn build_regex(query: &str, options: &SearchOptions<'_>) -> Result<Regex, SearchError> {
+pub(crate) fn build_regex(query: &str, options: &SearchOptions<'_>) -> Result<Regex, SearchError> {
     let pattern = if options.regex {
         query.to_string()
     } else {
@@ -360,6 +341,78 @@ fn candidate_path(wf: &WorkspaceFile) -> PathBuf {
         wf.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)
     };
     Path::new(&wf.repo_path).join(rel)
+}
+
+struct SearchScope {
+    directory: Option<PathBuf>,
+    mask: Option<SearchMask>,
+    roots: HashMap<String, Option<PathBuf>>,
+    seen: HashSet<PathBuf>,
+}
+
+impl SearchScope {
+    fn new(directory: Option<&Path>, mask: Option<&str>) -> Result<Option<Self>, SearchError> {
+        let mask = mask
+            .filter(|mask| !mask.trim().is_empty())
+            .map(SearchMask::parse)
+            .transpose()?;
+        let directory = if let Some(dir) = directory.filter(|dir| !dir.as_os_str().is_empty()) {
+            let Ok(dir) = fs::canonicalize(dir) else {
+                return Ok(None);
+            };
+            Some(dir)
+        } else {
+            None
+        };
+        Ok(Some(Self {
+            directory,
+            mask,
+            roots: HashMap::new(),
+            seen: HashSet::new(),
+        }))
+    }
+
+    fn resolve(&mut self, file: &WorkspaceFile, path: &Path) -> Option<PathBuf> {
+        if path.as_os_str().is_empty()
+            || path.as_os_str() == OsStr::new(".")
+            || self.mask.as_ref().is_some_and(|mask| !mask.matches(path))
+        {
+            return None;
+        }
+        let resolved = resolve_candidate(file, path, &mut self.roots)?;
+        if self
+            .directory
+            .as_ref()
+            .is_some_and(|dir| !resolved.starts_with(dir))
+            || !self.seen.insert(resolved.clone())
+        {
+            return None;
+        }
+        Some(resolved)
+    }
+}
+
+pub(crate) fn files_in_scope(
+    files: &[WorkspaceFile],
+    directory: Option<&Path>,
+    mask: Option<&str>,
+) -> Result<Vec<WorkspaceFile>, SearchError> {
+    let Some(mut scope) = SearchScope::new(directory, mask)? else {
+        return Ok(Vec::new());
+    };
+    let mut scoped = Vec::new();
+    for file in files {
+        let path = candidate_path(file);
+        if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
+            || scope.resolve(file, &path).is_none()
+        {
+            continue;
+        }
+        let mut file = file.clone();
+        file.abs_path = path.to_string_lossy().into_owned();
+        scoped.push(file);
+    }
+    Ok(scoped)
 }
 
 fn resolve_candidate(
@@ -470,6 +523,7 @@ fn make_hit(
         snippet_in_line,
         match_in_line: start..end,
         file_range,
+        raw_sha256: String::new(),
     }
 }
 
