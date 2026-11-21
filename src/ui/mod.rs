@@ -206,6 +206,7 @@ fn setup_shortcuts() {
     let zone_memo = computed(|| app_signal().with(|s| s.focus_zone));
     let tab_memo = computed(|| app_signal().with(|s| s.editor_tab));
     let workspace_search_open = computed(content_search::is_open);
+    let multiline_search = computed(content_search::query_is_multiline);
     let dismissable_memo = computed(|| {
         app_signal().with(|s| {
             s.focus_zone == FocusZone::Modal
@@ -234,8 +235,12 @@ fn setup_shortcuts() {
                 state::close_active_modal();
             });
             if workspace_search_open.get() {
-                on_key_with("up", always, |_| content_search::move_selection(-1));
-                on_key_with("down", always, |_| content_search::move_selection(1));
+                if multiline_search.get() {
+                    on_key_with("mod+enter", always, |_| content_search::activate_selected());
+                } else {
+                    on_key_with("up", always, |_| content_search::move_selection(-1));
+                    on_key_with("down", always, |_| content_search::move_selection(1));
+                }
             }
             return;
         }

@@ -33,6 +33,7 @@ struct ContentSearchState {
     /// 打开时所在的工作区；跨工作区的旧结果与旧命中都不再生效。
     workspace: String,
     query: String,
+    multiline: bool,
     replace_mode: bool,
     replacement: String,
     case_sensitive: bool,
@@ -188,6 +189,10 @@ pub fn is_open() -> bool {
     with_state(|s| s.open)
 }
 
+pub fn query_is_multiline() -> bool {
+    with_state(|s| s.multiline)
+}
+
 pub fn move_selection(delta: isize) {
     if !matches!(replacement_flow::phase(), Phase::Idle) {
         return;
@@ -224,6 +229,7 @@ pub fn close_if_open() -> bool {
             s.cancel = CancelToken::new();
             s.running = false;
             s.query.clear();
+            s.multiline = false;
             s.replacement.clear();
             s.mask.clear();
             s.mask_enabled = false;
@@ -247,6 +253,7 @@ fn open_with(scope: Option<PathBuf>, replace_mode: bool) {
     };
     let workspace = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
     let initial = initial_query();
+    let initial = initial.unwrap_or_default();
     let index = Arc::new(candidates());
 
     update_state(|s| {
@@ -264,9 +271,8 @@ fn open_with(scope: Option<PathBuf>, replace_mode: bool) {
         s.hits.clear();
         s.truncated = false;
         s.selected = 0;
-        if let Some(q) = initial {
-            s.query = q;
-        }
+        s.multiline = initial.contains('\n');
+        s.query = initial;
     });
 
     app_signal().update(|s| state::enter_modal_focus(s));
@@ -287,11 +293,16 @@ fn initial_query() -> Option<String> {
     let zone = app_signal().with_untracked(|s| s.focus_zone);
     let api = state::active_editor_api(zone)?;
     let text = api.selected_text();
-    let text = text.trim();
-    if text.is_empty() || text.contains('\n') || text.chars().count() > MAX_INITIAL_QUERY_CHARS {
+    // 多行选区保留原始换行（LF/CRLF）；只有单行选择才裁剪首尾空白。
+    let text = if text.contains('\n') {
+        text.to_string()
+    } else {
+        text.trim().to_string()
+    };
+    if text.is_empty() || text.chars().count() > MAX_INITIAL_QUERY_CHARS {
         None
     } else {
-        Some(text.to_string())
+        Some(text)
     }
 }
 
@@ -476,7 +487,7 @@ fn activate(idx: usize) {
     }
 }
 
-fn activate_selected() {
+pub fn activate_selected() {
     if with_state(|s| s.replace_mode) {
         start_replacement(false);
         return;
@@ -503,13 +514,16 @@ fn content_search_modal() -> impl IntoElement {
         .test_id("content-search-modal")
         .absolute()
         .inset_0()
+        .p(px(12.0))
         .bg(rgba(0x00000070))
         .items_center()
         .justify_center()
         .child(
             view()
-                .w(px(820.0))
-                .h(px(560.0))
+                .w_full()
+                .max_w(px(820.0))
+                .h_full()
+                .max_h(px(560.0))
                 .rounded(px(12.0))
                 .bg(p.surface)
                 .border_1()
@@ -575,6 +589,7 @@ fn header(p: Palette) -> impl IntoElement {
 }
 
 fn query_row(p: Palette) -> impl IntoElement {
+    let multiline = computed(query_is_multiline);
     view()
         .px(px(14.0))
         .flex_row()
@@ -584,7 +599,7 @@ fn query_row(p: Palette) -> impl IntoElement {
             input()
                 .test_id("content-search-input")
                 .auto_focus(true)
-                .h(px(30.0))
+                .h(move || if multiline.get() { px(84.0) } else { px(30.0) })
                 .px(px(8.0))
                 .rounded(px(6.0))
                 .flex_1()
@@ -593,7 +608,8 @@ fn query_row(p: Palette) -> impl IntoElement {
                 .border_color(p.accent)
                 .text_size(px(12.5))
                 .text_color(p.text_primary)
-                .placeholder("搜索文件内容，支持正则与大小写…")
+                .multiline(move || multiline.get())
+                .placeholder("搜索文件内容…")
                 .value(move || with_state(|s| s.query.clone()))
                 .on_focus(|| state::set_text_input_focused(true))
                 .on_blur(|| state::set_text_input_focused(false))
@@ -603,8 +619,26 @@ fn query_row(p: Palette) -> impl IntoElement {
                         schedule();
                     }
                 })
-                .on_submit(|_: &str| activate_selected()),
+                .on_submit(|_: &str| {
+                    if !query_is_multiline() {
+                        activate_selected();
+                    }
+                }),
         )
+        .child(toggle_button(
+            "content-search-multiline",
+            "多行",
+            "多行查询",
+            p,
+            || with_state(|s| s.multiline),
+            || {
+                if replacement_input_changed() {
+                    update_state(|s| {
+                        s.multiline = !s.multiline || s.query.contains('\n');
+                    });
+                }
+            },
+        ))
         .child(toggle_button(
             "content-search-case",
             "Aa",
@@ -827,6 +861,7 @@ fn toggle_button(
     active: impl Fn() -> bool + 'static,
     on_click: impl Fn() + 'static,
 ) -> impl IntoElement {
+    let active = computed(active);
     view()
         .test_id(tid)
         .h(px(28.0))
@@ -836,13 +871,25 @@ fn toggle_button(
         .justify_center()
         .cursor(Cursor::Pointer)
         .label(tip)
-        .bg(move || if active() { p.accent } else { p.rail_bg })
+        .bg(move || {
+            if active.get() {
+                p.accent_soft
+            } else {
+                p.rail_bg
+            }
+        })
         .on_press(move || on_click())
         .child(
             text(label)
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(p.text_primary),
+                .text_color(move || {
+                    if active.get() {
+                        p.accent_soft_text
+                    } else {
+                        p.text_primary
+                    }
+                }),
         )
 }
 

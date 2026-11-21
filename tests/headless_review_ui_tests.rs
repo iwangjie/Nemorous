@@ -609,6 +609,34 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_workspace_search_prefills_cross_line_selection() {
+    let _guard = lock_env();
+    let fx = Fixture::new("multiline-search");
+    let mut app = fx.start_headless(1040.0, 660.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "README.md").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press("# Sample").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("# Sample\nline 2\n"));
+    app.press_key("mod+shift+f").unwrap();
+    app.wait_for("id:content-search-multiline").unwrap();
+    app.wait_for("1 条匹配").unwrap();
+    app.wait_for("id:content-search-group-README.md").unwrap();
+
+    app.press_key("mod+enter").unwrap();
+    app.wait_for_gone("id:content-search-modal", Duration::from_secs(2)).unwrap();
+    app.wait_for("1:1").unwrap();
+
+    app.press_key("mod+shift+f").unwrap();
+    app.press("id:content-search-multiline").unwrap();
+    app.type_text("id:content-search-input", "package main\n\nfunc hello").unwrap();
+    app.wait_for("id:content-search-group-src/app.go").unwrap();
+}
+
+#[test]
 fn ui_line_bookmarks_persist_jump_and_remove_by_repository() {
     let _guard = lock_env();
     let fx = Fixture::new("line-bookmarks");
