@@ -218,16 +218,9 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
             "窗口",
             [
                 MenuItem::role(MenuRole::Minimize),
-                MenuItem::new("向右拆分").on_select(guard_app_command(|| {
-                    let active = app_signal().with_untracked(|s| {
-                        (s.editor_tab == EditorTabKind::File)
-                            .then(|| s.code_tabs.get(s.active_code_tab_idx).map(|tab| tab.id.clone()))
-                            .flatten()
-                    });
-                    if let Some(tab) = active {
-                        crate::code_split_runtime::split_for_tab(&tab);
-                    }
-                })).disabled(modal_open),
+                MenuItem::new("向右拆分")
+                    .on_select(guard_app_command(crate::code_split_runtime::split_active))
+                    .disabled(modal_open),
                 MenuItem::new("取消所有拆分")
                     .on_select(guard_app_command(|| {
                         if app_signal().with_untracked(|s| s.code_split.is_some()) {

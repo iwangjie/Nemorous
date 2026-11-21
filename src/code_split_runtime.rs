@@ -74,6 +74,18 @@ pub(crate) fn tab_list(side: PaneId) -> Vec<(String, String, bool)> {
     })
 }
 
+pub(crate) fn split_active() {
+    let active = app_signal().with_untracked(|s| {
+        if s.editor_tab != EditorTabKind::File {
+            return None;
+        }
+        s.code_tabs.get(s.active_code_tab_idx).map(|tab| tab.id.clone())
+    });
+    if let Some(tab) = active {
+        split_for_tab(&tab);
+    }
+}
+
 pub(crate) fn split_for_tab(id: &str) {
     let is_visible = app_signal().with_untracked(|s| {
         s.editor_tab == EditorTabKind::File

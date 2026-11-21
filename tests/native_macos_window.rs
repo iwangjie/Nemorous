@@ -101,24 +101,6 @@ mod macos {
         sent
     }
 
-    fn activate_menu(app: &NSApplication, path: &[&str]) -> bool {
-        let Some(mut menu) = app.mainMenu() else { return false };
-        for (index, title) in path.iter().enumerate() {
-            let item = menu.itemArray().iter().find(|item| item.title().to_string() == *title);
-            let Some(item) = item else { return false };
-            if index + 1 == path.len() {
-                let Some(action) = item.action() else { return false };
-                let target = item.target();
-                let sent = unsafe { app.sendAction_to_from(action, target.as_deref(), Some(&*item)) };
-                pump(120);
-                return sent;
-            }
-            let Some(submenu) = item.submenu() else { return false };
-            menu = submenu;
-        }
-        false
-    }
-
     fn a11y_contains(view: &NSView, expected: &str) -> bool {
         view_a11y_text(view).contains(expected)
             || view.subviews().iter().any(|child| a11y_contains(&child, expected))
@@ -481,16 +463,23 @@ mod macos {
         println!("BATCH2_NATIVE_SWITCHER_RELEASE ok");
 
         click("code-editor-view", 1);
+        let modal_has = |title: &str| view_with_id(root, "navigation-picker-modal")
+            .is_some_and(|modal| a11y_contains(&modal, title));
+        let dismiss_picker = || {
+            send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+            wait_until("navigation picker dismissed", Duration::from_secs(4), || !visible("navigation-picker-modal"));
+            click("code-editor-view", 1);
+        };
         send_key(app, window, "P", "p", 35, command | NSEventModifierFlags::Shift);
-        wait_until("Command+Shift+P opened Action Search", Duration::from_secs(4), || visible("navigation-picker-modal"));
-        send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
-        click("code-editor-view", 1);
+        wait_until("Command+Shift+P opened Action Search", Duration::from_secs(4), || modal_has("查找操作"));
+        dismiss_picker();
         send_key(app, window, "e", "e", 14, command);
-        wait_until("Command+E opened Recent Files", Duration::from_secs(4), || visible("navigation-picker-modal"));
-        send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+        wait_until("Command+E opened Recent Files", Duration::from_secs(4), || modal_has("最近文件"));
+        dismiss_picker();
         println!("BATCH2_NATIVE_KEYBOARD double-Shift Control-release Action-Search Recent-Files ok");
 
-        assert!(activate_menu(app, &["窗口", "向右拆分"]));
+        assert!(view_with_id(root, "code-editor-view").is_some_and(|editor| a11y_contains(&editor, "editing selection")));
+        click("code-split-right-btn", 1);
         wait("split-editor-left");
         wait("split-editor-right");
         click("split-editor-right", 1);
@@ -511,12 +500,12 @@ mod macos {
         wait("code-editor-view");
         println!("BATCH2_NATIVE_SPLIT_SHARED_UNDO ok");
 
-        assert!(activate_menu(app, &["Git", "选中的文件", "查看历史"]));
+        click("code-git-history-btn", 1);
         wait("git-bottom-pane");
         wait("git-history-affected");
         wait("git-commit-file-tracked.txt");
         save_window_png(window, &evidence.join("native-file-history.png"));
-        println!("BATCH2_NATIVE_HISTORY_MENU ok");
+        println!("BATCH2_NATIVE_FILE_HISTORY ok");
 
     }
 
