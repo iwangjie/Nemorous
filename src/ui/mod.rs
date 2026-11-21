@@ -5,6 +5,7 @@ pub mod content_search;
 pub(crate) mod comparison;
 mod replacement_flow;
 mod key_gestures;
+pub(crate) mod keymap_settings;
 pub(crate) mod navigation_picker;
 mod split_code_view;
 pub(crate) mod revision_picker;
@@ -63,14 +64,47 @@ fn guard_app_command(f: impl Fn() + 'static) -> impl Fn() + 'static {
     }
 }
 
-fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo: bool) -> Vec<MenuItem> {
+fn configured_keymap() -> crate::keymap::Keymap {
+    app_signal().with(|s| crate::keymap::Keymap::from_config(&s.cfg, apple_keys(), os()))
+}
+
+fn keymap_memo() -> Memo<crate::keymap::Keymap> {
+    let profile = computed(|| app_signal().with(|s| {
+        (s.cfg.keymap_overrides.clone(), s.cfg.extra.get(crate::keymap::LEGACY).cloned())
+    }));
+    computed(move || profile.with(|(overrides, legacy)| {
+        crate::keymap::Keymap::from_values(overrides, legacy.as_ref(), apple_keys(), os())
+    }))
+}
+
+fn bind_action(
+    keymap: &crate::keymap::Keymap,
+    action: &str,
+    options: KeyOptions,
+    handler: impl Fn(&str) + 'static,
+) {
+    let handler = std::rc::Rc::new(handler);
+    for key in keymap.keys(action).iter().filter(|key| key.as_str() != crate::keymap::DOUBLE_SHIFT) {
+        let handler = handler.clone();
+        on_key_with(key, options, move |key| handler(key));
+    }
+}
+
+fn menu_binding(item: MenuItem, keymap: &crate::keymap::Keymap, action: &str) -> MenuItem {
+    if let Some(key) = keymap.keys(action).first() {
+        item.shortcut(key)
+    } else {
+        item
+    }
+}
+
+fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo: bool, keymap: &crate::keymap::Keymap) -> Vec<MenuItem> {
     let copy_item = if text_input_focused {
         // 焦点位于原生 <input>（筛选框、查找/替换框、转到行/文件框）时，使用标准 responder copy:，绝不劫持输入框 ⌘C
         MenuItem::role(MenuRole::Copy)
     } else {
         // 焦点位于 Diff 左右侧、源码 Editor 或 Commit/Project/Git 树时，允许点击顶部原生「编辑 > 复制」直达焦点路由复制
-        MenuItem::new("复制")
-            .shortcut("mod+c")
+        menu_binding(MenuItem::new("复制"), keymap, "copy")
             .on_select(copy_for_current_focus)
     };
     vec![
@@ -78,6 +112,8 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
             "Nemorous",
             [
                 MenuItem::role(MenuRole::About),
+                menu_binding(MenuItem::new("快捷键设置…"), keymap, "settings")
+                    .on_select(guard_app_command(keymap_settings::open)).disabled(modal_open),
                 MenuItem::separator(),
                 MenuItem::role(MenuRole::Hide),
                 MenuItem::role(MenuRole::HideOthers),
@@ -90,11 +126,11 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
             "编辑",
             [
                 if code_undo {
-                    MenuItem::new("撤销").shortcut("mod+z")
+                    menu_binding(MenuItem::new("撤销"), keymap, "undo")
                         .on_select(guard_app_command(|| crate::code_split_runtime::undo(false)))
                 } else { MenuItem::role(MenuRole::Undo) },
                 if code_undo {
-                    MenuItem::new("重做").shortcut("mod+shift+z")
+                    menu_binding(MenuItem::new("重做"), keymap, "redo")
                         .on_select(guard_app_command(|| crate::code_split_runtime::undo(true)))
                 } else { MenuItem::role(MenuRole::Redo) },
                 MenuItem::separator(),
@@ -111,8 +147,7 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
         MenuItem::submenu(
             "导航",
             [
-                MenuItem::new("转到文件…")
-                    .shortcut("mod+shift+o")
+                menu_binding(MenuItem::new("转到文件…"), keymap, "goToFile")
                     .on_select(guard_app_command(|| {
                         app_signal().update(|s| {
                             s.picker_open = Some(PickerKind::GoToFile);
@@ -121,8 +156,7 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
                         });
                     }))
                     .disabled(modal_open),
-                MenuItem::new("最近位置…")
-                    .shortcut("mod+shift+e")
+                menu_binding(MenuItem::new("最近位置…"), keymap, "recentLocations")
                     .on_select(guard_app_command(|| {
                         app_signal().update(|s| {
                             s.picker_open = Some(PickerKind::RecentLocations);
@@ -131,21 +165,17 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
                         });
                     }))
                     .disabled(modal_open),
-                MenuItem::new("转到行:列…")
-                    .shortcut("mod+l")
+                menu_binding(MenuItem::new("转到行:列…"), keymap, "goToLine")
                     .on_select(guard_app_command(open_goto_line_modal))
                     .disabled(modal_open),
                 MenuItem::separator(),
-                MenuItem::new("后退")
-                    .shortcut("mod+[")
+                menu_binding(MenuItem::new("后退"), keymap, "back")
                     .on_select(guard_app_command(navigate_back))
                     .disabled(modal_open),
-                MenuItem::new("前进")
-                    .shortcut("mod+]")
+                menu_binding(MenuItem::new("前进"), keymap, "forward")
                     .on_select(guard_app_command(navigate_forward))
                     .disabled(modal_open),
-                MenuItem::new("在文件树中定位")
-                    .shortcut("alt+f1")
+                menu_binding(MenuItem::new("在文件树中定位"), keymap, "selectIn")
                     .on_select(guard_app_command(locate_current_in_project_tree))
                     .disabled(modal_open),
             ],
@@ -153,8 +183,7 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
         MenuItem::submenu(
             "Git",
             [
-                MenuItem::new("刷新工作区")
-                    .shortcut("mod+alt+y")
+                menu_binding(MenuItem::new("刷新工作区"), keymap, "refresh")
                     .on_select(guard_app_command(|| refresh_workspace_async(None)))
                     .disabled(modal_open),
                 MenuItem::submenu(
@@ -183,8 +212,7 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
             "窗口",
             [
                 MenuItem::role(MenuRole::Minimize),
-                MenuItem::new("关闭标签")
-                    .shortcut("mod+w")
+                menu_binding(MenuItem::new("关闭标签"), keymap, "closeTab")
                     .on_select(guard_app_command(close_active_tab))
                     .disabled(modal_open),
             ],
@@ -193,17 +221,20 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
 }
 
 fn setup_application_menu() {
-    let last_mode = stored(None::<(bool, bool, bool)>);
+    let last_mode = stored(None::<(bool, bool, bool, crate::keymap::Keymap)>);
+    let keymap = keymap_memo();
     let modal_memo = computed(|| app_signal().with(|s| s.focus_zone == FocusZone::Modal));
     effect(move || {
         let input_focused = state::text_input_focus_signal().with(|f| f.focused);
         let modal_open = modal_memo.get();
         let code_undo = !input_focused
             && app_signal().with(|s| s.focus_zone == FocusZone::CodeEditor);
-        let mode = (input_focused, modal_open, code_undo);
-        if last_mode.get() != Some(mode) {
+        let keys = keymap.get();
+        let mode = (input_focused, modal_open, code_undo, keys.clone());
+        let changed = last_mode.with(|prior| prior.as_ref() != Some(&mode));
+        if changed {
             last_mode.replace(Some(mode));
-            set_application_menu(build_application_menu(input_focused, modal_open, code_undo));
+            set_application_menu(build_application_menu(input_focused, modal_open, code_undo, &keys));
         }
     });
 }
@@ -241,6 +272,7 @@ fn setup_shortcuts() {
         ..Default::default()
     };
 
+    let keymap_memo = keymap_memo();
     let zone_memo = computed(|| app_signal().with(|s| s.focus_zone));
     let tab_memo = computed(|| app_signal().with(|s| s.editor_tab));
     let workspace_search_open = computed(content_search::is_open);
@@ -269,6 +301,7 @@ fn setup_shortcuts() {
         let text_input_focused = state::text_input_focus_signal().with(|f| f.focused);
         let has_dismissable = dismissable_memo.get();
         let _rebind_rev = state::shortcut_rebind_signal().with(|r| r.rev);
+        let keys = keymap_memo.get();
 
         // 模态弹窗打开时由弹窗独占键盘（对齐基线 main.go:401 overlayOpen）：仅响应 Escape 关闭，绝不穿透触发后台快捷键！
         if zone == FocusZone::Modal {
@@ -285,8 +318,7 @@ fn setup_shortcuts() {
                 on_key_with("down", always, |_| navigation_picker::move_selection(1));
                 if switcher_open.get() {
                     on_key_with("enter", always, |_| navigation_picker::accept());
-                    on_key_with("ctrl+tab", always, |_| navigation_picker::start_or_move_switcher(false));
-                    on_key_with("ctrl+shift+tab", always, |_| navigation_picker::start_or_move_switcher(true));
+                    bind_action(&keys, "switcher", always, |key| navigation_picker::start_or_move_switcher(key.contains("shift+")));
                 }
             }
             if workspace_search_open.get() {
@@ -300,102 +332,99 @@ fn setup_shortcuts() {
             return;
         }
 
-        on_key_with("mod+e", always, |_| navigation_picker::open(navigation_picker::Mode::RecentFiles));
-        on_key_with("mod+shift+a", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
-        on_key_with("mod+shift+p", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
-        on_key_with("ctrl+tab", always, |_| navigation_picker::start_or_move_switcher(false));
-        on_key_with("ctrl+shift+tab", always, |_| navigation_picker::start_or_move_switcher(true));
-        on_key_with("mod+s", always, |_| {
+        bind_action(&keys, "recentFiles", always, |_| navigation_picker::open(navigation_picker::Mode::RecentFiles));
+        bind_action(&keys, "actions", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
+        bind_action(&keys, "switcher", always, |key| navigation_picker::start_or_move_switcher(key.contains("shift+")));
+        bind_action(&keys, "save", always, |_| {
             save_active_document();
         });
+        bind_action(&keys, "settings", always, |_| keymap_settings::open());
+        bind_action(&keys, "searchEverywhere", always, |_| navigation_picker::open(navigation_picker::Mode::Everywhere));
+        bind_action(&keys, "previousTab", always, |_| navigation_picker::cycle_tabs(-1));
+        bind_action(&keys, "nextTab", always, |_| navigation_picker::cycle_tabs(1));
         if zone == FocusZone::CodeEditor && !text_input_focused {
-            on_key_with("mod+z", always, |_| crate::code_split_runtime::undo(false));
-            on_key_with("mod+shift+z", always, |_| crate::code_split_runtime::undo(true));
+            bind_action(&keys, "nextOccurrence", always, |_| {
+                if let Some(editor) = state::active_editor_api(FocusZone::CodeEditor) {
+                    editor.run(nsh_base::EditorCommand::SelectNextOccurrence);
+                }
+            });
+            bind_action(&keys, "undo", always, |_| crate::code_split_runtime::undo(false));
+            bind_action(&keys, "redo", always, |_| crate::code_split_runtime::undo(true));
         }
-        on_key_with("mod+w", always, |_| {
+        bind_action(&keys, "closeTab", always, |_| {
             close_active_tab();
         });
-        on_key_with("mod+l", always, |_| {
+        bind_action(&keys, "goToLine", always, |_| {
             open_goto_line_modal();
         });
-        on_key_with("mod+[", always, |_| {
+        bind_action(&keys, "back", always, |_| {
             navigate_back();
         });
-        on_key_with("mod+]", always, |_| {
+        bind_action(&keys, "forward", always, |_| {
             navigate_forward();
         });
-        on_key_with("mod+shift+f", always, |_| {
+        bind_action(&keys, "findInFiles", always, |_| {
             content_search::open_workspace();
         });
-        on_key_with("mod+shift+r", always, |_| {
+        bind_action(&keys, "replaceInFiles", always, |_| {
             content_search::open_replace();
         });
-        on_key_with("mod+f12", always, |_| {
+        bind_action(&keys, "structure", always, |_| {
             editor_tools::open_structure();
         });
-        on_key_with("mod+shift+t", always, |_| {
+        bind_action(&keys, "todos", always, |_| {
             editor_tools::open_todos();
         });
-        on_key_with("mod+alt+l", always, |_| {
+        bind_action(&keys, "format", always, |_| {
             crate::format_runtime::format_active();
         });
-        on_key_with("mod+shift+b", always, |_| {
+        bind_action(&keys, "bookmark", always, |_| {
             bookmarks::toggle_current_line();
         });
-        on_key_with("mod+f", always, |_| {
+        bind_action(&keys, "find", always, |_| {
             open_find_bar(false);
         });
-        on_key_with("mod+r", always, |_| {
-            open_find_bar(true);
-        });
-        on_key_with("mod+alt+f", always, |_| {
-            open_find_bar(true);
-        });
-        on_key_with("mod+g", always, |_| {
+        bind_action(&keys, "replace", always, |_| open_find_bar(true));
+        bind_action(&keys, "findNext", always, |_| {
             state::run_active_find_nav(true);
         });
-        on_key_with("mod+shift+g", always, |_| {
+        bind_action(&keys, "findPrevious", always, |_| {
             state::run_active_find_nav(false);
         });
-        on_key_with("mod+shift+o", always, |_| {
+        bind_action(&keys, "goToFile", always, |_| {
             app_signal().update(|s| {
                 s.picker_open = Some(PickerKind::GoToFile);
                 s.picker_query.clear();
                 state::enter_modal_focus(s);
             });
         });
-        on_key_with("mod+shift+e", always, |_| {
+        bind_action(&keys, "recentLocations", always, |_| {
             app_signal().update(|s| {
                 s.picker_open = Some(PickerKind::RecentLocations);
                 s.picker_query.clear();
                 state::enter_modal_focus(s);
             });
         });
-        on_key_with("mod+alt+y", always, |_| {
+        bind_action(&keys, "refresh", always, |_| {
             refresh_workspace_async(None);
         });
-        on_key_with("mod+shift+c", always, |_| {
+        bind_action(&keys, "copyAbsolute", always, |_| {
             copy_absolute_path_current();
         });
-        on_key_with("mod+alt+shift+c", always, |_| {
+        bind_action(&keys, "copyReference", always, |_| {
             copy_reference_current();
         });
-        on_key_with("alt+f1", always, |_| {
+        bind_action(&keys, "selectIn", always, |_| {
             locate_current_in_project_tree();
         });
-        on_key_with("f4", always, |_| {
-            jump_from_diff_to_source();
-        });
-        if matches!(
+        let diff_focus = matches!(
             zone,
-            FocusZone::WorkingDiffOld
-                | FocusZone::WorkingDiffNew
-                | FocusZone::CommitDiffOld
-                | FocusZone::CommitDiffNew
-        ) {
-            on_key_with("cmd+down", always, |_| {
-                jump_from_diff_to_source();
-            });
+            FocusZone::WorkingDiffOld | FocusZone::WorkingDiffNew | FocusZone::CommitDiffOld | FocusZone::CommitDiffNew
+        );
+        for key in keys.keys("jumpToSource") {
+            if key != "cmd+down" || diff_focus {
+                on_key_with(key, always, |_| jump_from_diff_to_source());
+            }
         }
         // ⌥←/⌥→ 在源码中移动光标，在 Diff 中切换文件。
         if !text_input_focused && tab == EditorTabKind::File && zone == FocusZone::CodeEditor {
@@ -422,13 +451,13 @@ fn setup_shortcuts() {
             && matches!(tab, EditorTabKind::WorkingDiff | EditorTabKind::CommitDiff)
             && zone != FocusZone::CodeEditor
         {
-            on_key_with("f7", always, |_| {
+            bind_action(&keys, "nextDifference", always, |_| {
                 jump_diff_hunk(1);
             });
-            on_key_with("shift+f7", always, |_| {
+            bind_action(&keys, "previousDifference", always, |_| {
                 jump_diff_hunk(-1);
             });
-            on_key_with("alt+left", always, |_| {
+            bind_action(&keys, "previousDiffFile", always, |_| {
                 let cur_tab = app_signal().with_untracked(|s| s.editor_tab);
                 match cur_tab {
                     EditorTabKind::CommitDiff => {
@@ -440,7 +469,7 @@ fn setup_shortcuts() {
                     _ => {}
                 }
             });
-            on_key_with("alt+right", always, |_| {
+            bind_action(&keys, "nextDiffFile", always, |_| {
                 let cur_tab = app_signal().with_untracked(|s| s.editor_tab);
                 match cur_tab {
                     EditorTabKind::CommitDiff => {
@@ -456,9 +485,9 @@ fn setup_shortcuts() {
 
         // 工具窗口快捷键：⌘0 Commit、⌘1 Project、⌘9 Git
         // 对齐基线 review_toolwindow.go：当面板已打开但焦点在编辑器/Diff 时，按 ⌘0/⌘1 先切焦点到对应树并保留编辑器，仅当焦点已在对应树内再按才折叠。
-        on_key_with("mod+0", always, |_| focus_tool_window(LeftTab::Commit, true));
-        on_key_with("mod+1", always, |_| focus_tool_window(LeftTab::Project, true));
-        on_key_with("mod+9", always, |_| {
+        bind_action(&keys, "commitWindow", always, |_| focus_tool_window(LeftTab::Commit, true));
+        bind_action(&keys, "project", always, |_| focus_tool_window(LeftTab::Project, true));
+        bind_action(&keys, "gitWindow", always, |_| {
             content_search::hide_find_panel();
             app_signal().update(|s| {
                 s.show_git_panel = !s.show_git_panel;
@@ -466,7 +495,7 @@ fn setup_shortcuts() {
         });
 
         // 树焦点快捷键（Commit 树 / Project 树 / Git 提交文件树）
-        on_key_with("mod+d", always, move |_| {
+        bind_action(&keys, "compareOrDiff", always, move |_| {
             match zone {
                 FocusZone::CommitTree => {
                     let sel = app_signal().with_untracked(|s| s.change_selection.clone());
@@ -499,7 +528,7 @@ fn setup_shortcuts() {
             zone,
             FocusZone::CommitTree | FocusZone::ProjectTree | FocusZone::GitFiles
         ) {
-            on_key_with("mod+c", not_editing, |_| {
+            bind_action(&keys, "copy", not_editing, |_| {
                 copy_for_current_focus();
             });
             on_key_with("enter", not_editing, move |_| match zone {
@@ -1055,5 +1084,6 @@ pub fn shell() -> impl IntoElement {
         .child(bookmarks::modal_layer())
         .child(navigation_picker::modal_layer())
         .child(revision_picker::modal_layer())
+        .child(keymap_settings::modal_layer())
         .child(modals::modals_layer())
 }

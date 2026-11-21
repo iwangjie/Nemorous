@@ -609,6 +609,93 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_rebind_shortcuts_rejects_conflicts_and_survives_restart() {
+    let _guard = lock_env();
+    let fx = Fixture::new("keymap-settings");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    config["keyboard_shortcuts"] = serde_json::json!({
+        "goToLine": [{"modifiers": 9, "key": 61}],
+        "otherAction": [{"modifiers": 8, "key": 49}]
+    });
+    fs::write(&fx.config_file, serde_json::to_vec(&config).unwrap()).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press_key("mod+l").unwrap();
+    assert!(!app.screen().matches("id:goto-line-modal").unwrap());
+    app.press_key("mod+shift+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.press_key("escape").unwrap();
+
+    app.press_key("mod+,").unwrap();
+    app.wait_for("id:keymap-settings").unwrap();
+    app.type_text("id:keymap-filter", "goToLine").unwrap();
+    app.press("id:keymap-action-goToLine").unwrap();
+    app.clear("id:keymap-draft").unwrap();
+    app.type_text("id:keymap-draft", "mod+s").unwrap();
+    app.press("id:keymap-save").unwrap();
+    app.wait_for("已被「保存」使用").unwrap();
+    app.clear("id:keymap-draft").unwrap();
+    app.type_text("id:keymap-draft", "mod+alt+g").unwrap();
+    app.press("id:keymap-save").unwrap();
+    app.wait_for("已保存快捷键").unwrap();
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:keymap-settings", Duration::from_secs(2)).unwrap();
+    app.press_key("mod+alt+g").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    drop(app);
+
+    let mut app = fx.start_app(1440.0, 900.0);
+    app.wait_for("id:nemorous-root").unwrap();
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press_key("mod+alt+g").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    app.press_key("escape").unwrap();
+    app.press_key("mod+,").unwrap();
+    app.type_text("id:keymap-filter", "goToLine").unwrap();
+    app.press("id:keymap-action-goToLine").unwrap();
+    app.press("id:keymap-reset").unwrap();
+    app.wait_for("已恢复默认快捷键").unwrap();
+    app.press_key("escape").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.wait_for("id:goto-line-modal").unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    assert!(config["keyboard_shortcuts"]["goToLine"].is_null());
+    assert_eq!(config["keyboard_shortcuts"]["otherAction"][0]["key"], 49);
+}
+
+#[test]
+fn ui_mac_control_g_adds_next_occurrence_as_an_editable_selection() {
+    let _guard = lock_env();
+    let fx = Fixture::new("next-occurrence");
+    fs::write(fx.repo_dir.join("src/app.go"), "package main\nfunc x() {}\nfunc y() {}\n").unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "src/app.go:2:2").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    app.press("func x() {}").unwrap();
+    app.press_key("mod+l").unwrap();
+    app.type_text("id:goto-line-input", "2:2").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("2:2").unwrap();
+    app.press_key("ctrl+g").unwrap();
+    app.press_key("ctrl+g").unwrap();
+    app.press_key("z").unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert_eq!(app.screen().clipboard(), Some("package main\nz x() {}\nz y() {}\n"));
+}
+
+#[test]
 fn ui_compare_pre_rename_revision_with_unsaved_source() {
     let _guard = lock_env();
     let fx = Fixture::new("revision-picker-rename");

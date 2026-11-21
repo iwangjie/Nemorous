@@ -65,7 +65,12 @@ pub fn key_up(event: &KeyEvent) {
         global::<ShiftTap>().update(|gesture| {
             double = gesture.push(false, Instant::now());
         });
-        if double {
+        if double
+            && super::configured_keymap()
+                .keys("searchEverywhere")
+                .iter()
+                .any(|key| key == crate::keymap::DOUBLE_SHIFT)
+        {
             navigation_picker::open(Mode::Everywhere);
         }
     }

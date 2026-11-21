@@ -3418,11 +3418,12 @@ pub fn close_active_modal() {
     let bookmarks_closed = crate::ui::bookmarks::close_active();
     let navigation_closed = crate::ui::navigation_picker::close_active();
     let revision_closed = crate::ui::revision_picker::close_active();
+    let keymap_closed = crate::ui::keymap_settings::close_active();
     let editor_tool_closed = crate::ui::editor_tools::close_active();
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed {
+        if editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;

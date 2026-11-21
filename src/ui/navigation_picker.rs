@@ -221,6 +221,29 @@ pub fn start_or_move_switcher(reverse: bool) {
     }
 }
 
+pub fn cycle_tabs(delta: isize) {
+    let destination = app_signal().with_untracked(|s| {
+        let active = s.code_tabs.get(s.active_code_tab_idx)?;
+        let ids: Vec<_> = if let Some(split) = &s.code_split {
+            split
+                .pane(split.focused)
+                .tabs()
+                .iter()
+                .map(String::as_str)
+                .collect()
+        } else {
+            s.code_tabs.iter().map(|tab| tab.id.as_str()).collect()
+        };
+        let index = ids.iter().position(|id| *id == active.id)? as isize;
+        Some(Destination::Tab(
+            ids[(index + delta).rem_euclid(ids.len() as isize) as usize].to_string(),
+        ))
+    });
+    if let Some(destination) = destination {
+        activate(destination);
+    }
+}
+
 pub fn release_control() {
     if is_switcher() {
         accept();

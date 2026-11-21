@@ -6,6 +6,7 @@ mod file_revisions;
 mod format_runtime;
 mod formatter;
 pub mod git;
+mod keymap;
 pub mod local_history;
 pub mod paths;
 pub mod replace_in_files;
