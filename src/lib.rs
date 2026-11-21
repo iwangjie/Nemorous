@@ -5,6 +5,7 @@ pub mod local_history;
 pub mod paths;
 pub mod replace_in_files;
 pub mod search;
+pub mod session;
 pub mod state;
 pub mod theme;
 pub mod ui;
