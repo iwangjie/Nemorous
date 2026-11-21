@@ -609,6 +609,43 @@ fn ui_content_search_modal_scope_open_and_close() {
 }
 
 #[test]
+fn ui_search_everywhere_actions_recent_files_and_switcher() {
+    let _guard = lock_env();
+    let fx = Fixture::new("navigation-picker");
+    let mut app = fx.start_headless(1440.0, 900.0);
+
+    app.press("id:top-search-btn").unwrap();
+    app.wait_for("随处搜索").unwrap();
+    app.press("文件").unwrap();
+    app.type_text("id:navigation-picker-input", "rename_new.go").unwrap();
+    app.submit("id:navigation-picker-input").unwrap();
+    app.wait_for("id:editor-tab-file-src/rename_new.go").unwrap();
+
+    app.press_key("mod+shift+a").unwrap();
+    app.wait_for("查找操作").unwrap();
+    app.type_text("id:navigation-picker-input", "在文件中查找").unwrap();
+    app.submit("id:navigation-picker-input").unwrap();
+    app.wait_for("id:content-search-input").unwrap();
+    app.press_key("escape").unwrap();
+
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "README.md:2").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.wait_for("2:1").unwrap();
+    app.press_key("ctrl+tab").unwrap();
+    app.wait_for("切换器").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for_gone("id:navigation-picker-modal", Duration::from_secs(2)).unwrap();
+    app.wait_for("1:1").unwrap();
+
+    app.press_key("mod+e").unwrap();
+    app.wait_for("最近文件").unwrap();
+    app.type_text("id:navigation-picker-input", "README.md").unwrap();
+    app.submit("id:navigation-picker-input").unwrap();
+    app.wait_for("2:1").unwrap();
+}
+
+#[test]
 fn ui_compare_selected_project_files_and_clipboard_reads_unsaved_text() {
     let _guard = lock_env();
     let fx = Fixture::new("file-comparison");

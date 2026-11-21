@@ -91,6 +91,10 @@ fn find_sig() -> Signal<FindResultsState> {
 
 pub fn find_panel_available() -> bool {
     let workspace = app_signal().with(|s| s.cfg.workspace_path.clone());
+    find_panel_available_in(&workspace)
+}
+
+pub(crate) fn find_panel_available_in(workspace: &str) -> bool {
     find_sig().with(|s| {
         s.view
             .as_ref()
@@ -115,7 +119,7 @@ pub fn toggle_find_panel() {
     }
 }
 
-fn show_find_panel() {
+pub(crate) fn show_find_panel() {
     app_signal().update(|s| s.show_git_panel = false);
     find_sig().update(|s| s.open = true);
 }

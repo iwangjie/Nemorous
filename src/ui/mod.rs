@@ -4,6 +4,8 @@ pub mod commit_pane;
 pub mod content_search;
 pub(crate) mod comparison;
 mod replacement_flow;
+mod key_gestures;
+pub(crate) mod navigation_picker;
 mod split_code_view;
 pub mod diff_view;
 pub mod editor_area;
@@ -201,6 +203,26 @@ fn setup_application_menu() {
     });
 }
 
+fn focus_tool_window(tab: LeftTab, toggle: bool) {
+    state::set_text_input_focused(false);
+    app_signal().update(|s| {
+        let focus = match tab {
+            LeftTab::Commit => FocusZone::CommitTree,
+            LeftTab::Project => FocusZone::ProjectTree,
+        };
+        if toggle && s.show_left_panel && s.left_tab == tab && s.focus_zone == focus {
+            s.show_left_panel = false;
+        } else {
+            s.show_left_panel = true;
+            s.left_tab = tab;
+            s.focus_zone = focus;
+            if tab == LeftTab::Commit && s.change_selection.is_none() {
+                s.change_selection = state::visible_change_items(s).into_iter().next();
+            }
+        }
+    });
+}
+
 /// 绑定全局及焦点感知 IDEA 快捷键。
 /// 通过订阅 `focus_zone` 变化在 `effect` 中重绑，确保后注册优先级覆盖 NSH `Editor` 内置冲突键位
 /// （如 `mod+l`, `mod+[`, `mod+]`, `mod+d`, `cmd+down`）。
@@ -218,6 +240,8 @@ fn setup_shortcuts() {
     let tab_memo = computed(|| app_signal().with(|s| s.editor_tab));
     let workspace_search_open = computed(content_search::is_open);
     let multiline_search = computed(content_search::query_is_multiline);
+    let navigation_open = computed(navigation_picker::is_open);
+    let switcher_open = computed(navigation_picker::is_switcher);
     let dismissable_memo = computed(|| {
         app_signal().with(|s| {
             s.focus_zone == FocusZone::Modal
@@ -245,6 +269,15 @@ fn setup_shortcuts() {
             on_key_with("escape", always, |_| {
                 state::close_active_modal();
             });
+            if navigation_open.get() {
+                on_key_with("up", always, |_| navigation_picker::move_selection(-1));
+                on_key_with("down", always, |_| navigation_picker::move_selection(1));
+                if switcher_open.get() {
+                    on_key_with("enter", always, |_| navigation_picker::accept());
+                    on_key_with("ctrl+tab", always, |_| navigation_picker::start_or_move_switcher(false));
+                    on_key_with("ctrl+shift+tab", always, |_| navigation_picker::start_or_move_switcher(true));
+                }
+            }
             if workspace_search_open.get() {
                 if multiline_search.get() {
                     on_key_with("mod+enter", always, |_| content_search::activate_selected());
@@ -256,6 +289,11 @@ fn setup_shortcuts() {
             return;
         }
 
+        on_key_with("mod+e", always, |_| navigation_picker::open(navigation_picker::Mode::RecentFiles));
+        on_key_with("mod+shift+a", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
+        on_key_with("mod+shift+p", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
+        on_key_with("ctrl+tab", always, |_| navigation_picker::start_or_move_switcher(false));
+        on_key_with("ctrl+shift+tab", always, |_| navigation_picker::start_or_move_switcher(true));
         on_key_with("mod+s", always, |_| {
             save_active_document();
         });
@@ -407,37 +445,8 @@ fn setup_shortcuts() {
 
         // 工具窗口快捷键：⌘0 Commit、⌘1 Project、⌘9 Git
         // 对齐基线 review_toolwindow.go：当面板已打开但焦点在编辑器/Diff 时，按 ⌘0/⌘1 先切焦点到对应树并保留编辑器，仅当焦点已在对应树内再按才折叠。
-        on_key_with("mod+0", always, |_| {
-            app_signal().update(|s| {
-                if s.show_left_panel
-                    && s.left_tab == LeftTab::Commit
-                    && s.focus_zone == FocusZone::CommitTree
-                {
-                    s.show_left_panel = false;
-                } else {
-                    s.show_left_panel = true;
-                    s.left_tab = LeftTab::Commit;
-                    if s.change_selection.is_none() {
-                        s.change_selection = state::visible_change_items(s).into_iter().next();
-                    }
-                    s.focus_zone = FocusZone::CommitTree;
-                }
-            });
-        });
-        on_key_with("mod+1", always, |_| {
-            app_signal().update(|s| {
-                if s.show_left_panel
-                    && s.left_tab == LeftTab::Project
-                    && s.focus_zone == FocusZone::ProjectTree
-                {
-                    s.show_left_panel = false;
-                } else {
-                    s.show_left_panel = true;
-                    s.left_tab = LeftTab::Project;
-                    s.focus_zone = FocusZone::ProjectTree;
-                }
-            });
-        });
+        on_key_with("mod+0", always, |_| focus_tool_window(LeftTab::Commit, true));
+        on_key_with("mod+1", always, |_| focus_tool_window(LeftTab::Project, true));
         on_key_with("mod+9", always, |_| {
             content_search::hide_find_panel();
             app_signal().update(|s| {
@@ -685,14 +694,8 @@ fn top_header_bar() -> impl IntoElement {
                             .justify_center()
                             .cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
-                            .label("转到文件 (⌘⇧O)")
-                            .on_press(|| {
-                                app_signal().update(|s| {
-                                    s.picker_open = Some(PickerKind::GoToFile);
-                                    s.picker_query.clear();
-                                    state::enter_modal_focus(s);
-                                });
-                            })
+                            .label("随处搜索")
+                            .on_press(|| navigation_picker::open(navigation_picker::Mode::Everywhere))
                             .child(icons::icon(ICO_SEARCH, 13.0, p.text_control)),
                     ),
             )
@@ -974,6 +977,8 @@ pub fn shell() -> impl IntoElement {
 
     view()
         .test_id("nemorous-root")
+        .on_key_down(key_gestures::key_down)
+        .on_key_up(key_gestures::key_up)
         .relative()
         .flex_1()
         .flex_col()
@@ -1037,5 +1042,6 @@ pub fn shell() -> impl IntoElement {
         .child(content_search::modal_layer())
         .child(editor_tools::modal_layer())
         .child(bookmarks::modal_layer())
+        .child(navigation_picker::modal_layer())
         .child(modals::modals_layer())
 }
