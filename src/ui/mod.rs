@@ -4,6 +4,8 @@ pub mod bookmarks;
 pub mod code_editor;
 pub mod commit_pane;
 mod commit_form;
+pub(crate) mod conflict_workbench;
+pub(crate) mod credentials_view;
 pub mod content_search;
 pub(crate) mod comparison;
 mod replacement_flow;
@@ -22,8 +24,11 @@ pub mod git_pane;
 pub mod icons;
 pub mod modals;
 pub(crate) mod git_prompt;
+pub(crate) mod git_advanced;
 pub(crate) mod git_review;
 pub(crate) mod index_review;
+pub(crate) mod merge_menu;
+pub(crate) mod rebase_plan_view;
 pub mod project_pane;
 mod workspace_menu;
 pub(crate) mod sync_dialog;
@@ -202,6 +207,10 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
         MenuItem::submenu(
             "Git",
             [
+                MenuItem::new("Git 高级…")
+                    .on_select(guard_app_command(git_advanced::open)).disabled(modal_open),
+                MenuItem::new("多仓合并…")
+                    .on_select(guard_app_command(merge_menu::open)).disabled(modal_open),
                 menu_binding(MenuItem::new("分支矩阵…"), keymap, "branchMatrix")
                     .on_select(guard_app_command(branch_matrix::open)).disabled(modal_open),
                 menu_binding(MenuItem::new("拉取全部仓库"), keymap, "pull")
@@ -306,6 +315,7 @@ fn setup_shortcuts() {
     let revision_open = computed(revision_picker::is_open);
     let switcher_open = computed(navigation_picker::is_switcher);
     let index_review_open = computed(index_review::is_open);
+    let conflict_workbench_open = computed(conflict_workbench::is_open);
     let commit_message_focused = computed(commit_form::has_focus);
     let dismissable_memo = computed(|| {
         app_signal().with(|s| {
@@ -336,6 +346,16 @@ fn setup_shortcuts() {
             });
             if index_review_open.get() {
                 bind_action(&keys, "save", always, |_| index_review::save_active());
+            }
+            if conflict_workbench_open.get() {
+                use crate::conflict_text::ConflictChoice;
+                bind_action(&keys, "save", always, |_| conflict_workbench::save());
+                on_key_with("alt+left", always, |_| conflict_workbench::move_hunk(-1));
+                on_key_with("alt+right", always, |_| conflict_workbench::move_hunk(1));
+                on_key_with("alt+1", always, |_| conflict_workbench::choose(ConflictChoice::Ours));
+                on_key_with("alt+2", always, |_| conflict_workbench::choose(ConflictChoice::Theirs));
+                on_key_with("alt+3", always, |_| conflict_workbench::choose(ConflictChoice::BothOursFirst));
+                on_key_with("mod+enter", always, |_| conflict_workbench::continue_if_ready());
             }
             if revision_open.get() {
                 on_key_with("up", always, |_| revision_picker::move_selection(-1));
@@ -765,6 +785,16 @@ fn top_header_bar() -> impl IntoElement {
                     .window_drag(false)
                     .child(
                         view()
+                            .test_id("top-git-advanced-btn")
+                            .label("Git 高级操作")
+                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0))
+                            .items_center().justify_center().cursor(Cursor::Pointer)
+                            .hover(move |s| s.bg(p.surface_hover))
+                            .on_press(git_advanced::open)
+                            .child(icons::icon(ICO_SETTINGS, 13.0, p.text_control)),
+                    )
+                    .child(
+                        view()
                             .test_id("top-git-sync-btn")
                             .label("获取、拉取或推送")
                             .px(px(6.0)).h(px(26.0)).rounded(px(5.0))
@@ -1159,6 +1189,11 @@ pub fn shell() -> impl IntoElement {
         .child(branch_matrix::layer())
         .child(sync_dialog::layer())
         .child(index_review::layer())
+        .child(git_advanced::layer())
+        .child(credentials_view::layer())
+        .child(merge_menu::layer())
+        .child(rebase_plan_view::layer())
+        .child(conflict_workbench::layer())
         .child(git_prompt::layer())
         .child(modals::modals_layer())
 }

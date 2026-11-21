@@ -260,7 +260,7 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
-fn network(dir: &Path, args: &[&str], cancel: &AtomicBool) -> Result<()> {
+pub(crate) fn network(dir: &Path, args: &[&str], cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Acquire) {
         return Err(Cancelled.into());
     }

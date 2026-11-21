@@ -418,6 +418,33 @@ fn ui_narrow_pane_1040x660_and_100px_more_menu_stash() {
 }
 
 #[test]
+fn ui_workspace_stash_resumes_index_and_untracked_files() {
+    let _guard = lock_env();
+    let fx = Fixture::new("workspace-stash");
+    git_run(&fx.repo_dir, &["add", "src/app.go"]);
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:changes-stash-btn").unwrap();
+    app.choose_menu_item("贮藏全部仓库").unwrap();
+    app.wait_for("id:git-advanced-report").unwrap();
+    assert!(!fx.repo_dir.join("notes.txt").exists());
+    assert!(fs::read_to_string(fx.repo_dir.join("src/app.go")).unwrap().contains("old-greeting"));
+    app.press_key("escape").unwrap();
+
+    app.press("id:changes-stash-btn").unwrap();
+    app.choose_menu_item("恢复全部仓库的最近贮藏…").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("id:git-advanced-report").unwrap();
+    assert!(fx.repo_dir.join("notes.txt").exists());
+    let staged = Command::new("git")
+        .current_dir(&fx.repo_dir)
+        .args(["show", ":src/app.go"])
+        .output()
+        .unwrap();
+    assert!(staged.status.success());
+    assert!(String::from_utf8(staged.stdout).unwrap().contains("new-greeting"));
+}
+
+#[test]
 fn ui_project_tree_locate_and_file_picker_line_col() {
     let _guard = lock_env();
     let fx = Fixture::new("picker-locate");

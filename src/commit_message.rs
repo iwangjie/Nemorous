@@ -20,6 +20,11 @@ pub(crate) fn generate(
 ) -> Result<String> {
     let (agent, program) = select_agent(agent)?;
     let prompt = build_prompt(files)?;
+    clean_commit_message(&run_agent(agent, &program, prompt)?)
+}
+
+pub(crate) fn run_text_agent(setting: &str, prompt: String) -> Result<String> {
+    let (agent, program) = select_agent(setting)?;
     run_agent(agent, &program, prompt)
 }
 
@@ -225,7 +230,10 @@ fn run_agent(agent: &str, binary: &Path, prompt: String) -> Result<String> {
         .join()
         .map_err(|_| anyhow::anyhow!("AI 结果读取失败"))??;
     ensure!(data.len() <= RESPONSE_LIMIT, "AI 返回内容超过大小限制");
-    let raw = String::from_utf8(data)?;
+    Ok(String::from_utf8(data)?)
+}
+
+fn clean_commit_message(raw: &str) -> Result<String> {
     let mut lines = raw
         .trim()
         .lines()
@@ -279,7 +287,8 @@ mod tests {
             "esac\n",
         )).unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let message = run_agent("omp", &program, "sample-diff".to_owned()).unwrap();
+        let response = run_agent("omp", &program, "sample-diff".to_owned()).unwrap();
+        let message = clean_commit_message(&response).unwrap();
         assert_eq!(
             message,
             "fix: update fixture\n\nPreserve the remaining changes."

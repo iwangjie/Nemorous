@@ -3461,7 +3461,8 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
 /// 统一关闭最顶层弹窗（或查找条），并恢复焦点与原生编辑器焦点。
 pub fn close_active_modal() {
     if crate::ui::content_search::intercept_close() || crate::history_runtime::intercept_close()
-        || crate::ui::index_review::intercept_close() {
+        || crate::ui::index_review::intercept_close()
+        || crate::ui::conflict_workbench::intercept_close() {
         return;
     }
     set_text_input_focused(false);
@@ -3477,10 +3478,15 @@ pub fn close_active_modal() {
     let branches_closed = crate::ui::branch_matrix::close_active();
     let sync_closed = crate::ui::sync_dialog::close_active();
     let index_review_closed = crate::ui::index_review::close_active();
+    let conflict_workbench_closed = crate::ui::conflict_workbench::close_active();
+    let merge_menu_closed = crate::ui::merge_menu::close_active();
+    let rebase_plan_closed = crate::ui::rebase_plan_view::close_active();
+    let git_advanced_closed = crate::ui::git_advanced::close_active();
+    let credentials_closed = crate::ui::credentials_view::close_active();
     let mut restored_editor = false;
     app_signal().update(|s| {
         let mut closed_modal = false;
-        if index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
+        if credentials_closed || git_advanced_closed || rebase_plan_closed || merge_menu_closed || conflict_workbench_closed || index_review_closed || sync_closed || branches_closed || git_prompt_closed || editor_tool_closed || content_search_closed || bookmarks_closed || navigation_closed || revision_closed || keymap_closed || history_closed {
             closed_modal = true;
         } else if s.save_conflict.is_some() {
             s.save_conflict = None;

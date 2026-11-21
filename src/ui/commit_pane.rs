@@ -226,19 +226,23 @@ fn open_view_options_menu() {
     ]);
 }
 
-fn open_stash_menu() {
+fn stash_menu_items() -> Vec<MenuItem> {
     let count = app_signal().with_untracked(|s| s.stashes.len());
-    crate::state::show_popup_menu(vec![
-        MenuItem::new(format!("管理 Stash… ({count})")).on_select(|| {
-            app_signal().update(|s| {
-                s.stash_modal_open = true;
-                state::enter_modal_focus(s);
-            });
-        }),
-        MenuItem::new("刷新 Stash 列表").on_select(|| {
-            state::refresh_workspace_async(None);
-        }),
-    ]);
+    let mut items = super::git_advanced::stash_workspace_items().into_iter().collect::<Vec<_>>();
+    items.push(MenuItem::new(format!("管理 Stash… ({count})")).on_select(|| {
+        app_signal().update(|s| {
+            s.stash_modal_open = true;
+            state::enter_modal_focus(s);
+        });
+    }));
+    items.push(MenuItem::new("刷新 Stash 列表").on_select(|| {
+        state::refresh_workspace_async(None);
+    }));
+    items
+}
+
+fn open_stash_menu() {
+    state::show_popup_menu(stash_menu_items());
 }
 
 fn set_change_list_filter(name: &str) {
@@ -332,9 +336,8 @@ fn assign_to_list_menu(file: &ChangedFile) -> MenuItem {
 }
 
 fn open_narrow_overflow_menu() {
-    let (preview, flat, stash_cnt) = app_signal().with_untracked(|s| {
-        (s.cfg.change_diff_preview, s.cfg.changes_flat, s.stashes.len())
-    });
+    let (preview, flat) =
+        app_signal().with_untracked(|s| (s.cfg.change_diff_preview, s.cfg.changes_flat));
     crate::state::show_popup_menu(vec![
         MenuItem::submenu(
             "变更视图选项",
@@ -354,15 +357,7 @@ fn open_narrow_overflow_menu() {
             state::save_config_quiet();
         }),
         MenuItem::new("变更列表").on_select(open_changelist_menu),
-        MenuItem::submenu(
-            "Stash",
-            [MenuItem::new(format!("管理 Stash… ({stash_cnt})")).on_select(|| {
-                app_signal().update(|s| {
-                    s.stash_modal_open = true;
-                    state::enter_modal_focus(s);
-                });
-            })],
-        ),
+        MenuItem::submenu("Stash", stash_menu_items()),
     ]);
 }
 
@@ -1157,6 +1152,12 @@ fn render_change_file_row(
                 MenuItem::separator(),
                 MenuItem::new("复制").on_select(move || set_clipboard(copy_val.clone())),
             ];
+            if f.conflict {
+                let repo = std::path::PathBuf::from(&f.repo_path);
+                items.insert(0, MenuItem::new("解决冲突…").on_select(move || {
+                    super::conflict_workbench::open(super::conflict_workbench::Source::Repo(repo.clone()));
+                }));
+            }
             items.extend(build_location_menu_items(
                 f.repo_id.clone(),
                 f.repo_path.clone(),

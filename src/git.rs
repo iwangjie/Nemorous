@@ -343,6 +343,17 @@ pub(crate) fn run_git_limited_with_index(
     input: Option<Vec<u8>>,
     index: Option<&Path>,
 ) -> Result<BoundedGitOutput> {
+    run_git_limited_with_env(repo_path, args, max_bytes, input, index, &[])
+}
+
+pub(crate) fn run_git_limited_with_env(
+    repo_path: &Path,
+    args: &[&str],
+    max_bytes: usize,
+    input: Option<Vec<u8>>,
+    index: Option<&Path>,
+    env: &[(&str, &str)],
+) -> Result<BoundedGitOutput> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -366,6 +377,8 @@ pub(crate) fn run_git_limited_with_index(
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    cmd.envs(env.iter().copied());
 
     let mut child = cmd
         .spawn()
@@ -887,7 +900,7 @@ fn parse_branch_header(header: &str, status: &mut RepoStatus) {
     }
 }
 
-fn metadata_to_version(meta: &fs::Metadata, bytes: &[u8]) -> ReviewVersion {
+pub(crate) fn metadata_to_version(meta: &fs::Metadata, bytes: &[u8]) -> ReviewVersion {
     let mtime_nanos = meta
         .modified()
         .ok()

@@ -589,6 +589,60 @@ mod macos {
         println!("BATCH3_NATIVE_BRANCH_MATRIX ok");
     }
 
+    fn batch4_resolver(
+        app: &NSApplication,
+        window: &NSWindow,
+        root: &NSView,
+        repo: &Path,
+        evidence: &Path,
+    ) {
+        let command = NSEventModifierFlags::Command;
+        let empty = NSEventModifierFlags::empty();
+        let wait = |id: &str| wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+        let click = |id: &str| {
+            wait(id);
+            send_click(window, &view_with_id(root, id).unwrap(), 1);
+        };
+        println!("BATCH4_NATIVE_FIXTURE {}", repo.display());
+        println!("BATCH4_NATIVE_HEAD {}", git_run(repo, &["rev-parse", "HEAD"]));
+        println!("BATCH4_NATIVE_STAGES\n{}", git_run(repo, &["ls-files", "--stage", "--", "conflict.txt"]));
+        click("change-row-unstaged-conflict.txt");
+        send_key(app, window, "d", "d", 2, command);
+        click("diff-open-conflicts");
+        wait("conflict-result");
+        wait("conflict-ours");
+        wait("conflict-theirs");
+        wait("conflict-take-theirs");
+        send_key(app, window, "™", "2", 19, NSEventModifierFlags::Option);
+        wait_until("conflict draft selected the source block", Duration::from_secs(6), || {
+            view_with_id(root, "conflict-result").is_some_and(|view| a11y_contains(&view, "source line"))
+        });
+        save_window_png(window, &evidence.join("native-conflict-draft.png"));
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, empty);
+        wait_until("conflict workbench closed", Duration::from_secs(6), || {
+            view_with_id(root, "git-conflict-workbench").is_none()
+        });
+        assert!(!git_run(repo, &["ls-files", "-u", "--", "conflict.txt"]).is_empty());
+        click("diff-open-conflicts");
+        wait("conflict-result");
+        wait_until("reopened conflict draft preserved", Duration::from_secs(6), || {
+            view_with_id(root, "conflict-result").is_some_and(|view| a11y_contains(&view, "source line"))
+        });
+        send_key(app, window, "s", "s", 1, command);
+        wait_until("real Git conflict stages were replaced", Duration::from_secs(6), || {
+            git_run(repo, &["ls-files", "-u", "--", "conflict.txt"]).is_empty()
+        });
+        assert_eq!(git_run(repo, &["show", ":conflict.txt"]), "source line");
+        wait("conflict-continue");
+        send_key(app, window, "\r", "\r", 36, command);
+        wait_until("merge commit completed in the primary Git fixture", Duration::from_secs(6), || {
+            git_run(repo, &["show", "-s", "--format=%P", "HEAD"]).split_whitespace().count() == 2
+        });
+        println!("BATCH4_NATIVE_BLOB {}", git_run(repo, &["rev-parse", "HEAD:conflict.txt"]));
+        println!("BATCH4_NATIVE_PARENTS {}", git_run(repo, &["show", "-s", "--format=%P", "HEAD"]));
+        println!("NATIVE_BATCH4_CONFLICT PASS");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -601,7 +655,10 @@ mod macos {
 
         let batch2 = std::env::var_os("NEMOROUS_NATIVE_BATCH2").is_some();
         let batch3 = std::env::var_os("NEMOROUS_NATIVE_BATCH3").is_some();
-        let work_dir = if batch3 {
+        let batch4 = std::env::var_os("NEMOROUS_NATIVE_BATCH4").is_some();
+        let work_dir = if batch4 {
+            root_dir.join(format!("build/tmp-ab/native-batch4-{}", std::process::id()))
+        } else if batch3 {
             root_dir.join(format!("build/tmp-ab/native-batch3-{}", std::process::id()))
         } else if batch2 {
             root_dir.join(format!("build/tmp-ab/native-batch2-{}", std::process::id()))
@@ -620,6 +677,30 @@ mod macos {
             git_run(&repo_copy, &["-c", "user.email=native@example.invalid", "-c", "user.name=Nemorous QA", "-c", "commit.gpgsign=false", "commit", "-m", "Batch 3 fixture"]);
             git_run(&repo_copy, &["branch", "topic"]);
             fs::write(&file, format!("edited first\n{context}edited last\n")).unwrap();
+        }
+
+        if batch4 {
+            git_run(&repo_copy, &["config", "user.email", "native@example.invalid"]);
+            git_run(&repo_copy, &["config", "user.name", "Nemorous QA"]);
+            git_run(&repo_copy, &["config", "commit.gpgsign", "false"]);
+            let file = repo_copy.join("conflict.txt");
+            fs::write(&file, "base line\n").unwrap();
+            git_run(&repo_copy, &["add", "conflict.txt"]);
+            git_run(&repo_copy, &["commit", "-m", "conflict fixture base"]);
+            git_run(&repo_copy, &["switch", "-c", "topic"]);
+            fs::write(&file, "source line\n").unwrap();
+            git_run(&repo_copy, &["add", "conflict.txt"]);
+            git_run(&repo_copy, &["commit", "-m", "source"]);
+            git_run(&repo_copy, &["switch", "main"]);
+            fs::write(&file, "target line\n").unwrap();
+            git_run(&repo_copy, &["add", "conflict.txt"]);
+            git_run(&repo_copy, &["commit", "-m", "target"]);
+            let conflict = Command::new("git").current_dir(&repo_copy)
+                .args(["-c", "merge.conflictStyle=diff3", "merge", "--no-edit", "topic"])
+                .output().unwrap();
+            assert!(!conflict.status.success());
+            assert!(repo_copy.join(".git/MERGE_HEAD").exists());
+            copy_dir_all(&repo_copy, &work_dir.join("conflict-initial"));
         }
 
         let cfg_path = work_dir.join("config-new.json");
@@ -688,6 +769,13 @@ mod macos {
         }
 
         let root = surface.view();
+        if batch4 {
+            let evidence = root_dir.join("build/migration-evidence/batch-4");
+            batch4_resolver(&app, &window, &root, &repo_copy, &evidence);
+            window.close();
+            pump(150);
+            return;
+        }
         if batch3 {
             let evidence = root_dir.join("build/migration-evidence/batch-3");
             batch3_stage_and_branch(&app, &window, &root, &repo_copy, &evidence);

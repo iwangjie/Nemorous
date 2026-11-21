@@ -295,15 +295,65 @@ fn matrix_rows() -> impl IntoElement {
                             } else {
                                 branch.name.clone()
                             };
-                            entry = entry.child(action(
-                                label,
-                                format!("branch-switch-{}-{}", row.repo.id, branch.name),
-                                p,
-                                move || {
-                                    state::close_active_modal();
-                                    run(vec![(repo.clone(), Some(target.clone()))]);
-                                },
-                            ));
+                            let subject = branch.name.clone();
+                            let current = row.current.clone();
+                            let owner = repo.clone();
+                            entry = entry.child(
+                                view()
+                                    .on_context_menu(move |event: &ContextMenuEvent| {
+                                        if current == subject || current.is_empty() {
+                                            return;
+                                        }
+                                        let (repo_a, repo_b, compare) =
+                                            (owner.clone(), owner.clone(), owner.clone());
+                                        let (from_a, to_a) = (subject.clone(), current.clone());
+                                        let (from_b, to_b) = (current.clone(), subject.clone());
+                                        let (base, tip) = (current.clone(), subject.clone());
+                                        state::show_popup_menu_at(
+                                            vec![
+                                                MenuItem::new(format!("合并 {from_a} 到 {to_a}…"))
+                                                    .on_select(move || {
+                                                        state::close_active_modal();
+                                                        super::merge_menu::open_for(
+                                                            repo_a.clone(),
+                                                            from_a.clone(),
+                                                            to_a.clone(),
+                                                        );
+                                                    }),
+                                                MenuItem::new(format!("合并 {from_b} 到 {to_b}…"))
+                                                    .on_select(move || {
+                                                        state::close_active_modal();
+                                                        super::merge_menu::open_for(
+                                                            repo_b.clone(),
+                                                            from_b.clone(),
+                                                            to_b.clone(),
+                                                        );
+                                                    }),
+                                                MenuItem::new("与当前分支比较").on_select(
+                                                    move || {
+                                                        state::close_active_modal();
+                                                        super::git_advanced::compare_refs(
+                                                            compare.path.clone().into(),
+                                                            base.clone(),
+                                                            tip.clone(),
+                                                            true,
+                                                        );
+                                                    },
+                                                ),
+                                            ],
+                                            event.page_position,
+                                        );
+                                    })
+                                    .child(action(
+                                        label,
+                                        format!("branch-switch-{}-{}", row.repo.id, branch.name),
+                                        p,
+                                        move || {
+                                            state::close_active_modal();
+                                            run(vec![(repo.clone(), Some(target.clone()))]);
+                                        },
+                                    )),
+                            );
                         }
                     }
                     Err(err) => {

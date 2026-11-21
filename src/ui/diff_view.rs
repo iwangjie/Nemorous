@@ -421,6 +421,15 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                                     "三栏".to_owned(), false, p,
                                     "diff-index-review", super::index_review::open_active,
                                 )))
+                                .child((!is_commit).then(|| dynamic(move || {
+                                    let repo = app_signal().with(|s| {
+                                        s.working_diff.as_ref().filter(|w| w.file.conflict).map(|w| w.file.repo_path.clone())
+                                    });
+                                    repo.map(|repo| toolbar_text_btn(
+                                        "解决冲突".to_owned(), true, p, "diff-open-conflicts",
+                                        move || super::conflict_workbench::open(super::conflict_workbench::Source::Repo(repo.clone().into())),
+                                    ).into_element()).unwrap_or_else(|| view().into_element())
+                                })))
                                 .child(is_dirty.then(|| {
                                     view()
                                         .test_id("diff-dirty-badge")

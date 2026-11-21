@@ -225,7 +225,8 @@ fn preview_toggle() -> impl IntoElement {
 }
 
 fn history_items(commit: CommitEntry, path: Option<String>) -> Vec<MenuItem> {
-    let Some(path) = path else { return Vec::new() };
+    let mut items = super::git_advanced::commit_items(&commit);
+    let Some(path) = path else { return items; };
     let working = app_signal().with_untracked(|s| {
         let history = s.file_history.as_ref()?;
         s.workspace_files
@@ -234,7 +235,6 @@ fn history_items(commit: CommitEntry, path: Option<String>) -> Vec<MenuItem> {
             .cloned()
     });
     let base = selection().with_untracked(|s| s.base.clone());
-    let mut items = Vec::new();
     if let Some(file) = working {
         let (revision, name) = (commit.clone(), path.clone());
         items.push(MenuItem::new("与当前文件比较…").on_select(move || {

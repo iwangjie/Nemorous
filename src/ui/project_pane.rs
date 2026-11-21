@@ -316,7 +316,9 @@ pub fn project_pane() -> impl IntoElement {
                                     });
                                 })
                                 .on_context_menu(move |event: &ContextMenuEvent| {
-                                    crate::state::show_popup_menu_at(super::sync_dialog::menu(Some(sync_repo.clone())), event.page_position);
+                                    let mut items = super::sync_dialog::menu(Some(sync_repo.clone()));
+                                    items.push(MenuItem::submenu("Git 高级", super::git_advanced::repo_items(sync_repo.clone())));
+                                    crate::state::show_popup_menu_at(items, event.page_position);
                                 })
                                 .child(icons::icon(
                                     if expanded {

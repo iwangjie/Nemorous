@@ -163,7 +163,7 @@ pub(crate) fn apply_selection(
     Ok(result)
 }
 
-fn line_offsets(bytes: &[u8]) -> Vec<usize> {
+pub(crate) fn line_offsets(bytes: &[u8]) -> Vec<usize> {
     let mut offsets = vec![0];
     let mut len = 0;
     for line in imara_diff::sources::byte_lines(bytes) {
