@@ -2,7 +2,10 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
+      # The Apple Silicon Rust preview is packaged and published manually.
+      - "!v0.10.22"
   workflow_dispatch:
 
 permissions:
@@ -10,6 +13,7 @@ permissions:
 
 jobs:
   build:
+    if: github.ref != 'refs/tags/v0.10.22'
     strategy:
       fail-fast: false
       matrix:
