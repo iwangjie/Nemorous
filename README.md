@@ -11,11 +11,11 @@ A native, keyboard-first Git cockpit for workspaces where one change spans sever
 [![Release](https://img.shields.io/github/v/release/iwangjie/Nemorous?label=release&color=10B981)](https://github.com/iwangjie/Nemorous/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iwangjie/Nemorous/ci.yml?branch=main&label=CI&color=10B981)](https://github.com/iwangjie/Nemorous/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-6366F1)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Rust](https://img.shields.io/badge/Rust-1.99%2B-CE422B?logo=rust&logoColor=white)](Cargo.toml)
 
-![macOS](https://img.shields.io/badge/macOS-Metal-000000?logo=apple&logoColor=white)
-![Windows](https://img.shields.io/badge/Windows-Direct3D_11-0078D4?logo=windows&logoColor=white)
-![Linux](https://img.shields.io/badge/Linux-OpenGL-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-Rust-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-v0.10.21-0078D4?logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-v0.10.21-FCC624?logo=linux&logoColor=black)
 ![Architecture](https://img.shields.io/badge/Arch-arm64_%7C_amd64-059669)
 
 <br>
@@ -43,9 +43,9 @@ Nemorous puts the whole workspace in one place:
 - **One commit flow** with optional AI-generated messages and batch commit/push.
 - **One history view** with interactive rebase, reflog, worktrees and explicit merge strategies.
 - **One code surface** with optional LSP diagnostics, references, quick fixes and formatting.
-- **One integration layer** for GitHub, GitLab, Jenkins, Kubernetes, databases and more through plugins.
+- **GitHub review** with pull requests and CI results.
 
-It is built with Go and [MyGo Native UI](https://mygo.egoist.dev/): no Electron, no WebView, no JavaScript UI runtime, and `CGO=0` for simple distribution.
+The current application is built in Rust with the [NSH](https://github.com/longbridge/nsh) native desktop toolkit.
 
 ## Features
 
@@ -58,7 +58,7 @@ It is built with Go and [MyGo Native UI](https://mygo.egoist.dev/): no Electron,
 ### Changes and commits
 - IDEA-style staged/unstaged tree with tri-state checkboxes and keyboard navigation.
 - Side-by-side or unified diff, syntax highlighting, micro-editing and local history.
-- Stage/unstage hunks and selected lines directly from the diff toolbar.
+- Stage or unstage hunks and selected lines from the Diff view.
 - Optional AI commit message generation grounded in the selected patches.
 - Amend, revert, cherry-pick, change lists and commit-message history.
 
@@ -93,7 +93,7 @@ Built-in detection covers Go, TypeScript/JavaScript, Python, Rust, C/C++, and Ja
 - Secrets are not written to the Nemorous config.
 
 ### Integrations
-Built-in GitHub PR/CI support, plus official plugins for GitLab, Maven, Java, Markdown, CSV, SSH, Code Stats, Jenkins, Kubernetes, Databases and Bookmarks.
+Built-in GitHub PR and CI views sit alongside the terminal and saved run, test and debug configurations.
 
 ## Screenshots
 
@@ -110,15 +110,13 @@ Built-in GitHub PR/CI support, plus official plugins for GitLab, Maven, Java, Ma
 
 ## Install
 
-Download the latest package from **[GitHub Releases](https://github.com/iwangjie/Nemorous/releases/latest)**:
-
-| Platform | Package |
+| Platform | Download |
 |---|---|
-| macOS (Apple Silicon / Intel) | `.dmg` |
-| Windows (arm64 / amd64) | `.exe` installer or `.tar.gz` |
-| Linux (arm64 / amd64) | `.deb` or `.tar.gz` |
+| macOS 13+ (Apple Silicon / Intel) | [Latest Rust release](https://github.com/iwangjie/Nemorous/releases/latest), `.dmg` |
+| Windows (arm64 / amd64) | [Go v0.10.21](https://github.com/iwangjie/Nemorous/releases/tag/v0.10.21), `.exe` or `.tar.gz` |
+| Linux (arm64 / amd64) | [Go v0.10.21](https://github.com/iwangjie/Nemorous/releases/tag/v0.10.21), `.deb` or `.tar.gz` |
 
-Updates are signed and can install in the background. No separate runtime is required.
+macOS uses the signed update feed. The latest stable release also carries the v0.10.21 update manifests and archives used by the Windows and Linux apps.
 
 ## Quick start
 
@@ -194,31 +192,26 @@ Enable LSP under **Settings → Optional Code Intelligence (LSP)**. Servers are 
 
 ## Build from source
 
-Requirements: Go 1.27+ and Git.
+Building the macOS app requires Rust 1.99+, Git and the Xcode command-line tools.
 
 ```bash
 git clone https://github.com/iwangjie/Nemorous.git
 cd Nemorous
-go test ./...
-go vet ./...
-go tool mygo vet .
-go tool mygo build
+scripts/prepare-nsh.sh
+cargo test --locked --release --lib --test domain_git_tests --test headless_review_ui_tests
+cargo build --locked --release --bin nemorous
+scripts/package-macos-app.sh build/out target/release/nemorous
 ```
 
-Release packaging uses MyGo:
-
-```bash
-go tool mygo build -platform darwin/arm64,linux/amd64,windows/amd64
-```
+For the Linux and Windows Rust entry points, see [platform build notes](platforms/README.md).
 
 ## Engineering notes
 
-- Native MyGo UI; no browser engine.
-- `CGO_ENABLED=0`; cross-platform single binaries.
+- Rust owns application state, Git operations and the native NSH UI.
 - Git operations go through the Git CLI for predictable behaviour and credential-helper compatibility.
 - AI and LSP work is bounded by timeouts and result caps.
-- CI runs formatting, vet, unit tests and headless UI tests on macOS, Linux and Windows; Linux additionally runs the backend race suite.
-- Every release publishes checksums and signed update manifests.
+- CI runs Rust tests and builds the app bundle on macOS. It also checks the Rust core on Linux and Windows.
+- The macOS release workflow prepares signed update manifests and packages. See the [release process](CONTRIBUTING.md#release-process).
 
 ## Security
 

@@ -2,6 +2,7 @@
 node_modules/
 /dist/
 /build/
+target/
 /.mygo/
 mygo_windows_*.syso
 

@@ -13,56 +13,44 @@ permissions:
   contents: read
 
 jobs:
-  verify:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Configure git for tests
+      - name: Prepare Rust and NSH
         run: |
-          git config --global user.name "Nemorous CI"
-          git config --global user.email "ci@nemorous.dev"
+          rustup toolchain install 1.99.0 --profile minimal
+          scripts/prepare-nsh.sh
+      - name: Configure Git for tests
+        run: |
+          git config --global user.name 'Nemorous CI'
+          git config --global user.email 'ci@nemorous.dev'
           git config --global init.defaultBranch main
           git config --global core.autocrlf false
           git config --global core.eol lf
+      - name: Test Rust and headless UI
+        run: cargo +1.99.0 test --locked --release --lib --test domain_git_tests --test headless_review_ui_tests
+      - name: Build and validate the macOS bundle
+        run: |
+          cargo +1.99.0 build --locked --release --bin nemorous
+          scripts/package-macos-app.sh "$RUNNER_TEMP/nemorous-ci" target/release/nemorous
 
-      - name: Verify modules
-        run: go mod verify
-
-      - name: Check formatting
-        if: runner.os == 'Linux'
+  portable-core:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Rust core
         shell: bash
         run: |
-          files=$(gofmt -l $(git ls-files '*.go'))
-          if [ -n "$files" ]; then
-            echo "$files"
-            exit 1
-          fi
-
-      - name: Run MyGo static lifetime vet
-        run: go tool mygo vet .
-
-      - name: Vet all packages
-        run: go vet ./...
-
-      - name: Run unit and headless UI tests
-        env:
-          CGO_ENABLED: "0"
-        run: go test -v ./...
-
-      - name: Run backend race tests
-        if: runner.os == 'Linux'
-        run: go test -race ./internal/... -count=1
-
-      - name: Build native package
-        run: go tool mygo build
+          git config --global core.autocrlf false
+          rustup toolchain install 1.99.0 --profile minimal
+          scripts/prepare-nsh.sh
+          cargo +1.99.0 check --locked --lib

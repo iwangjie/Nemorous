@@ -11,11 +11,11 @@
 [![Release](https://img.shields.io/github/v/release/iwangjie/Nemorous?label=release&color=10B981)](https://github.com/iwangjie/Nemorous/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iwangjie/Nemorous/ci.yml?branch=main&label=CI&color=10B981)](https://github.com/iwangjie/Nemorous/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-6366F1)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white)](go.mod)
+[![Rust](https://img.shields.io/badge/Rust-1.99%2B-CE422B?logo=rust&logoColor=white)](Cargo.toml)
 
-![macOS](https://img.shields.io/badge/macOS-Metal-000000?logo=apple&logoColor=white)
-![Windows](https://img.shields.io/badge/Windows-Direct3D_11-0078D4?logo=windows&logoColor=white)
-![Linux](https://img.shields.io/badge/Linux-OpenGL-FCC624?logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-Rust-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-v0.10.21-0078D4?logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-v0.10.21-FCC624?logo=linux&logoColor=black)
 ![Architecture](https://img.shields.io/badge/Arch-arm64_%7C_amd64-059669)
 
 <br>
@@ -43,9 +43,9 @@ Nemorous 把整个工作区放在一个界面里：
 - **一条提交流程**：可选 AI 生成提交说明，支持多仓批量提交与推送。
 - **一套历史工具**：交互式 Rebase、Reflog、Worktree、显式合并策略。
 - **一个代码工作区**：可选 LSP 诊断、引用、快速修复和格式化。
-- **一层集成能力**：GitHub、GitLab、Jenkins、Kubernetes、数据库等通过插件接入。
+- **GitHub 审阅**：查看 PR 和 CI 结果。
 
-基于 Go 与 [MyGo Native UI](https://mygo.egoist.dev/) 构建：无 Electron、无 WebView、无 JavaScript UI 运行时，`CGO=0`。
+当前应用用 Rust 和 [NSH](https://github.com/longbridge/nsh) 原生桌面工具包构建。
 
 ## 功能
 
@@ -58,7 +58,7 @@ Nemorous 把整个工作区放在一个界面里：
 ### 变更与提交
 - IDEA 风格已暂存 / 未暂存树，三态勾选与键盘导航。
 - 双栏 / 单栏 Diff、语法高亮、微编辑与本地历史。
-- Diff 工具栏直接暂存/取消暂存变更块，按行暂存新增、删除和替换。
+- 在 Diff 中暂存或取消暂存变更块，也可按行处理新增、删除和替换。
 - 可选 AI 生成提交说明，基于勾选文件的真实 Patch。
 - Amend、Revert、Cherry-pick、变更列表与提交信息历史。
 
@@ -93,7 +93,7 @@ LSP **默认关闭**，避免大型仓库在未启用时承担语言服务器的
 - 密钥与 Token 不写入 Nemorous 配置。
 
 ### 集成
-内置 GitHub PR / CI；官方插件覆盖 GitLab、Maven、Java、Markdown、CSV、SSH、Code Stats、Jenkins、Kubernetes、Database、Bookmarks。
+内置 GitHub PR 和 CI 视图、终端，以及可保存的运行、测试和调试配置。
 
 ## 截图
 
@@ -110,15 +110,13 @@ LSP **默认关闭**，避免大型仓库在未启用时承担语言服务器的
 
 ## 安装
 
-从 **[GitHub Releases](https://github.com/iwangjie/Nemorous/releases/latest)** 下载：
-
-| 平台 | 安装包 |
+| 平台 | 下载 |
 |---|---|
-| macOS（Apple Silicon / Intel） | `.dmg` |
-| Windows（arm64 / amd64） | `.exe` 安装器或 `.tar.gz` |
-| Linux（arm64 / amd64） | `.deb` 或 `.tar.gz` |
+| macOS 13+（Apple Silicon / Intel） | [最新 Rust 正式版](https://github.com/iwangjie/Nemorous/releases/latest)，`.dmg` |
+| Windows（arm64 / amd64） | [Go v0.10.21](https://github.com/iwangjie/Nemorous/releases/tag/v0.10.21)，`.exe` 或 `.tar.gz` |
+| Linux（arm64 / amd64） | [Go v0.10.21](https://github.com/iwangjie/Nemorous/releases/tag/v0.10.21)，`.deb` 或 `.tar.gz` |
 
-更新包带签名，可在后台安装；无需单独运行时。
+macOS 通过签名清单获取更新。最新正式版也保留 Windows 和 Linux 客户端使用的 v0.10.21 更新清单与归档包。
 
 ## 快速开始
 
@@ -198,31 +196,26 @@ Nemorous 不内置模型，只调用本机安装的 CLI：
 
 ## 从源码构建
 
-要求：Go 1.27+、Git。
+构建 macOS 应用需要 Rust 1.99+、Git 和 Xcode 命令行工具。
 
 ```bash
 git clone https://github.com/iwangjie/Nemorous.git
 cd Nemorous
-go test ./...
-go vet ./...
-go tool mygo vet .
-go tool mygo build
+scripts/prepare-nsh.sh
+cargo test --locked --release --lib --test domain_git_tests --test headless_review_ui_tests
+cargo build --locked --release --bin nemorous
+scripts/package-macos-app.sh build/out target/release/nemorous
 ```
 
-打包：
-
-```bash
-go tool mygo build -platform darwin/arm64,linux/amd64,windows/amd64
-```
+Linux 和 Windows 的 Rust 入口见[平台构建说明](platforms/README.md)。
 
 ## 工程说明
 
-- 原生 MyGo UI，无浏览器内核。
-- `CGO_ENABLED=0`，跨平台单文件分发。
+- 应用状态、Git 操作和 NSH 原生界面均由 Rust 实现。
 - Git 操作走 Git CLI，兼容 credential helper 与现有 Git 配置。
 - AI 与 LSP 请求带超时和结果上限。
-- CI 在 macOS、Linux、Windows 上执行格式化检查、Vet、单元测试与无头 UI 测试；Linux 额外执行后端 Race 测试。
-- 每个 Release 提供校验和与签名更新清单。
+- CI 在 macOS 运行 Rust 测试并构建应用包，在 Linux 和 Windows 检查 Rust 核心模块。
+- macOS 发布工作流生成签名更新清单与安装包。见[发布流程](CONTRIBUTING.md#release-process)。
 
 ## 安全
 

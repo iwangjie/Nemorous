@@ -84,7 +84,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.27.x'
           cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -92,7 +92,10 @@ jobs:
           path: update-assets
           merge-multiple: true
       - name: Build the signer
-        run: go build -o "$RUNNER_TEMP/sign-macos-update" ./scripts/sign-macos-update
+        env:
+          GO111MODULE: "off"
+          GOTOOLCHAIN: local
+        run: go build -trimpath -o "$RUNNER_TEMP/sign-macos-update" ./scripts/sign-macos-update/main.go
       - name: Sign the two Mac updates with the existing update key
         env:
           MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
