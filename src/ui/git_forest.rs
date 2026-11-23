@@ -9,6 +9,7 @@ use nsh_core::prelude::*;
 use crate::git::{CommitEntry, RepoInfo};
 use crate::git_log_query::{self, Branch, Query};
 use crate::state::{self, RootOwnerHolder, app_signal, current_palette};
+use super::icons::{self, *};
 
 const PAGE_SIZE: usize = 80;
 const MAX_LIMIT: usize = 500;
@@ -65,7 +66,6 @@ struct Forest {
     results: Results,
     branch_list: Arc<Vec<(RepoInfo, Vec<Branch>)>>,
     revealed: Option<CommitEntry>,
-    loaded: bool,
 }
 
 fn forest() -> Signal<Forest> {
@@ -75,9 +75,6 @@ fn forest() -> Signal<Forest> {
 pub(super) fn rows() -> Results {
     forest().with(|s| {
         let mut result = s.results.clone();
-        if !s.loaded && s.filters.query == Query::default() && s.filters.repo_id.is_empty() {
-            result.commits = Arc::new(app_signal().with(|app| app.git_commits.clone()));
-        }
         if let Some(revealed) = s.revealed.as_ref()
             && !result
                 .commits
@@ -98,7 +95,7 @@ pub(super) fn setup() {
     let source = computed(|| {
         app_signal().with(|s| {
             (
-                s.show_git_panel,
+                s.show_git_panel && s.file_history.is_none(),
                 s.cfg.workspace_path.clone(),
                 s.repos.clone(),
             )
@@ -137,7 +134,16 @@ fn change(update: impl FnOnce(&mut Filters)) {
 }
 
 fn clear() {
-    change(|filters| *filters = Filters::default());
+    change(|filters| {
+        *filters = Filters {
+            query: Query {
+                literal_text: filters.query.literal_text,
+                case_sensitive: filters.query.case_sensitive,
+                ..Query::default()
+            },
+            ..Filters::default()
+        };
+    });
 }
 
 fn refresh() {
@@ -184,16 +190,14 @@ fn request(debounce: bool) {
         }
         spawn(async move {
             let result = blocking(move || fetch(&repos, filters)).await;
-            if !app_signal()
-                .with_untracked(|s| s.show_git_panel && s.cfg.workspace_path == workspace)
+            if !app_signal().with_untracked(|s| {
+                s.show_git_panel && s.file_history.is_none() && s.cfg.workspace_path == workspace
+            }) || !forest().with_untracked(|s| s.generation == generation)
             {
                 return;
             }
+            let first = result.as_ref().ok().and_then(|page| page.commits.first()).cloned();
             forest().update(|s| {
-                if s.generation != generation {
-                    return;
-                }
-                s.loaded = true;
                 s.results = match result {
                     Ok(mut result) => {
                         result.grouping = s.results.grouping;
@@ -206,6 +210,11 @@ fn request(debounce: bool) {
                     },
                 };
             });
+            if app_signal().with_untracked(|s| s.selected_commit.is_none())
+                && let Some(commit) = first
+            {
+                super::git_pane::select_commit(commit);
+            }
         });
     };
     owner.run(|| {
@@ -264,6 +273,7 @@ fn label_button(
         .test_id(id)
         .label(label.clone())
         .h(px(23.0))
+        .max_w(px(200.0))
         .px(px(7.0))
         .rounded(px(4.0))
         .bg(if active { p.accent_soft } else { p.surface })
@@ -273,118 +283,264 @@ fn label_button(
         .items_center()
         .justify_center()
         .on_press(action)
-        .child(text(label).text_size(px(10.5)).text_color(if active {
-            p.accent_soft_text
-        } else {
-            p.text_primary
-        }))
+        .child(
+            text(label)
+                .text_size(px(10.5))
+                .text_color(if active { p.accent_soft_text } else { p.text_primary })
+                .number_of_lines(1u32),
+        )
 }
 
-fn field(
-    id: &str,
-    hint: &'static str,
-    width: f32,
-    value: impl Fn() -> String + 'static,
-    update: impl Fn(&mut Query, String) + 'static,
+fn filter_button(
+    id: &'static str,
+    label: &'static str,
+    value: impl Fn() -> Option<String> + Copy + 'static,
+    action: impl Fn() + 'static,
+) -> nsh_core::element::View {
+    let p = current_palette();
+    view()
+        .test_id(id)
+        .label(label)
+        .h(px(23.0))
+        .max_w(px(128.0))
+        .px(px(5.0))
+        .gap(px(3.0))
+        .flex_row()
+        .items_center()
+        .rounded(px(4.0))
+        .bg(move || if value().is_some() { p.accent_soft } else { transparent_black() })
+        .cursor(Cursor::Pointer)
+        .hover(move |style| style.bg(p.surface_hover))
+        .on_press(action)
+        .child(
+            text(move || value().unwrap_or_else(|| label.to_owned()))
+                .text_size(px(11.0))
+                .text_color(p.text_control)
+                .number_of_lines(1u32),
+        )
+        .child(icons::icon(ICO_CHEVRON_DOWN, 9.0, p.text_muted))
+}
+
+pub(super) fn icon_action(
+    id: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    active: bool,
+    enabled: bool,
+    action: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    input()
+    let color = if !enabled { p.text_muted.opacity(0.5) } else { p.text_control };
+    view()
         .test_id(id)
-        .w(px(width))
+        .label(label)
+        .tooltip(super::tooltip_label(label.into(), p))
+        .w(px(25.0))
         .h(px(23.0))
-        .px(px(7.0))
+        .flex_none()
+        .items_center()
+        .justify_center()
         .rounded(px(4.0))
-        .bg(p.surface)
-        .border_1()
-        .border_color(p.border)
-        .text_size(px(10.5))
-        .text_color(p.text_primary)
-        .placeholder(hint)
-        .value(value)
-        .on_focus(|| state::set_text_input_focused(true))
-        .on_blur(|| state::set_text_input_focused(false))
-        .on_change(move |value: &str| change(|filters| update(&mut filters.query, value.into())))
+        .bg(if active { p.accent_soft } else { transparent_black() })
+        .cursor(if enabled { Cursor::Pointer } else { Cursor::Default })
+        .hover(move |style| if enabled { style.bg(p.surface_hover) } else { style })
+        .on_press(move || {
+            if enabled {
+                action();
+            }
+        })
+        .child(icons::icon(icon, 13.0, color))
+}
+
+fn match_mode(
+    id: &'static str,
+    symbol: &'static str,
+    label: &'static str,
+    active: impl Fn(&Query) -> bool + 'static,
+    toggle: impl Fn(&mut Query) + 'static,
+) -> impl IntoElement {
+    let p = current_palette();
+    view()
+        .test_id(id)
+        .label(label)
+        .tooltip(super::tooltip_label(label.into(), p))
+        .w(px(19.0))
+        .h(px(18.0))
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.0))
+        .bg(move || forest().with(|s| {
+            if active(&s.filters.query) { p.accent_soft } else { transparent_black() }
+        }))
+        .cursor(Cursor::Pointer)
+        .hover(move |style| style.bg(p.surface_hover))
+        .on_press(move || change(|s| toggle(&mut s.query)))
+        .child(text(symbol).text_size(px(10.5)).text_color(p.text_control))
+}
+
+fn text_filter(
+    id: &'static str,
+    input_id: &'static str,
+    label: &'static str,
+    hint: &'static str,
+    read: fn(&Query) -> &String,
+    write: fn(&mut Query, String),
+) -> impl IntoElement {
+    let p = current_palette();
+    let open = signal(false);
+    let anchor = element_ref();
+    let draft = signal(String::new());
+    let value = move || forest().with(|s| {
+        let value = read(&s.filters.query);
+        (!value.is_empty()).then(|| value.clone())
+    });
+    let close = move || {
+        open.set(false);
+        state::set_text_input_focused(false);
+    };
+    let apply = move |entered: &str| {
+        change(|s| write(&mut s.query, entered.trim().to_owned()));
+        close();
+    };
+    view()
+        .child(
+            filter_button(id, label, value, move || {
+                if open.get_untracked() {
+                    close();
+                } else {
+                    draft.set(value().unwrap_or_default());
+                    open.set(true);
+                }
+            })
+            .element_ref(&anchor),
+        )
+        .child(when(move || open.get(), move || {
+            overlay()
+                .anchor(&anchor)
+                .align(Align::Start)
+                .offset(px(4.0))
+                .margin(px(8.0))
+                .on_cancel(close)
+                .on_press_outside(move |_: &Point<Points>| close())
+                .child(
+                    view()
+                        .w(px(245.0))
+                        .p(px(6.0))
+                        .gap(px(4.0))
+                        .flex_row()
+                        .items_center()
+                        .bg(p.surface)
+                        .border_1()
+                        .border_color(p.border_strong)
+                        .rounded(px(5.0))
+                        .child(
+                            input()
+                                .test_id(input_id)
+                                .label(label)
+                                .flex_1()
+                                .h(px(24.0))
+                                .px(px(6.0))
+                                .rounded(px(3.0))
+                                .bg(p.surface2)
+                                .text_color(p.text_primary)
+                                .text_size(px(11.0))
+                                .placeholder(hint)
+                                .auto_focus(true)
+                                .value(move || draft.get())
+                                .on_change(move |v: &str| draft.set(v.to_owned()))
+                                .on_focus(|| state::set_text_input_focused(true))
+                                .on_blur(|| state::set_text_input_focused(false))
+                                .on_submit(apply),
+                        )
+                        .child(icon_action("git-apply-filter", "应用筛选", ICO_CHECK, false, true,
+                            move || apply(&draft.get_untracked()))),
+                )
+        }))
 }
 
 pub(super) fn controls() -> impl IntoElement {
+    let p = current_palette();
     view()
         .test_id("git-forest-controls")
-        .flex_col()
-        .gap(px(4.0))
-        .px(px(8.0))
-        .py(px(5.0))
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap(px(2.0))
+        .px(px(5.0))
+        .py(px(3.0))
+        .border_b_1()
+        .border_color(p.border)
         .child(
             view()
+                .w(px(176.0))
+                .h(px(23.0))
+                .px(px(4.0))
+                .gap(px(2.0))
                 .flex_row()
                 .items_center()
-                .gap(px(5.0))
-                .child(field(
-                    "git-filter-input",
-                    "提交信息 / 哈希 / 正则",
-                    170.0,
-                    || forest().with(|s| s.filters.query.text.clone()),
-                    |q, v| q.text = v,
-                ))
-                .child(field(
-                    "git-path-filter",
-                    "路径 / 目录 / glob",
-                    136.0,
-                    || forest().with(|s| s.filters.query.path.clone()),
-                    |q, v| q.path = v,
-                ))
-                .child(field(
-                    "git-author-filter",
-                    "作者 / 我",
-                    105.0,
-                    || forest().with(|s| s.filters.query.author.clone()),
-                    |q, v| q.author = v,
-                )),
+                .rounded(px(4.0))
+                .bg(p.surface2)
+                .border_1()
+                .border_color(p.border)
+                .child(icons::icon(ICO_SEARCH, 12.0, p.text_muted))
+                .child(
+                    input()
+                        .test_id("git-filter-input")
+                        .label("搜索提交信息或哈希")
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .h_full()
+                        .text_size(px(11.0))
+                        .text_color(p.text_primary)
+                        .placeholder("文本或哈希")
+                        .value(|| forest().with(|s| s.filters.query.text.clone()))
+                        .on_focus(|| state::set_text_input_focused(true))
+                        .on_blur(|| state::set_text_input_focused(false))
+                        .on_change(|v: &str| change(|s| s.query.text = v.to_owned())),
+                )
+                .child(match_mode("git-search-regex", ".*", "正则表达式", |q| !q.literal_text,
+                    |q| q.literal_text = !q.literal_text))
+                .child(match_mode("git-search-case", "Cc", "区分大小写", |q| q.case_sensitive,
+                    |q| q.case_sensitive = !q.case_sensitive)),
         )
-        .child(dynamic(|| {
-            let (filters, grouping) = forest().with(|s| (s.filters.clone(), s.results.grouping));
-            let repo = app_signal().with(|s| {
-                s.repos
-                    .iter()
-                    .find(|repo| repo.id == filters.repo_id)
-                    .map(|repo| repo.name.clone())
-            });
-            let branch = (!filters.branch_name.is_empty()).then_some(filters.branch_name);
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(5.0))
-                .child(label_button(
-                    "git-repo-filter",
-                    repo.clone().unwrap_or_else(|| "全部仓库".into()),
-                    repo.is_some(),
-                    repo_menu,
-                ))
-                .child(label_button(
-                    "git-branch-filter",
-                    branch.clone().unwrap_or_else(|| "全部分支".into()),
-                    branch.is_some(),
-                    branch_menu,
-                ))
-                .child(label_button(
-                    "git-period-filter",
-                    period(filters.query.since_days),
-                    filters.query.since_days > 0,
-                    period_menu,
-                ))
-                .child(label_button(
-                    "git-group-filter",
-                    grouping.label().into(),
-                    grouping != Grouping::Graph,
-                    grouping_menu,
-                ))
-                .child(label_button("git-reload", "刷新".into(), false, refresh))
-                .child(label_button(
-                    "git-clear-filters",
-                    "清除筛选".into(),
-                    false,
-                    clear,
-                ))
+        .child(filter_button("git-branch-filter", "分支", || forest().with(|s| {
+            (!s.filters.branch_name.is_empty()).then(|| s.filters.branch_name.clone())
+        }), branch_menu))
+        .child(text_filter(
+            "git-author-filter-button", "git-author-filter", "作者", "作者姓名、邮箱或我",
+            |q| &q.author,
+            |q, value| q.author = value,
+        ))
+        .child(filter_button("git-period-filter", "日期", || forest().with(|s| {
+            (s.filters.query.since_days > 0).then(|| period(s.filters.query.since_days))
+        }), period_menu))
+        .child(text_filter(
+            "git-path-filter-button", "git-path-filter", "路径", "仓库相对路径或 glob",
+            |q| &q.path,
+            |q, value| q.path = value,
+        ))
+        .child(when(|| app_signal().with(|s| s.repos.len() > 1), || {
+            filter_button("git-repo-filter", "仓库", || {
+                let id = forest().with(|s| s.filters.repo_id.clone());
+                app_signal().with(|s| s.repos.iter().find(|repo| repo.id == id).map(|repo| repo.name.clone()))
+            }, repo_menu)
         }))
+        .child(dynamic(|| {
+            let active = forest().with(|s| s.results.grouping != Grouping::Graph);
+            icon_action("git-group-filter", "提交图选项", ICO_BRANCH, active, true, grouping_menu)
+        }))
+        .child(view().flex_1())
+        .child(dynamic(|| {
+            let active = forest().with(|s| {
+                let q = &s.filters.query;
+                !s.filters.repo_id.is_empty() || !q.branch.is_empty() || !q.text.is_empty()
+                    || !q.author.is_empty() || !q.path.is_empty() || q.since_days > 0
+            });
+            icon_action("git-clear-filters", "清除筛选", ICO_CLOSE, false, active, clear)
+        }))
+        .child(icon_action("git-reload", "刷新 Git 记录", ICO_REFRESH, false, true, refresh))
+        .child(icon_action("git-panel-options", "Git 面板选项", ICO_EYE, false, true, super::git_pane::show_panel_options))
 }
 
 fn repo_menu() {

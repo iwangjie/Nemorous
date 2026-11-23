@@ -1541,7 +1541,7 @@ pub fn repo_log(repo: &RepoInfo, limit: usize) -> Result<Vec<CommitEntry>> {
     Ok(commits)
 }
 
-/// 读取指定提交的变更文件列表（支持重命名、新增、删除、根提交）。
+/// 读取指定提交的变更文件列表。合并提交与第一父提交比较，与历史 Diff 一致。
 pub fn commit_files(repo_path: &str, hash: &str) -> Result<Vec<CommitFileEntry>> {
     let dir = Path::new(repo_path);
     let bytes = run_git_bytes(
@@ -1553,6 +1553,7 @@ pub fn commit_files(repo_path: &str, hash: &str) -> Result<Vec<CommitFileEntry>>
             "-r",
             "--root",
             "-M",
+            "--diff-merges=first-parent",
             "-z",
             hash,
         ],

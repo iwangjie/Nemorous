@@ -928,7 +928,7 @@ fn render_change_dir_children(
 fn render_change_file_row(
     cf: ChangedFile,
     is_staged: bool,
-    show_full_path: bool,
+    show_parent_dir: bool,
     depth: usize,
     selection: &Option<state::ChangeSelection>,
     checked_set: &std::collections::HashSet<String>,
@@ -943,11 +943,7 @@ fn render_change_file_row(
     let partial = app_signal().with(|s| s.included_hunks.contains_key(&key));
     let indent = 14.0 + (depth as f32) * 14.0;
     let status_col = status_text_color(&cf.kind, p);
-    let display_name = if show_full_path {
-        cf.path.clone()
-    } else {
-        basename(&cf.path)
-    };
+    let (parent_dir, filename) = cf.path.rsplit_once('/').unwrap_or(("", cf.path.as_str()));
     let is_deleted = cf.kind == "D";
     let row_bg = if is_selected {
         if tree_focused {
@@ -968,7 +964,7 @@ fn render_change_file_row(
     let cf_cm = cf.clone();
     let key_chk = key.clone();
 
-    let name_el = text(display_name)
+    let name_el = text(filename.to_owned())
         .flex_none()
         .text_size(px(11.5))
         .text_color(status_col)
@@ -1071,6 +1067,13 @@ fn render_change_file_row(
         ))
         .child(icons::icon(ICO_FILE, 11.5, status_col))
         .child(name_el)
+        .child((show_parent_dir && !parent_dir.is_empty()).then(|| {
+            text(parent_dir.to_owned())
+                .flex_none()
+                .text_size(px(10.0))
+                .text_color(p.text_muted)
+                .number_of_lines(1u32)
+        }))
         .child(view().flex_1())
         .child((!cf.untracked).then(|| {
             text(cf.kind.clone())

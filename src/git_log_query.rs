@@ -25,6 +25,8 @@ pub struct Query {
     pub path: String,
     pub since_days: u32,
     pub text: String,
+    pub literal_text: bool,
+    pub case_sensitive: bool,
     pub limit: usize,
 }
 
@@ -216,9 +218,15 @@ pub fn query(repo: &RepoInfo, q: &Query) -> Result<Page> {
         None
     } else {
         let raw = q.text.trim();
+        let pattern = if q.literal_text { regex::escape(raw) } else { raw.to_owned() };
+        let compile = |pattern: &str| {
+            regex::RegexBuilder::new(pattern)
+                .case_insensitive(!q.case_sensitive)
+                .build()
+        };
         Some(
-            Regex::new(&format!("(?i){raw}"))
-                .or_else(|_| Regex::new(&format!("(?i){}", regex::escape(raw))))
+            compile(&pattern)
+                .or_else(|_| compile(&regex::escape(raw)))
                 .context("compile commit text regex")?,
         )
     };
@@ -379,12 +387,10 @@ mod tests {
         let page = query(
             &repo,
             &Query {
-                branch: String::new(),
                 author: "me".into(),
                 path: "main.rs".into(),
-                since_days: 0,
                 text: "needle".into(),
-                limit: 80,
+                ..Query::default()
             },
         )
         .unwrap();
@@ -397,11 +403,9 @@ mod tests {
             &repo,
             &Query {
                 branch: "feature".into(),
-                author: String::new(),
                 path: "*.rs".into(),
-                since_days: 0,
-                text: String::new(),
                 limit: 1,
+                ..Query::default()
             },
         )
         .unwrap();
@@ -411,12 +415,8 @@ mod tests {
         let page = query(
             &repo,
             &Query {
-                branch: String::new(),
-                author: String::new(),
-                path: String::new(),
-                since_days: 0,
                 text: "[".into(),
-                limit: 80,
+                ..Query::default()
             },
         )
         .unwrap();

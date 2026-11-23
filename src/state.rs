@@ -303,7 +303,6 @@ pub struct AppState {
     pub project_selected_dir: Option<(String, String)>, // (repo_id, rel_dir)
 
     // Git 历史面板状态
-    pub git_commits: Vec<CommitEntry>,
     pub selected_commit: Option<CommitEntry>,
     pub selected_commit_files: Vec<CommitFileEntry>,
     pub selected_commit_file: Option<CommitFileEntry>,
@@ -391,7 +390,6 @@ impl Default for AppState {
             project_reveal_request: 0,
             project_selected_file: None,
             project_selected_dir: None,
-            git_commits: Vec::new(),
             selected_commit: None,
             selected_commit_files: Vec::new(),
             selected_commit_file: None,
@@ -733,7 +731,6 @@ struct RefreshSnapshot {
     statuses: Vec<RepoStatus>,
     partial_repo_ids: Option<HashSet<String>>,
     workspace_files: Vec<WorkspaceFile>,
-    commits: Vec<CommitEntry>,
     stashes: Vec<StashEntry>,
     elapsed_ms: u64,
 }
@@ -762,17 +759,6 @@ fn compute_workspace_snapshot(
     let statuses: Vec<RepoStatus> = target_repos.iter().map(|r| git::inspect_repo(r)).collect();
     let workspace_files = git::list_workspace_files(&repos);
 
-    let mut commits = Vec::new();
-    for repo in &repos {
-        if let Ok(mut list) = git::repo_log(repo, 40) {
-            commits.append(&mut list);
-        }
-    }
-    commits.sort_by(|a, b| b.date.cmp(&a.date));
-    if commits.len() > 120 {
-        commits.truncate(120);
-    }
-
     let stashes = git::list_stashes(&repos);
 
     RefreshSnapshot {
@@ -780,7 +766,6 @@ fn compute_workspace_snapshot(
         statuses,
         partial_repo_ids: only_repos,
         workspace_files,
-        commits,
         stashes,
         elapsed_ms: start.elapsed().as_millis() as u64,
     }
@@ -868,7 +853,6 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
             s.statuses = snap.statuses;
         }
         s.workspace_files = snap.workspace_files;
-        s.git_commits = snap.commits;
         s.stashes = snap.stashes;
 
         // 同步所有当前存在的变更文件 key：
@@ -956,16 +940,6 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
                 wd.saved_new_text = new_text;
                 wd.external_changed = false;
                 wd.content_rev += 1;
-            }
-        }
-
-        // 选中默认提交（若 Git 面板打开且尚无选中）
-        if s.selected_commit.is_none() {
-            if let Some(first) = s.git_commits.first().cloned() {
-                let files = git::commit_files(&first.repo_path, &first.hash).unwrap_or_default();
-                s.selected_commit_file = files.first().cloned();
-                s.selected_commit_files = files;
-                s.selected_commit = Some(first);
             }
         }
     });

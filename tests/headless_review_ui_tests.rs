@@ -480,6 +480,11 @@ fn ui_project_tree_locate_and_file_picker_line_col() {
 fn ui_commit_view_options_preview_and_flat_toggle() {
     let _guard = lock_env();
     let fx = Fixture::new("view-opts");
+    for directory in ["config/development", "config/production"] {
+        let path = fx.repo_dir.join(directory);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("application.yml"), "fixture: true\n").unwrap();
+    }
     let mut app = fx.start_headless(1440.0, 900.0);
 
     // 打开“变更视图选项”并启用“单击时预览差异”
@@ -490,11 +495,18 @@ fn ui_commit_view_options_preview_and_flat_toggle() {
     app.press("id:change-row-unstaged-src/app.go").unwrap();
     app.wait_for("id:working-diff-pane").unwrap();
 
-    // 切换树形 -> 平铺，验证显示完整路径 src/app.go
+    // 平铺列表把文件名与目录分别显示，同名文件靠目录区分。
     app.press("id:changes-view-options-btn").unwrap();
     app.choose_menu_item("按目录分组").unwrap();
     app.wait_for_gone("id:change-dir-unstaged-src", Duration::from_secs(2)).unwrap();
-    app.wait_for("src/app.go").unwrap();
+    app.wait_for("id:change-row-unstaged-src/app.go >> text:app.go").unwrap();
+    app.wait_for("id:change-row-unstaged-src/app.go >> text:src").unwrap();
+    for directory in ["config/development", "config/production"] {
+        let row = format!("id:change-row-unstaged-{directory}/application.yml");
+        app.wait_for(&format!("{row} >> text:application.yml")).unwrap();
+        app.wait_for(&format!("{row} >> text:{directory}")).unwrap();
+        assert!(!app.screen().matches(&format!("{row} >> text:{directory}/application.yml")).unwrap());
+    }
 }
 
 #[test]
@@ -515,6 +527,7 @@ fn ui_commit_list_scrolls_long_paths_in_both_directions() {
     let mut app = fx.start_headless_expect(1140.0, 720.0, &format!("id:change-row-unstaged-{path}"));
 
     app.scroll("id:changes-tree-scroll", px(1_000.0)).unwrap();
+    app.wait_for("text:src/development/review/fixture").unwrap();
     assert!(!app.screen().matches(r"id:changes-tree-scroll >> text:/^\?$/").unwrap());
     app.scroll("id:changes-tree-rows", px(150.0)).unwrap();
     assert!(app.screen().matches("id:changes-filter-input").unwrap());
@@ -2209,6 +2222,42 @@ fn ui_single_column_diff_fold_f7_goto_line_and_context_menu_mapping() {
 }
 
 #[test]
+fn ui_git_log_reviews_merge_files_with_separate_directories() {
+    let _guard = lock_env();
+    let fx = Fixture::new("git-log-merge");
+    git_run(&fx.repo_dir, &["switch", "-c", "agent/review"]);
+    for directory in ["config/development", "config/production"] {
+        let directory = fx.repo_dir.join(directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("application.yml"), "review: true\n").unwrap();
+    }
+    git_run(&fx.repo_dir, &["add", "config"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "Update review settings"]);
+    git_run(&fx.repo_dir, &["tag", "review-ready"]);
+    git_run(&fx.repo_dir, &["switch", "main"]);
+    fs::write(fx.repo_dir.join("main-only.txt"), "already on main\n").unwrap();
+    git_run(&fx.repo_dir, &["add", "main-only.txt"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "Record main branch notes"]);
+    git_run(&fx.repo_dir, &["merge", "--no-ff", "-m", "Merge agent review", "agent/review"]);
+
+    let mut app = fx.start_headless(1040.0, 720.0);
+    app.press_key("mod+9").unwrap();
+    app.wait_for("id:git-bottom-pane >> text:/tag: review-ready/").unwrap();
+    app.wait_for("id:git-bottom-pane >> text:/HEAD → main/").unwrap();
+    let file = "id:git-commit-file-config/development/application.yml";
+    app.wait_for(&format!("{file} >> text:application.yml")).unwrap();
+    app.wait_for(&format!("{file} >> text:config/development")).unwrap();
+    app.wait_for("id:git-commit-file-config/production/application.yml >> text:config/production")
+        .unwrap();
+    assert!(!app.screen().matches("id:git-commit-file-main-only.txt").unwrap());
+    app.press(file).unwrap();
+    assert!(!app.screen().matches("id:commit-diff-pane").unwrap());
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:commit-diff-pane").unwrap();
+    app.wait_for("text:review: true").unwrap();
+}
+
+#[test]
 fn ui_git_forest_filters_previews_and_compares_file_history() {
     let _guard = lock_env();
     let fx = Fixture::new("git-forest");
@@ -2228,11 +2277,24 @@ fn ui_git_forest_filters_previews_and_compares_file_history() {
     app.press_key("mod+9").unwrap();
     app.wait_for(current.as_str()).unwrap();
     app.wait_for(initial.as_str()).unwrap();
-    app.type_text("id:git-filter-input", "initial|missing").unwrap();
+    app.type_text("id:git-filter-input", "INITIAL|missing").unwrap();
     app.wait_for_gone(current.as_str(), Duration::from_secs(4)).unwrap();
     app.wait_for(initial.as_str()).unwrap();
+    for toggle in ["id:git-search-regex", "id:git-search-case"] {
+        app.press(toggle).unwrap();
+        app.wait_for_gone(initial.as_str(), Duration::from_secs(4)).unwrap();
+        app.press(toggle).unwrap();
+        app.wait_for(initial.as_str()).unwrap();
+    }
+    assert!(!app.screen().matches("id:git-author-filter").unwrap());
+    app.press("id:git-author-filter-button").unwrap();
     app.type_text("id:git-author-filter", "我").unwrap();
+    app.submit("id:git-author-filter").unwrap();
+    app.wait_for_gone("id:git-author-filter", Duration::from_secs(2)).unwrap();
+    app.press("id:git-path-filter-button").unwrap();
     app.type_text("id:git-path-filter", "*.go").unwrap();
+    app.press("id:git-apply-filter").unwrap();
+    app.wait_for_gone("id:git-path-filter", Duration::from_secs(2)).unwrap();
     app.wait_for(initial.as_str()).unwrap();
     app.press("id:git-clear-filters").unwrap();
     app.wait_for(current.as_str()).unwrap();
@@ -2245,6 +2307,8 @@ fn ui_git_forest_filters_previews_and_compares_file_history() {
     app.wait_for("id:commit-diff-pane").unwrap();
     app.press("id:git-panel-options").unwrap();
     app.choose_menu_item("差异预览").unwrap();
+    app.press("id:git-show-diff").unwrap();
+    app.wait_for("id:commit-diff-pane").unwrap();
 
     app.press_key("mod+shift+o").unwrap();
     app.type_text("id:review-picker-input", "src/rename_new.go").unwrap();

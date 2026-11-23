@@ -994,11 +994,84 @@ mod macos {
         println!("NATIVE_COMMIT_PANEL PASS layout, multiline input, theme switching");
     }
 
+    fn git_log_fixture(repo: &Path) {
+        fs::create_dir_all(repo).unwrap();
+        for args in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "Nemorous QA"],
+            &["config", "user.email", "native@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            git_run(repo, args);
+        }
+        for directory in ["config/development", "config/production"] {
+            let path = repo.join(directory);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("application.yml"), "review: off\n").unwrap();
+        }
+        git_run(repo, &["add", "config"]);
+        git_run(repo, &["commit", "-m", "Set up review configuration"]);
+        for index in 1..=96 {
+            git_run(repo, &["commit", "--quiet", "--allow-empty", "-m", &format!("Checkpoint {index:02}")]);
+        }
+        git_run(repo, &["switch", "-c", "agent/review"]);
+        for directory in ["config/development", "config/production"] {
+            fs::write(repo.join(directory).join("application.yml"), "review: true\n").unwrap();
+        }
+        git_run(repo, &["commit", "-am", "Enable review settings for both environments"]);
+        git_run(repo, &["tag", "review-ready"]);
+        git_run(repo, &["switch", "main"]);
+        fs::write(repo.join("README.md"), "# Review fixture\n").unwrap();
+        git_run(repo, &["add", "README.md"]);
+        git_run(repo, &["commit", "-m", "Describe the review workflow"]);
+        git_run(repo, &["merge", "--no-ff", "-m", "Merge agent review", "agent/review"]);
+        fs::write(repo.join("README.md"), "# Review fixture\nLocal notes\n").unwrap();
+    }
+
+    fn resident_bytes() -> u64 {
+        let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let read = unsafe {
+            libc::proc_pidinfo(libc::getpid(), libc::PROC_PIDTASKINFO, 0, info.as_mut_ptr().cast(), size)
+        };
+        assert_eq!(read, size);
+        unsafe { info.assume_init() }.pti_resident_size
+    }
+
+    fn git_log_review(app: &NSApplication, window: &NSWindow, root: &NSView, evidence: &Path) {
+        let wait = |id| {
+            wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+            view_with_id(root, id).unwrap()
+        };
+        let command = NSEventModifierFlags::Command;
+        wait("change-row-unstaged-README.md");
+        pump(500);
+        let before = resident_bytes();
+        send_key(app, window, "9", "9", 25, command);
+        let pane = wait("git-bottom-pane");
+        let file = wait("git-commit-file-config/development/application.yml");
+        wait("git-commit-file-config/production/application.yml");
+        assert!(view_with_id(root, "git-commit-file-README.md").is_none());
+        pump(500);
+        let after = resident_bytes();
+        save_view_png(&pane, &evidence.join("git-log.png"));
+
+        send_click(window, &file, 1);
+        assert!(view_with_id(root, "commit-diff-pane").is_none());
+        send_key(app, window, "d", "d", 2, command);
+        wait("commit-diff-pane");
+        pump(300);
+        let with_diff = resident_bytes();
+        save_window_png(window, &evidence.join("git-log-diff.png"));
+        println!("NATIVE_GIT_LOG PASS rss_bytes closed={before} opened={after} with_diff={with_diff}");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
         let commit_panel = std::env::var_os("NEMOROUS_NATIVE_COMMIT_PANEL").is_some();
+        let git_log = std::env::var_os("NEMOROUS_NATIVE_GIT_LOG").is_some();
         let left_tools = if commit_panel {
             Some(350.0)
         } else {
@@ -1007,7 +1080,7 @@ mod macos {
         };
         let darcula = std::env::var_os("NEMOROUS_NATIVE_DARCULA").is_some();
         assert!(
-            darcula || left_tools.is_some() || baseline_repo.exists(),
+            git_log || darcula || left_tools.is_some() || baseline_repo.exists(),
             "baseline repo fixture missing: {}",
             baseline_repo.display()
         );
@@ -1018,7 +1091,9 @@ mod macos {
         let batch5 = std::env::var_os("NEMOROUS_NATIVE_BATCH5").is_some();
         let batch6 = std::env::var_os("NEMOROUS_NATIVE_BATCH6").is_some();
         let cleanup = std::env::var_os("NEMOROUS_NATIVE_REVIEW_CLEANUP").is_some();
-        let work_dir = if darcula {
+        let work_dir = if git_log {
+            root_dir.join(format!("build/tmp-ab/native-git-log-{}", std::process::id()))
+        } else if darcula {
             root_dir.join(format!("build/tmp-ab/native-darcula-{}", std::process::id()))
         } else if left_tools.is_some() {
             root_dir.join(format!("build/tmp-ab/native-left-tools-{}", std::process::id()))
@@ -1040,7 +1115,9 @@ mod macos {
             dir
         };
         let repo_copy = work_dir.join("repo");
-        if darcula {
+        if git_log {
+            git_log_fixture(&repo_copy);
+        } else if darcula {
             let base = r#"package demo;
 
 /**
@@ -1115,6 +1192,11 @@ public final class RetryPolicy implements java.io.Serializable {
                 let long_path = repo_copy.join(LONG_CHANGE_PATH);
                 fs::create_dir_all(long_path.parent().unwrap()).unwrap();
                 fs::write(long_path, "review: true\n").unwrap();
+                for directory in ["config/development", "config/production"] {
+                    let path = repo_copy.join(directory);
+                    fs::create_dir_all(&path).unwrap();
+                    fs::write(path.join("application.yml"), "fixture: true\n").unwrap();
+                }
                 for i in 0..28 {
                     fs::write(repo_copy.join(format!("docs/change-{i:02}.txt")), "changed\n").unwrap();
                 }
@@ -1181,6 +1263,11 @@ public final class RetryPolicy implements java.io.Serializable {
         if commit_panel {
             cfg_json["theme"] = "darcula".into();
             cfg_json["changes_flat"] = true.into();
+        }
+        if git_log {
+            cfg_json["theme"] = "darcula".into();
+            cfg_json["auto_update"] = false.into();
+            cfg_json["git_panel_height"] = 330.0.into();
         }
         if batch6 {
             cfg_json["auto_update"] = false.into();
@@ -1253,6 +1340,12 @@ public final class RetryPolicy implements java.io.Serializable {
         }
 
         let root = surface.view();
+        if git_log {
+            git_log_review(&app, &window, &root, &root_dir.join("build/git-log-review"));
+            window.close();
+            pump(150);
+            return;
+        }
         if commit_panel {
             commit_panel_review(&app, &window, &root, &cfg_path, &root_dir.join("build/commit-panel-review"));
             window.close();
