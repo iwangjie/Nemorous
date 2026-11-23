@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use nsh_base::{EditorApi, EditorPosition, EditorSelection};
-use nsh_core::prelude::*;
+use nsh_core::{element::after_answer, prelude::*};
 
 use crate::config::{self, Config};
 use crate::editor_split::{EditorSplit, UndoLog};
@@ -1463,11 +1463,8 @@ fn open_working_diff_with_hunk(
     if focus_diff {
         focus_active_editor_ref();
     }
-    if has_hunks && land_on_last_hunk {
-        scroll_to_working_hunk(initial_hunk_idx);
-        set_timeout(Duration::from_millis(16), move || {
-            scroll_to_working_hunk(initial_hunk_idx);
-        });
+    if has_hunks {
+        reveal_opened_diff_hunk(EditorTabKind::WorkingDiff, initial_hunk_idx);
     }
 }
 
@@ -1606,11 +1603,8 @@ fn install_commit_diff(
     if focus_diff {
         focus_active_editor_ref();
     }
-    if has_hunks && land_on_last_hunk {
-        scroll_to_commit_hunk(initial_hunk_idx);
-        set_timeout(Duration::from_millis(16), move || {
-            scroll_to_commit_hunk(initial_hunk_idx);
-        });
+    if has_hunks {
+        reveal_opened_diff_hunk(EditorTabKind::CommitDiff, initial_hunk_idx);
     }
 }
 
@@ -3087,135 +3081,151 @@ pub fn open_with_default_app(abs_path: &str) {
 // Diff 导航（F7 / Shift+F7 居中与文件边界二次确认）、折叠、空白选项与查找
 // ============================================================================
 
+fn reveal_opened_diff_hunk(tab: EditorTabKind, idx: usize) {
+    let revision = move |s: &AppState| match tab {
+        EditorTabKind::WorkingDiff => s
+            .working_diff
+            .as_ref()
+            .filter(|diff| diff.current_hunk == idx)
+            .map(|diff| diff.content_rev),
+        EditorTabKind::CommitDiff => s
+            .commit_diff
+            .as_ref()
+            .filter(|diff| diff.current_hunk == idx)
+            .map(|diff| diff.content_rev),
+        _ => None,
+    };
+    let current = app_signal().with_untracked(revision);
+    let reveal = move || {
+        if app_signal().with_untracked(|s| s.editor_tab == tab && revision(s) == current) {
+            scroll_to_diff_hunk(tab, idx);
+        }
+    };
+    // The new document and its folds must reach the mounted editor before revealing a line.
+    if let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) {
+        owner.run(|| after_answer(reveal));
+    } else {
+        after_answer(reveal);
+    }
+}
+
+fn scroll_to_diff_hunk(tab: EditorTabKind, idx: usize) {
+    match tab {
+        EditorTabKind::WorkingDiff => scroll_to_working_hunk(idx),
+        EditorTabKind::CommitDiff => scroll_to_commit_hunk(idx),
+        _ => {}
+    }
+}
+
+fn diff_hunk_is_offscreen(tab: EditorTabKind, idx: usize) -> bool {
+    let target = app_signal().with_untracked(|s| {
+        let (old, new, hunks, side, old_zone, new_zone) = match tab {
+            EditorTabKind::WorkingDiff => {
+                let diff = s.working_diff.as_ref()?;
+                (
+                    diff.data.old_text.as_str(),
+                    diff.current_new_text.as_str(),
+                    &diff.computed.hunks,
+                    diff.active_side,
+                    FocusZone::WorkingDiffOld,
+                    FocusZone::WorkingDiffNew,
+                )
+            }
+            EditorTabKind::CommitDiff => {
+                let diff = s.commit_diff.as_ref()?;
+                (
+                    diff.data.old_text.as_str(),
+                    diff.data.new_text.as_str(),
+                    &diff.computed.hunks,
+                    diff.active_side,
+                    FocusZone::CommitDiffOld,
+                    FocusZone::CommitDiffNew,
+                )
+            }
+            _ => return None,
+        };
+        let hunk = hunks.get(idx)?;
+        if s.cfg.diff_single_column {
+            let (_, starts, _) = compute_unified_layout(old, new, hunks);
+            Some((new_zone, *starts.get(idx)? as u32))
+        } else {
+            let (zone, line) = match side {
+                DiffSide::Old => (old_zone, hunk.old_start),
+                DiffSide::New => (new_zone, hunk.new_start),
+            };
+            Some((zone, line as u32))
+        }
+    });
+    target.is_some_and(|(zone, line)| {
+        active_editor_api(zone).is_some_and(|api| {
+            let range = api.visible_range();
+            !(range.start.line..=range.end.line).contains(&line)
+        })
+    })
+}
+
 pub fn jump_diff_hunk(delta: i32) {
-    let tab = app_signal().with_untracked(|s| s.editor_tab);
     let sign = delta.signum();
     if sign == 0 {
         return;
     }
-    match tab {
-        EditorTabKind::WorkingDiff => {
-            let action = app_signal().with_untracked(|s| {
-                let w = s.working_diff.as_ref()?;
-                let count = w.computed.hunks.len();
-                if count == 0 {
-                    if w.boundary_hint == Some(sign) {
-                        return Some((None, Some(2 * sign)));
-                    }
-                    return Some((None, Some(sign)));
-                }
-                let next = w.current_hunk as i32 + delta;
-                if next < 0 {
-                    if w.boundary_hint == Some(-1) {
-                        return Some((None, Some(-2))); // 触发切上一文件（落到末个差异块）
-                    }
-                    return Some((None, Some(-1)));
-                }
-                if next >= count as i32 {
-                    if w.boundary_hint == Some(1) {
-                        return Some((None, Some(2))); // 触发切下一文件
-                    }
-                    return Some((None, Some(1)));
-                }
-                Some((Some(next as usize), None))
-            });
-            let Some((target_hunk, boundary)) = action else {
-                return;
-            };
-            match boundary {
-                Some(-2) => {
-                    if !move_change_selection_with_hunk(-1, true, true) {
-                        show_toast("info", "已是第一个变更文件");
-                    }
-                }
-                Some(2) => {
-                    if !move_change_selection_with_hunk(1, true, false) {
-                        show_toast("info", "已是最后一个变更文件");
-                    }
-                }
-                Some(-1) => {
-                    app_signal().update(|s| {
-                        if let Some(w) = &mut s.working_diff {
-                            w.boundary_hint = Some(-1);
-                        }
-                    });
-                }
-                Some(1) => {
-                    app_signal().update(|s| {
-                        if let Some(w) = &mut s.working_diff {
-                            w.boundary_hint = Some(1);
-                        }
-                    });
-                }
-                _ => {
-                    if let Some(idx) = target_hunk {
-                        scroll_to_working_hunk(idx);
-                    }
-                }
+    let info = app_signal().with_untracked(|s| {
+        let tab = s.editor_tab;
+        let (current, count, boundary) = match tab {
+            EditorTabKind::WorkingDiff => {
+                let diff = s.working_diff.as_ref()?;
+                (diff.current_hunk, diff.computed.hunks.len(), diff.boundary_hint)
             }
-        }
-        EditorTabKind::CommitDiff => {
-            let action = app_signal().with_untracked(|s| {
-                let c = s.commit_diff.as_ref()?;
-                let count = c.computed.hunks.len();
-                if count == 0 {
-                    if c.boundary_hint == Some(sign) {
-                        return Some((None, Some(2 * sign)));
-                    }
-                    return Some((None, Some(sign)));
-                }
-                let next = c.current_hunk as i32 + delta;
-                if next < 0 {
-                    if c.boundary_hint == Some(-1) {
-                        return Some((None, Some(-2)));
-                    }
-                    return Some((None, Some(-1)));
-                }
-                if next >= count as i32 {
-                    if c.boundary_hint == Some(1) {
-                        return Some((None, Some(2)));
-                    }
-                    return Some((None, Some(1)));
-                }
-                Some((Some(next as usize), None))
-            });
-            let Some((target_hunk, boundary)) = action else {
-                return;
-            };
-            match boundary {
-                Some(-2) => {
-                    if !move_commit_diff_file_with_hunk(-1, true) {
-                        show_toast("info", "已是本提交第一个文件");
-                    }
-                }
-                Some(2) => {
-                    if !move_commit_diff_file_with_hunk(1, false) {
-                        show_toast("info", "已是本提交最后一个文件");
-                    }
-                }
-                Some(-1) => {
-                    app_signal().update(|s| {
-                        if let Some(c) = &mut s.commit_diff {
-                            c.boundary_hint = Some(-1);
-                        }
-                    });
-                }
-                Some(1) => {
-                    app_signal().update(|s| {
-                        if let Some(c) = &mut s.commit_diff {
-                            c.boundary_hint = Some(1);
-                        }
-                    });
-                }
-                _ => {
-                    if let Some(idx) = target_hunk {
-                        scroll_to_commit_hunk(idx);
-                    }
-                }
+            EditorTabKind::CommitDiff => {
+                let diff = s.commit_diff.as_ref()?;
+                (diff.current_hunk, diff.computed.hunks.len(), diff.boundary_hint)
             }
-        }
-        _ => {}
+            _ => return None,
+        };
+        Some((tab, current, count, boundary))
+    });
+    let Some((tab, current, count, boundary)) = info else {
+        return;
+    };
+    let next = current as i32 + delta;
+    if next >= 0 && (next as usize) < count {
+        scroll_to_diff_hunk(tab, next as usize);
+        return;
     }
+
+    // Before confirming a file boundary, show the selected hunk if it is offscreen.
+    if current < count && diff_hunk_is_offscreen(tab, current) {
+        scroll_to_diff_hunk(tab, current);
+        return;
+    }
+
+    if boundary == Some(sign) {
+        let moved = if tab == EditorTabKind::WorkingDiff {
+            move_change_selection_with_hunk(sign, true, sign < 0)
+        } else {
+            move_commit_diff_file_with_hunk(sign, sign < 0)
+        };
+        if !moved {
+            let message = match (tab, sign) {
+                (EditorTabKind::WorkingDiff, -1) => "已是第一个变更文件",
+                (EditorTabKind::WorkingDiff, _) => "已是最后一个变更文件",
+                (_, -1) => "已是本提交第一个文件",
+                _ => "已是本提交最后一个文件",
+            };
+            show_toast("info", message);
+        }
+        return;
+    }
+
+    app_signal().update(|s| {
+        if tab == EditorTabKind::WorkingDiff {
+            if let Some(diff) = &mut s.working_diff {
+                diff.boundary_hint = Some(sign);
+            }
+        } else if let Some(diff) = &mut s.commit_diff {
+            diff.boundary_hint = Some(sign);
+        }
+    });
 }
 
 pub fn scroll_to_working_hunk(idx: usize) {

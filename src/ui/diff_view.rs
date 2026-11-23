@@ -1409,10 +1409,12 @@ fn render_single_column_diff(
                                     DiffSide::New => c.new_cursor = pos,
                                 }
                             }
-                            s.focus_zone = match mapped.side {
-                                DiffSide::Old => FocusZone::CommitDiffOld,
-                                DiffSide::New => FocusZone::CommitDiffNew,
-                            };
+                            if matches!(s.focus_zone, FocusZone::CommitDiffOld | FocusZone::CommitDiffNew) {
+                                s.focus_zone = match mapped.side {
+                                    DiffSide::Old => FocusZone::CommitDiffOld,
+                                    DiffSide::New => FocusZone::CommitDiffNew,
+                                };
+                            }
                         } else {
                             if let Some(w) = &mut s.working_diff {
                                 w.active_side = mapped.side;
@@ -1421,10 +1423,12 @@ fn render_single_column_diff(
                                     DiffSide::New => w.new_cursor = pos,
                                 }
                             }
-                            s.focus_zone = match mapped.side {
-                                DiffSide::Old => FocusZone::WorkingDiffOld,
-                                DiffSide::New => FocusZone::WorkingDiffNew,
-                            };
+                            if matches!(s.focus_zone, FocusZone::WorkingDiffOld | FocusZone::WorkingDiffNew) {
+                                s.focus_zone = match mapped.side {
+                                    DiffSide::Old => FocusZone::WorkingDiffOld,
+                                    DiffSide::New => FocusZone::WorkingDiffNew,
+                                };
+                            }
                         }
                     });
                 }

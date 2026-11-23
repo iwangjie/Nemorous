@@ -498,6 +498,32 @@ fn ui_commit_view_options_preview_and_flat_toggle() {
 }
 
 #[test]
+fn ui_commit_list_scrolls_long_paths_in_both_directions() {
+    let _guard = lock_env();
+    let fx = Fixture::new("long-change-path");
+    let path = "src/development/review/fixture/a-very-long-file-name-for-the-local-changes-panel.example.yaml";
+    let absolute = fx.repo_dir.join(path);
+    fs::create_dir_all(absolute.parent().unwrap()).unwrap();
+    fs::write(absolute, "review: true\n").unwrap();
+    for i in 0..40 {
+        fs::write(fx.repo_dir.join(format!("src/file-{i:02}.txt")), "change\n").unwrap();
+    }
+    let mut cfg = nemorous::config::load_from(&fx.config_file).unwrap();
+    cfg.commit_left_width = 350.0;
+    cfg.changes_flat = true;
+    nemorous::config::save_to(&fx.config_file, &cfg).unwrap();
+    let mut app = fx.start_headless_expect(1140.0, 720.0, &format!("id:change-row-unstaged-{path}"));
+
+    app.scroll("id:changes-tree-scroll", px(1_000.0)).unwrap();
+    assert!(!app.screen().matches(r"id:changes-tree-scroll >> text:/^\?$/").unwrap());
+    app.scroll("id:changes-tree-rows", px(150.0)).unwrap();
+    assert!(app.screen().matches("id:changes-filter-input").unwrap());
+    app.type_text("id:git-commit-message", "Review changes").unwrap();
+    app.scroll("id:changes-tree-scroll", px(-1_000.0)).unwrap();
+    app.scroll("id:changes-tree-rows", px(-150.0)).unwrap();
+}
+
+#[test]
 fn ui_commit_context_menu_copy_path_variants_and_locate() {
     let _guard = lock_env();
     let fx = Fixture::new("ctx-menu");
@@ -2039,6 +2065,71 @@ fn ui_f7_shift_f7_lands_on_last_hunk_and_crosses_zero_hunk_file() {
     assert!(!app.screen().matches("id:toolbar-tooltip").unwrap());
     app.press_key("shift+f7").unwrap();
     app.wait_for("Diff: notes.txt").unwrap();
+}
+
+#[test]
+fn ui_commit_diff_navigation_reveals_changes_below_the_viewport() {
+    let _guard = lock_env();
+    let fx = Fixture::new("commit-diff-navigation");
+    let baseline = (1..=220).map(|line| format!("baseline {line:03}\n")).collect::<String>();
+    for name in ["a-first.txt", "b-two.txt", "c-single.txt"] {
+        fs::write(fx.repo_dir.join(name), &baseline).unwrap();
+    }
+    git_run(&fx.repo_dir, &["add", "a-first.txt", "b-two.txt", "c-single.txt"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "Add long review fixtures"]);
+    for (name, changes) in [
+        ("a-first.txt", &[(95, "FIRST_FILE_CHANGE")][..]),
+        ("b-two.txt", &[(110, "SECOND_FILE_FIRST_CHANGE"), (180, "SECOND_FILE_NEXT_CHANGE")][..]),
+        ("c-single.txt", &[(138, "ONLY_CHANGE_IN_FILE")][..]),
+    ] {
+        let mut edited = baseline.clone();
+        for (line, text) in changes {
+            edited = edited.replace(&format!("baseline {line:03}\n"), &format!("{text}\n"));
+        }
+        fs::write(fx.repo_dir.join(name), edited).unwrap();
+    }
+    git_run(&fx.repo_dir, &["add", "a-first.txt", "b-two.txt", "c-single.txt"]);
+    git_run(&fx.repo_dir, &["commit", "-m", "Review changes far below the file header"]);
+    for (name, written, working) in [
+        ("a-first.txt", "FIRST_FILE_CHANGE", "WORKTREE_FIRST_CHANGE"),
+        ("b-two.txt", "SECOND_FILE_FIRST_CHANGE", "WORKTREE_SECOND_CHANGE"),
+    ] {
+        let path = fx.repo_dir.join(name);
+        let text = fs::read_to_string(&path).unwrap().replace(written, working);
+        fs::write(path, text).unwrap();
+    }
+    let mut config = nemorous::config::load_from(&fx.config_file).unwrap();
+    config.diff_single_column = true;
+    nemorous::config::save_to(&fx.config_file, &config).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+9").unwrap();
+    app.press("text:Review changes far below the file header").unwrap();
+    app.wait_for("id:git-commit-file-a-first.txt").unwrap();
+    app.press("id:git-commit-file-a-first.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("+ FIRST_FILE_CHANGE").unwrap();
+
+    app.press("id:diff-next-file").unwrap();
+    app.wait_for("+ SECOND_FILE_FIRST_CHANGE").unwrap();
+    app.press("id:diff-next-hunk").unwrap();
+    app.wait_for("+ SECOND_FILE_NEXT_CHANGE").unwrap();
+
+    app.press("id:diff-next-file").unwrap();
+    app.wait_for("+ ONLY_CHANGE_IN_FILE").unwrap();
+    app.scroll("id:commit-diff-unified-editor", px(-10_000.0)).unwrap();
+    app.wait_for("baseline 001").unwrap();
+    app.press("id:diff-next-hunk").unwrap();
+    app.wait_for("+ ONLY_CHANGE_IN_FILE").unwrap();
+
+    app.press("id:diff-layout-toggle").unwrap();
+    app.wait_for("id:change-row-unstaged-a-first.txt").unwrap();
+    app.press("id:change-row-unstaged-a-first.txt").unwrap();
+    app.press_key("mod+d").unwrap();
+    app.wait_for("id:working-diff-new-editor").unwrap();
+    app.wait_for("WORKTREE_FIRST_CHANGE").unwrap();
+    app.press("id:diff-next-file").unwrap();
+    app.wait_for("WORKTREE_SECOND_CHANGE").unwrap();
 }
 
 #[test]

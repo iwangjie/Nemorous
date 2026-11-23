@@ -1,6 +1,6 @@
 [package]
 name = "nemorous"
-version = "0.10.24"
+version = "0.10.25"
 edition = "2024"
 description = "Nemorous native multi-repo Git client and code review workspace (NSH Rust)"
 license = "MIT"

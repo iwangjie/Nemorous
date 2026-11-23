@@ -452,6 +452,7 @@ pub(super) fn form() -> impl IntoElement {
     let reference = component_ref::<Editor>();
     global::<FormEditor>().set(FormEditor(Some(reference)));
     let initial = global::<Form>().with_untracked(|form| form.message.clone());
+    let darcula = || state::theme_signal().with(|theme| theme.name == "darcula");
     view()
         .test_id("git-commit-form")
         .flex_none()
@@ -467,6 +468,15 @@ pub(super) fn form() -> impl IntoElement {
                 .component_ref(&reference)
                 .test_id("git-commit-message")
                 .h(px(62.0))
+                .style_when(darcula, |s| {
+                    let p = crate::theme::darcula_palette();
+                    s.bg(p.surface2)
+                        .border_1()
+                        .border_color(p.border_strong)
+                        .rounded(px(4.0))
+                        .text_color(p.text_primary)
+                })
+                .active_line(move || !darcula())
                 .default_value(Some(initial.into()))
                 .placeholder(Some("提交说明".into()))
                 .soft_wrap(true)

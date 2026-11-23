@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "nemorous"
-version = "0.10.24"
+version = "0.10.25"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

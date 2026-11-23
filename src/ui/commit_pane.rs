@@ -337,6 +337,11 @@ fn open_narrow_overflow_menu() {
 
 pub fn commit_pane() -> impl IntoElement {
     let tool = ToolWindow::new(LeftTab::Commit);
+    let change_rows = scroll()
+        .test_id("changes-tree-rows")
+        .flex_none()
+        .h_full()
+        .min_w(relative(1.0));
     let selected_keys = computed(|| app_signal().with(|s| {
         s.statuses.iter()
             .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)).map(ChangedFile::key))
@@ -437,9 +442,10 @@ pub fn commit_pane() -> impl IntoElement {
         // 双分区变更列表
         .child(
             scroll()
+                .horizontal()
                 .test_id("changes-tree-scroll")
                 .flex_1()
-                .child(dynamic(move || {
+                .child(change_rows.child(dynamic(move || {
                     let p = current_palette();
                     let snapshot = app_signal().with(|s| {
                         (
@@ -562,7 +568,7 @@ pub fn commit_pane() -> impl IntoElement {
                     }
 
                     view().flex_col().py(px(4.0)).children(sections).into_element()
-                })),
+                }))),
         )
         .child(super::commit_form::form())
     )
@@ -697,6 +703,7 @@ fn render_section(
                         )
                         .child(
                             text(st.repo.name.clone())
+                                .flex_none()
                                 .text_size(px(11.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(p.text_primary)
@@ -874,6 +881,7 @@ fn render_change_dir_children(
                 .child(icons::icon(ICO_FOLDER, 12.0, p.text_control))
                 .child(
                     text(sub.name.clone())
+                        .flex_none()
                         .text_size(px(11.5))
                         .text_color(p.text_primary)
                         .number_of_lines(1u32),
@@ -961,6 +969,7 @@ fn render_change_file_row(
     let key_chk = key.clone();
 
     let name_el = text(display_name)
+        .flex_none()
         .text_size(px(11.5))
         .text_color(status_col)
         .number_of_lines(1u32);
@@ -1061,11 +1070,13 @@ fn render_change_file_row(
             move |shift| state::toggle_change_checked_in_section(&key_chk, is_staged, shift),
         ))
         .child(icons::icon(ICO_FILE, 11.5, status_col))
-        .child(view().flex_1().overflow_hidden().child(name_el))
-        .child(
+        .child(name_el)
+        .child(view().flex_1())
+        .child((!cf.untracked).then(|| {
             text(cf.kind.clone())
+                .flex_none()
                 .text_size(px(10.0))
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(status_col),
-        )
+                .text_color(status_col)
+        }))
 }

@@ -8,6 +8,7 @@ on:
       - "!v0.10.22"
       - "!v0.10.23"
       - "!v0.10.24"
+      - "!v0.10.25"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +16,11 @@ permissions:
 
 jobs:
   build:
-    if: github.ref != 'refs/tags/v0.10.22' && github.ref != 'refs/tags/v0.10.23' && github.ref != 'refs/tags/v0.10.24'
+    if: >-
+      github.ref != 'refs/tags/v0.10.22' &&
+      github.ref != 'refs/tags/v0.10.23' &&
+      github.ref != 'refs/tags/v0.10.24' &&
+      github.ref != 'refs/tags/v0.10.25'
     strategy:
       fail-fast: false
       matrix:

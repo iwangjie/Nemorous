@@ -368,8 +368,11 @@ mod macos {
     }
 
     fn save_window_png(window: &NSWindow, out_path: &Path) {
+        save_view_png(&window.contentView().expect("window contentView"), out_path);
+    }
+
+    fn save_view_png(view: &NSView, out_path: &Path) {
         pump(180);
-        let view = window.contentView().expect("window contentView");
         let bounds = view.bounds();
         let rep = view
             .bitmapImageRepForCachingDisplayInRect(bounds)
@@ -953,12 +956,55 @@ mod macos {
         println!("NATIVE_DARCULA PASS");
     }
 
+    const LONG_CHANGE_PATH: &str =
+        "assets/configuration/development/integration/review-window/long-commit-message-example.yaml";
+
+    fn commit_panel_review(
+        app: &NSApplication,
+        window: &NSWindow,
+        root: &NSView,
+        config: &Path,
+        evidence: &Path,
+    ) {
+        let row_id = format!("change-row-unstaged-{LONG_CHANGE_PATH}");
+        wait_until(&row_id, Duration::from_secs(6), || view_with_id(root, &row_id).is_some());
+        let row = view_with_id(root, &row_id).unwrap();
+        let list = view_with_id(root, "changes-tree-scroll").unwrap();
+        let rows = view_with_id(root, "changes-tree-rows").unwrap();
+        let editor = view_with_id(root, "git-commit-message").unwrap();
+        let pane = view_with_id(root, "commit-pane").unwrap();
+        assert!(row.bounds().size.width > list.bounds().size.width + 50.0);
+        assert!(rows.bounds().size.width > list.bounds().size.width + 50.0);
+        save_view_png(&pane, &evidence.join("commit-empty.png"));
+
+        send_click(window, &editor, 1);
+        let plain = NSEventModifierFlags::empty();
+        for (c, code) in [("f", 3), ("i", 34), ("x", 7), ("\r", 36), ("d", 2), ("i", 34), ("f", 3), ("f", 3)] {
+            send_key(app, window, c, c, code, plain);
+        }
+        save_view_png(&pane, &evidence.join("commit-filled.png"));
+
+        for theme in ["system", "light"] {
+            send_click(window, &view_with_id(root, "rail-theme-btn").unwrap(), 1);
+            wait_until(theme, Duration::from_secs(4), || {
+                nemorous::config::load_from(config).is_ok_and(|cfg| cfg.theme == theme)
+            });
+        }
+        save_window_png(window, &evidence.join("commit-light.png"));
+        println!("NATIVE_COMMIT_PANEL PASS layout, multiline input, theme switching");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
-        let left_tools = std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
-            .map(|width| width.parse::<f32>().expect("left tool window width"));
+        let commit_panel = std::env::var_os("NEMOROUS_NATIVE_COMMIT_PANEL").is_some();
+        let left_tools = if commit_panel {
+            Some(350.0)
+        } else {
+            std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
+                .map(|width| width.parse::<f32>().expect("left tool window width"))
+        };
         let darcula = std::env::var_os("NEMOROUS_NATIVE_DARCULA").is_some();
         assert!(
             darcula || left_tools.is_some() || baseline_repo.exists(),
@@ -1065,6 +1111,14 @@ public final class RetryPolicy implements java.io.Serializable {
             git_run(&repo_copy, &["-c", "user.name=Nemorous QA", "-c", "user.email=native@example.invalid",
                 "-c", "commit.gpgsign=false", "commit", "-m", "Left tool window fixture"]);
             fs::write(repo_copy.join("src/nested/tracked.txt"), "first\nworking edit\nlast\n").unwrap();
+            if commit_panel {
+                let long_path = repo_copy.join(LONG_CHANGE_PATH);
+                fs::create_dir_all(long_path.parent().unwrap()).unwrap();
+                fs::write(long_path, "review: true\n").unwrap();
+                for i in 0..28 {
+                    fs::write(repo_copy.join(format!("docs/change-{i:02}.txt")), "changed\n").unwrap();
+                }
+            }
         } else {
             copy_dir_all(&baseline_repo, &repo_copy);
         }
@@ -1123,6 +1177,10 @@ public final class RetryPolicy implements java.io.Serializable {
             cfg_json["commit_left_width"] = width.into();
             cfg_json["code_left_width"] = width.into();
             cfg_json["auto_update"] = false.into();
+        }
+        if commit_panel {
+            cfg_json["theme"] = "darcula".into();
+            cfg_json["changes_flat"] = true.into();
         }
         if batch6 {
             cfg_json["auto_update"] = false.into();
@@ -1195,6 +1253,12 @@ public final class RetryPolicy implements java.io.Serializable {
         }
 
         let root = surface.view();
+        if commit_panel {
+            commit_panel_review(&app, &window, &root, &cfg_path, &root_dir.join("build/commit-panel-review"));
+            window.close();
+            pump(150);
+            return;
+        }
         if darcula {
             let evidence = root_dir.join("build/darcula-review");
             darcula_review(&app, &window, &root, &cfg_path, &evidence);
