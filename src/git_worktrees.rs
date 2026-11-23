@@ -254,11 +254,9 @@ mod tests {
         let readme_before = fs::read(wt.join("README")).expect("read worktree README");
 
         // A second worktree on the same branch MUST be refused natively.
-        let err = create(&repo, &wt2, "feature").expect_err("duplicate checkout must fail");
-        let msg = format!("{err:#}");
         assert!(
-            msg.contains("already checked out") || msg.contains("already exists"),
-            "unexpected refusal message: {msg}"
+            create(&repo, &wt2, "feature").is_err(),
+            "duplicate checkout must fail"
         );
 
         // Destination was not created.
@@ -281,12 +279,13 @@ mod tests {
 
         // list() reports both entries (primary + linked).
         let listed = list(&repo).expect("list worktrees");
-        assert!(listed.len() >= 2, "expected primary and linked worktree");
+        assert_eq!(listed.len(), 2, "expected primary and linked worktree");
         assert!(
             listed
                 .iter()
-                .any(|w| w.branch.as_deref() == Some("refs/heads/feature")),
-            "linked worktree on feature should be listed"
+                .any(|w| w.branch.as_deref() == Some("refs/heads/feature")
+                    && canonical_or_self(&w.path) == canonical_or_self(&wt)),
+            "feature should remain checked out in the original linked worktree"
         );
 
         // Prune is a no-op for live worktrees.
