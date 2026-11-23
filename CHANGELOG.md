@@ -2,7 +2,8 @@
 
 ## 0.10.23
 - **Diff 工具栏**移除常驻的「暂存块」和「纳入提交」按钮。右键点击差异块即可暂存、取消暂存或调整本次提交的勾选范围。
-- **macOS Apple Silicon 预发布**。提供 `.dmg` 手动下载。
+- **macOS 正式更新**。Apple Silicon 和 Intel 可从 Go `0.10.21` 通过应用内检查更新升级到 Rust，亦可下载对应的 `.dmg`。
+- **Windows 和 Linux** 保留 Go `0.10.21` 的 x64 和 ARM64 下载及签名更新入口。
 
 ## 0.10.22
 - **macOS Apple Silicon 预发布**。提供 `.dmg` 手动下载。
