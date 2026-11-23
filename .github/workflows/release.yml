@@ -4,8 +4,9 @@ on:
   push:
     tags:
       - "v*"
-      # The Apple Silicon Rust preview is packaged and published manually.
+      # Apple Silicon Rust previews are packaged and published manually.
       - "!v0.10.22"
+      - "!v0.10.23"
   workflow_dispatch:
 
 permissions:
@@ -13,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    if: github.ref != 'refs/tags/v0.10.22'
+    if: github.ref != 'refs/tags/v0.10.22' && github.ref != 'refs/tags/v0.10.23'
     strategy:
       fail-fast: false
       matrix:
