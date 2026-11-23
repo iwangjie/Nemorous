@@ -1,0 +1,117 @@
+name: Prepare macOS 0.10.23 update
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VERSION: '0.10.23'
+  NEMOROUS_UPDATER_PUBLIC_KEY: 'ox37vmP3aFxe/cbZ19NuQUJd33TC0ZRn4TjtoCI1L2s='
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            machine: arm64
+            runner: macos-15
+          - arch: amd64
+            machine: x86_64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      ARCH: ${{ matrix.arch }}
+      MACHINE: ${{ matrix.machine }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f5f0ab3ce617f297176457f586dec4b501acc0ad
+          persist-credentials: false
+
+      - name: Extract the verified Apple Silicon release
+        if: matrix.arch == 'arm64'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          dmg="Nemorous-v$VERSION-darwin-arm64.dmg"
+          gh release download "v$VERSION" --repo "$GITHUB_REPOSITORY" --pattern "$dmg"
+          printf '%s  %s\n' 7bfa30ff35f627c987efe11fe82f4b07013ba4cc84af6bc81764022f9bde2675 "$dmg" | shasum -a 256 -c
+          mount_dir="$(mktemp -d)"
+          hdiutil attach "$dmg" -mountpoint "$mount_dir" -nobrowse -readonly
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          mkdir -p image
+          ditto "$mount_dir/Nemorous.app" image/Nemorous.app
+
+      - name: Build the Intel release from the same source
+        if: matrix.arch == 'amd64'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.6.1 https://github.com/longbridge/nsh.git build/nsh-v0.6.1
+          test "$(git -C build/nsh-v0.6.1 rev-parse HEAD)" = 2f51d8611677c8a6bbad937b39756e8d0cc45350
+          rustup toolchain install 1.99.0 --profile minimal
+          MACOSX_DEPLOYMENT_TARGET=13.0 cargo +1.99.0 build --locked --release --bin nemorous
+          scripts/package-macos-app.sh "$PWD/image" "$PWD/target/release/nemorous"
+
+      - name: Verify and archive the macOS app
+        run: |
+          set -euo pipefail
+          app=image/Nemorous.app
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$VERSION"
+          test "$(lipo -archs "$app/Contents/MacOS/Nemorous")" = "$MACHINE"
+          codesign --verify --deep --strict "$app"
+          mkdir -p assets
+          COPYFILE_DISABLE=1 tar --format ustar -czf "assets/nemorous-$VERSION-darwin-$ARCH.tar.gz" -C image Nemorous.app
+          if [ "$ARCH" = amd64 ]; then
+            ln -s /Applications image/Applications
+            dmg="assets/Nemorous-v$VERSION-darwin-amd64.dmg"
+            hdiutil create -volname "Nemorous $VERSION" -srcfolder image -format UDZO "$dmg"
+            hdiutil verify "$dmg"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-mac-${{ matrix.arch }}
+          path: assets/*
+          if-no-files-found: error
+
+  sign:
+    if: github.repository == 'iwangjie/Nemorous' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: unsigned-mac-*
+          path: assets
+          merge-multiple: true
+      - name: Build the signer
+        run: go build -o "$RUNNER_TEMP/sign-macos-update" ./scripts/sign-macos-update
+      - name: Sign the two Mac updates with the existing update key
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'macOS 正式更新。Nemorous 已迁移到 Rust，原有配置和工作区会随升级加载。' > "$RUNNER_TEMP/notes.md"
+          for arch in arm64 amd64; do
+            "$RUNNER_TEMP/sign-macos-update" "$VERSION" "$arch" \
+              "assets/nemorous-$VERSION-darwin-$arch.tar.gz" "$RUNNER_TEMP/notes.md" "assets/update-darwin-$arch.json"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-macos-update-0.10.23
+          path: assets/*
+          if-no-files-found: error
