@@ -141,10 +141,6 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                 )
         })
     };
-    let hunk_inclusion = computed(move || {
-        if is_commit { None } else { app_signal().with(super::git_review::included_state) }
-    });
-
     editor_refs_signal().update(|r| {
         if is_commit {
             r.commit_old = Some(old_ref);
@@ -582,26 +578,6 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                             "diff-next-hunk",
                             || jump_diff_hunk(1),
                         ))
-                        .child((!is_commit && hunk_count > 0).then(|| {
-                            toolbar_text_btn(
-                                if staged_only { "取消暂存块" } else { "暂存块" }.to_owned(),
-                                false, p, "diff-stage-hunk", super::git_review::stage_hunk,
-                            )
-                        }))
-                        .child(when(move || hunk_inclusion.get().is_some(), move || {
-                            view()
-                                .test_id("diff-include-hunk")
-                                .h(px(24.0)).px(px(8.0))
-                                .flex_row().items_center().justify_center().rounded(px(4.0))
-                                .bg(move || if hunk_inclusion.get() == Some(true) { p.accent_soft } else { p.surface2 })
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .label("纳入提交")
-                                .on_press(super::git_review::toggle_included_hunk)
-                                .child(text(move || {
-                                    if hunk_inclusion.get() == Some(true) { "✓ 纳入提交" } else { "纳入提交" }
-                                }).text_size(px(11.0)).text_color(p.text_primary).number_of_lines(1u32))
-                        }))
                         .child(can_open_source.then(|| toolbar_icon_btn(
                             shortcut_hint("跳转到源码", "jumpToSource"),
                             ICO_EDIT,
@@ -1545,8 +1521,7 @@ fn show_diff_editor_context_menu(
         MenuItem::separator(),
     ];
     if !is_commit {
-        let staged = app_signal().with_untracked(|s| s.working_diff.as_ref().is_some_and(|w| w.data.staged_only));
-        items.extend(super::git_review::line_items(side, staged));
+        items.extend(super::git_review::line_items(side, line_1based as usize - 1));
     }
     items.extend(build_location_menu_items(
         repo_id,

@@ -2300,14 +2300,21 @@ fn ui_diff_stages_one_hunk_and_unstages_it_without_writing_worktree() {
     let mut app = fx.start_headless_expect(1440.0, 900.0, "id:change-row-unstaged-many.txt");
     app.press("id:change-row-unstaged-many.txt").unwrap();
     app.press_key("mod+d").unwrap();
-    app.wait_for("id:diff-stage-hunk").unwrap();
-    app.press("id:diff-stage-hunk").unwrap();
+    app.wait_for("id:diff-toolbar").unwrap();
+    assert!(!app.screen().matches("id:diff-stage-hunk").unwrap());
+    app.right_click("id:working-diff-new-editor >> context 1").unwrap();
+    assert!(!app.menu().unwrap().iter().any(|item| item.label == "暂存此块"));
+    app.close_menu().unwrap();
+    app.right_click("new last").unwrap();
+    app.choose_menu_item("暂存此块").unwrap();
     app.wait_for("id:change-row-staged-many.txt").unwrap();
     let read = || nemorous::git::run_git_string(&fx.repo_dir, &["show", ":many.txt"]).unwrap();
-    assert_eq!(read(), format!("new first\n{context}old last\n"));
+    assert_eq!(read(), format!("old first\n{context}new last\n"));
     assert_eq!(fs::read_to_string(&path).unwrap(), new);
     app.press("id:diff-scope-staged").unwrap();
-    app.press("id:diff-stage-hunk").unwrap();
+    app.press("id:diff-layout-toggle").unwrap();
+    app.right_click("+ new last").unwrap();
+    app.choose_menu_item("取消暂存此块").unwrap();
     app.wait_for("已取消暂存所选变更").unwrap();
     assert_eq!(read(), old);
     assert_eq!(fs::read_to_string(&path).unwrap(), new);
@@ -2361,17 +2368,24 @@ fn ui_commit_checked_hunks_preserves_unselected_hunks_and_staged_files() {
     let mut app = fx.start_headless_expect(1440.0, 900.0, "id:change-row-unstaged-many.txt");
     app.press("id:change-row-unstaged-many.txt").unwrap();
     app.press_key("mod+d").unwrap();
-    app.wait_for("✓ 纳入提交").unwrap();
-    app.press("id:diff-include-hunk").unwrap();
-    app.wait_for_gone("✓ 纳入提交", Duration::from_secs(2))
-        .expect("first hunk checkbox must be visibly cleared");
-    app.type_text("id:git-commit-message", "Commit second hunk").unwrap();
-    assert!(!app.screen().matches("✓ 纳入提交").unwrap(), "typing the message must preserve hunk exclusion");
+    app.wait_for("id:diff-toolbar").unwrap();
+    assert!(!app.screen().matches("id:diff-include-hunk").unwrap());
+    app.right_click("new last").unwrap();
+    assert!(app.menu().unwrap().iter().any(|item| {
+        item.label == "纳入本次提交" && item.checked == Some(true)
+    }));
+    app.choose_menu_item("纳入本次提交").unwrap();
+    app.type_text("id:git-commit-message", "Commit first hunk").unwrap();
+    app.right_click("new last").unwrap();
+    assert!(app.menu().unwrap().iter().any(|item| {
+        item.label == "纳入本次提交" && item.checked == Some(false)
+    }));
+    app.close_menu().unwrap();
     app.press("id:git-commit-submit").unwrap();
     app.wait_for("提交成功 1 个仓库，失败 0 个").unwrap();
 
     let show = |spec: &str| nemorous::git::run_git_string(&fx.repo_dir, &["show", spec]).unwrap();
-    assert_eq!(show("HEAD:many.txt"), format!("old first\n{context}new last\n"));
+    assert_eq!(show("HEAD:many.txt"), format!("new first\n{context}old last\n"));
     assert_eq!(show(":notes.txt"), "untracked note line 1\n");
     assert_eq!(fs::read_to_string(path).unwrap(), new);
 }

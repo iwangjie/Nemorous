@@ -240,6 +240,69 @@ mod macos {
         pump(120);
     }
 
+    fn choose_diff_context_item(window: &NSWindow, editor: &NSView, label: &'static str) {
+        use std::ptr::NonNull;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use platform::objc2_app_kit::{NSMenu, NSMenuDidBeginTrackingNotification};
+        use platform::objc2_foundation::{NSNotification, NSNotificationCenter};
+
+        let chosen = Arc::new(AtomicBool::new(false));
+        let did_choose = chosen.clone();
+        let handle_menu = block2::RcBlock::new(move |notification: NonNull<NSNotification>| {
+            let Some(menu) = (unsafe { notification.as_ref() })
+                .object()
+                .and_then(|object| object.downcast::<NSMenu>().ok())
+            else {
+                return;
+            };
+            let index = menu.indexOfItemWithTitle(&NSString::from_str(label));
+            if index >= 0 {
+                menu.performActionForItemAtIndex(index);
+                did_choose.store(true, Ordering::Relaxed);
+            }
+            let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
+            let escape = NSString::from_str("\u{1b}");
+            let dismiss = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                NSEventType::KeyDown, NSPoint::new(0.0, 0.0), NSEventModifierFlags::empty(),
+                NSProcessInfo::processInfo().systemUptime(), 0, None, &escape, &escape, false, 53,
+            ).unwrap();
+            app.postEvent_atStart(&dismiss, true);
+        });
+        let center = NSNotificationCenter::defaultCenter();
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSMenuDidBeginTrackingNotification),
+                None,
+                None,
+                &handle_menu,
+            )
+        };
+        let bounds = editor.bounds();
+        let y = if editor.isFlipped() {
+            9.0
+        } else {
+            bounds.size.height - 9.0
+        };
+        let point = editor.convertPoint_toView(
+            NSPoint::new(bounds.origin.x + 96.0, bounds.origin.y + y),
+            None,
+        );
+        for (kind, pressure) in [(NSEventType::RightMouseDown, 1.0), (NSEventType::RightMouseUp, 0.0)] {
+            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                kind, point, NSEventModifierFlags::empty(), NSProcessInfo::processInfo().systemUptime(),
+                window.windowNumber(), None, 0, 1, pressure,
+            ).unwrap();
+            window.sendEvent(&event);
+            pump(60);
+        }
+        unsafe { center.removeObserver((*observer).as_ref()) };
+        assert!(chosen.load(Ordering::Relaxed), "missing Diff menu item {label}");
+    }
+
     fn make_key_event(
         window: &NSWindow,
         kind: NSEventType,
@@ -540,8 +603,11 @@ mod macos {
         println!("FILE_SHA256 {:x}", sha2::Sha256::digest(fs::read(repo.join("batch3-ticket.txt")).unwrap()));
         click(row);
         send_key(app, window, "d", "d", 2, command);
-        wait("diff-stage-hunk");
-        click("diff-stage-hunk");
+        let editor = "working-diff-new-editor";
+        wait(editor);
+        assert!(view_with_id(root, "diff-stage-hunk").is_none());
+        assert!(view_with_id(root, "diff-include-hunk").is_none());
+        choose_diff_context_item(window, &view_with_id(root, editor).unwrap(), "暂存此块");
         wait_until("only the selected hunk entered the real index", Duration::from_secs(6), || {
             let staged = git_run(repo, &["show", ":batch3-ticket.txt"]);
             staged.contains("edited first") && !staged.contains("edited last")
@@ -550,12 +616,17 @@ mod macos {
         assert!(fs::read_to_string(repo.join("batch3-ticket.txt")).unwrap().contains("edited last"));
         save_window_png(window, &evidence.join("native-selected-hunk.png"));
         click("diff-scope-staged");
-        click("diff-stage-hunk");
+        wait(editor);
+        choose_diff_context_item(window, &view_with_id(root, editor).unwrap(), "取消暂存此块");
         wait_until("selected staged hunk was reverted from the index", Duration::from_secs(6), || {
             !git_run(repo, &["show", ":batch3-ticket.txt"]).contains("edited first")
         });
+        wait_until("unstaging refreshed Commit", Duration::from_secs(6), || {
+            view_with_id(root, "change-row-staged-batch3-ticket.txt").is_none()
+        });
         println!("BATCH3_NATIVE_STAGE_AND_UNSTAGE ok");
 
+        click("diff-scope-unstaged");
         click("diff-index-review");
         wait("index-review-middle");
         wait("index-review-head");

@@ -14,7 +14,7 @@ pub(crate) struct IncludedHunks {
     exact: Vec<DiffHunk>,
 }
 
-pub(super) fn can_include(w: &WorkingDiffSession) -> bool {
+fn can_include(w: &WorkingDiffSession) -> bool {
     !w.data.staged_only
         && !w.file.staged
         && !w.file.untracked
@@ -24,20 +24,26 @@ pub(super) fn can_include(w: &WorkingDiffSession) -> bool {
         && !w.data.too_large
 }
 
-fn displayed_exact(w: &WorkingDiffSession) -> Option<(Vec<DiffHunk>, usize)> {
-    let visible = w.computed.hunks.get(w.current_hunk)?;
-    let exact =
-        selected_changes::exact_hunks(w.data.old_text.as_bytes(), w.saved_new_text.as_bytes());
-    let index = selected_changes::exact_hunk_index(&exact, visible).ok()?;
-    Some((exact, index))
+#[derive(Clone)]
+struct HunkMenuTarget {
+    file_key: String,
+    content_rev: u64,
+    staged: bool,
+    hunk: DiffHunk,
 }
 
-pub(super) fn included_state(s: &AppState) -> Option<bool> {
-    let w = s
-        .working_diff
-        .as_ref()
-        .filter(|w| can_include(w) && !w.is_dirty())?;
-    let visible = w.computed.hunks.get(w.current_hunk)?;
+impl HunkMenuTarget {
+    fn matches(&self, w: &WorkingDiffSession) -> bool {
+        self.file_key == w.file.key()
+            && self.content_rev == w.content_rev
+            && self.staged == w.data.staged_only
+    }
+}
+
+fn included_state(s: &AppState, w: &WorkingDiffSession, hunk: &DiffHunk) -> Option<bool> {
+    if !can_include(w) || w.is_dirty() {
+        return None;
+    }
     let key = w.file.key();
     let Some(part) = s.included_hunks.get(&key) else {
         return Some(s.checked_changes.contains(&key));
@@ -45,7 +51,7 @@ pub(super) fn included_state(s: &AppState) -> Option<bool> {
     if !same_versions(&part.view, &w.data) {
         return Some(false);
     }
-    let index = selected_changes::exact_hunk_index(&part.exact, visible).ok()?;
+    let index = selected_changes::exact_hunk_index(&part.exact, hunk).ok()?;
     Some(part.hunks.contains(&part.exact[index]))
 }
 
@@ -57,16 +63,18 @@ fn same_versions(a: &ReviewChangeData, b: &ReviewChangeData) -> bool {
         && a.index_snapshot == b.index_snapshot
 }
 
-pub(super) fn toggle_included_hunk() {
+fn toggle_included_hunk(target: &HunkMenuTarget) {
     app_signal().update(|s| {
         let Some(w) = s
             .working_diff
             .as_ref()
-            .filter(|w| can_include(w) && !w.is_dirty())
+            .filter(|w| target.matches(w) && can_include(w) && !w.is_dirty())
         else {
             return;
         };
-        let Some((exact, at)) = displayed_exact(w) else {
+        let exact =
+            selected_changes::exact_hunks(w.data.old_text.as_bytes(), w.saved_new_text.as_bytes());
+        let Ok(at) = selected_changes::exact_hunk_index(&exact, &target.hunk) else {
             log::debug!("找不到选中差异块");
             return;
         };
@@ -159,15 +167,6 @@ fn stage(w: WorkingDiffSession, selection: Selection) {
     );
 }
 
-pub(super) fn stage_hunk() {
-    let Some(w) = current_review() else {
-        return;
-    };
-    if let Some(hunk) = w.computed.hunks.get(w.current_hunk).cloned() {
-        stage(w, Selection::Hunks(vec![hunk]));
-    }
-}
-
 fn stage_lines(side: DiffSide) {
     let Some(w) = current_review() else {
         return;
@@ -200,12 +199,46 @@ pub(super) fn line_item(side: DiffSide, staged: bool) -> MenuItem {
     .on_select(move || stage_lines(side))
 }
 
-pub(super) fn line_items(side: DiffSide, staged: bool) -> Vec<MenuItem> {
-    let mut items = vec![line_item(side, staged)];
-    if !staged {
-        items.push(MenuItem::new("回滚当前块").on_select(rollback_diff));
-    }
-    items
+pub(super) fn line_items(side: DiffSide, line: usize) -> Vec<MenuItem> {
+    app_signal().with_untracked(|s| {
+        let Some(w) = &s.working_diff else {
+            return Vec::new();
+        };
+        let staged = w.data.staged_only;
+        let mut items = vec![line_item(side, staged)];
+        if let Some(hunk) = w.computed.hunks.iter().find(|hunk| {
+            let range = match side {
+                DiffSide::Old => hunk.old_start..hunk.old_end,
+                DiffSide::New => hunk.new_start..hunk.new_end,
+            };
+            range.contains(&line)
+        }) {
+            let target = HunkMenuTarget {
+                file_key: w.file.key(),
+                content_rev: w.content_rev,
+                staged,
+                hunk: hunk.clone(),
+            };
+            let stage_target = target.clone();
+            let stage_label = if staged { "取消暂存此块" } else { "暂存此块" };
+            items.push(MenuItem::new(stage_label).on_select(move || {
+                if let Some(w) = current_review().filter(|w| stage_target.matches(w)) {
+                    stage(w, Selection::Hunks(vec![stage_target.hunk.clone()]));
+                }
+            }));
+            if let Some(included) = included_state(s, w, hunk) {
+                items.push(
+                    MenuItem::new("纳入本次提交")
+                        .checked(included)
+                        .on_select(move || toggle_included_hunk(&target)),
+                );
+            }
+        }
+        if !staged {
+            items.push(MenuItem::new("回滚当前块").on_select(rollback_diff));
+        }
+        items
+    })
 }
 
 fn replace_editor_buffer(editor: &nsh_base::EditorApi, text: String) {
