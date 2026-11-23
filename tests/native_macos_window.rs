@@ -903,14 +903,65 @@ mod macos {
         println!("NATIVE_LEFT_TOOL_WINDOWS PASS width={width}");
     }
 
+    fn darcula_review(
+        app: &NSApplication,
+        window: &NSWindow,
+        root: &NSView,
+        config: &Path,
+        evidence: &Path,
+    ) {
+        let wait = |id: &str| {
+            wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
+        };
+        let click = |id: &str| {
+            wait(id);
+            send_click(window, &view_with_id(root, id).unwrap(), 1);
+        };
+        let command = NSEventModifierFlags::Command;
+        click("change-row-unstaged-src/RetryPolicy.java");
+        send_key(app, window, "d", "d", 2, command);
+        wait("working-diff-new-editor");
+        click("diff-jump-source-btn");
+        wait("code-editor-view");
+        send_key(app, window, "1", "1", 18, command);
+        click("project-locate-current");
+        wait("project-file-src/RetryPolicy.java");
+
+        let check_theme = |name: &str| {
+            wait_until(name, Duration::from_secs(4), || {
+                nemorous::config::load_from(config).is_ok_and(|cfg| cfg.theme == name)
+            });
+        };
+        for name in ["system", "light"] {
+            click("rail-theme-btn");
+            check_theme(name);
+        }
+        save_window_png(window, &config.with_file_name("light-switch.png"));
+        for name in ["dark", "darcula"] {
+            click("rail-theme-btn");
+            check_theme(name);
+        }
+        save_window_png(window, &evidence.join("source.png"));
+
+        click("editor-tab-working-diff");
+        wait("working-diff-old-editor");
+        wait("working-diff-new-editor");
+        save_window_png(window, &evidence.join("diff-split.png"));
+        click("diff-layout-toggle");
+        wait("working-diff-unified-editor");
+        save_window_png(window, &evidence.join("diff-single.png"));
+        println!("NATIVE_DARCULA PASS");
+    }
+
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
         let left_tools = std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
             .map(|width| width.parse::<f32>().expect("left tool window width"));
+        let darcula = std::env::var_os("NEMOROUS_NATIVE_DARCULA").is_some();
         assert!(
-            left_tools.is_some() || baseline_repo.exists(),
+            darcula || left_tools.is_some() || baseline_repo.exists(),
             "baseline repo fixture missing: {}",
             baseline_repo.display()
         );
@@ -921,7 +972,9 @@ mod macos {
         let batch5 = std::env::var_os("NEMOROUS_NATIVE_BATCH5").is_some();
         let batch6 = std::env::var_os("NEMOROUS_NATIVE_BATCH6").is_some();
         let cleanup = std::env::var_os("NEMOROUS_NATIVE_REVIEW_CLEANUP").is_some();
-        let work_dir = if left_tools.is_some() {
+        let work_dir = if darcula {
+            root_dir.join(format!("build/tmp-ab/native-darcula-{}", std::process::id()))
+        } else if left_tools.is_some() {
             root_dir.join(format!("build/tmp-ab/native-left-tools-{}", std::process::id()))
         } else if cleanup {
             root_dir.join(format!("build/tmp-ab/native-review-cleanup-{}", std::process::id()))
@@ -941,7 +994,63 @@ mod macos {
             dir
         };
         let repo_copy = work_dir.join("repo");
-        if left_tools.is_some() {
+        if darcula {
+            let base = r#"package demo;
+
+/**
+ * Retry settings for queued messages.
+ * @since 1.0
+ */
+@Deprecated
+public final class RetryPolicy implements java.io.Serializable {
+    private static final long serialVersionUID = 1L;
+    private static final int MAX_ATTEMPTS = 3;
+    private static final int DELAY_MS = 100;
+
+    // Retry delay grows with the attempt number.
+    public int delay(int attempt) {
+        return DELAY_MS * (attempt + 1);
+    }
+
+    @Override
+    public String toString() {
+        return "retry";
+    }
+}
+"#;
+            let retry_method = concat!(
+                "    public boolean shouldRetry(int attempt) {\n",
+                "        return attempt < MAX_ATTEMPTS;\n",
+                "    }\n\n",
+                "    @Override",
+            );
+            let working = base
+                .replace("MAX_ATTEMPTS = 3", "MAX_ATTEMPTS = 5")
+                .replace("DELAY_MS = 100", "DELAY_MS = 250")
+                .replace("    // Retry delay grows with the attempt number.\n", "")
+                .replace("    @Override", retry_method);
+            fs::create_dir_all(repo_copy.join("src")).unwrap();
+            let file = repo_copy.join("src/RetryPolicy.java");
+            fs::write(&file, base).unwrap();
+            fs::write(repo_copy.join("README.md"), "# Retry policy\n").unwrap();
+            git_run(&repo_copy, &["init", "-b", "main"]);
+            git_run(&repo_copy, &["add", "."]);
+            git_run(
+                &repo_copy,
+                &[
+                    "-c",
+                    "user.name=Nemorous QA",
+                    "-c",
+                    "user.email=native@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "-m",
+                    "Baseline retry policy",
+                ],
+            );
+            fs::write(file, working).unwrap();
+        } else if left_tools.is_some() {
             for (name, text) in [
                 ("src/nested/tracked.txt", "first\nbase\nlast\n"),
                 ("src/nested/deeper/leaf.txt", "leaf\n"),
@@ -1003,6 +1112,13 @@ mod macos {
             "change_diff_preview": false,
             "editor_font_size": 14.0
         });
+        if darcula {
+            cfg_json["theme"] = "darcula".into();
+            cfg_json["commit_left_width"] = 290.0.into();
+            cfg_json["code_left_width"] = 290.0.into();
+            cfg_json["auto_update"] = false.into();
+            cfg_json["diff_side_by_side"] = true.into();
+        }
         if let Some(width) = left_tools {
             cfg_json["commit_left_width"] = width.into();
             cfg_json["code_left_width"] = width.into();
@@ -1079,6 +1195,13 @@ mod macos {
         }
 
         let root = surface.view();
+        if darcula {
+            let evidence = root_dir.join("build/darcula-review");
+            darcula_review(&app, &window, &root, &cfg_path, &evidence);
+            window.close();
+            pump(150);
+            return;
+        }
         if let Some(width) = left_tools {
             if width < 150.0 {
                 let narrow = NSRect::new(NSPoint::new(80.0, 80.0), NSSize::new(1040.0, 660.0));

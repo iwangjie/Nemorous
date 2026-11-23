@@ -1,0 +1,154 @@
+diff --git a/crates/nsh-base/src/editor/view.rs b/crates/nsh-base/src/editor/view.rs
+index bcc6165..c99f811 100644
+--- a/crates/nsh-base/src/editor/view.rs
++++ b/crates/nsh-base/src/editor/view.rs
+@@ -1233,13 +1233,14 @@ fn row_view(
+ /// The spans of the content of the row in `slot`.
+ fn spans(ed: Ed, slot: ReadSignal<(usize, usize)>, content: RowContent) -> Vec<AnyElement> {
+     let props = ed.props;
++    let tokens = nsh_core::element::tokens();
+     let mut out: Vec<AnyElement> = Vec::with_capacity(content.spans.len() + 1);
+     {
+         let st = ed.st.borrow();
+         for span in content.spans {
+             let mut el = text(span.text);
+             if let Some(token) = span.token {
+-                *el.style() = token.style();
++                *el.style() = token.editor_style(&tokens);
+             }
+             let tags = span.tags;
+             if tags.unnecessary {
+diff --git a/crates/nsh-base/src/syntax.rs b/crates/nsh-base/src/syntax.rs
+index 13d08e1..4fa14f5 100644
+--- a/crates/nsh-base/src/syntax.rs
++++ b/crates/nsh-base/src/syntax.rs
+@@ -24,19 +24,28 @@ pub(crate) use self::syntect_syntaxes::{Parse, find_syntax, loaded, plain, scope
+ #[cfg_attr(not(feature = "highlight"), allow(dead_code))]
+ pub(crate) enum Token {
+     Comment,
++    Documentation,
++    DocumentationTag,
+     /// Keywords, the words of operators (`as`, `typeof`), headings.
+     Keyword,
+     /// Strings, regular expressions, escapes, a diff's added lines.
+     String,
+     /// Numbers, constants and literals (`true`, `null`).
+     Number,
++    JavaLiteral,
++    JavaConstant,
++    JavaNumberSuffix,
+     /// Names of functions and classes.
+     Title,
+     /// Attributes, parameters, properties, keys, shell variables,
+     /// `self` / `this`.
+     Attr,
++    JavaField,
++    JavaParameter,
+     /// Built-ins: types, functions; tags.
+     Built,
++    Annotation,
++    JavaPrimitive,
+     /// A diff's removed lines.
+     Deletion,
+     Bold,
+@@ -56,17 +65,44 @@ impl Token {
+         let s = StyleRefinement::default();
+         let color = AdaptiveColor::rgb;
+         match self {
+-            Self::Comment => s.text_color(color(0x6e7781, 0x7d7a72)).italic(),
+-            Self::Keyword => s.text_color(color(0x8250df, 0xc4a7ff)),
++            Self::Comment | Self::Documentation => s.text_color(color(0x6e7781, 0x7d7a72)).italic(),
++            Self::Keyword | Self::DocumentationTag => s.text_color(color(0x8250df, 0xc4a7ff)),
+             Self::String => s.text_color(color(0x116329, 0x9fd68a)),
+-            Self::Number => s.text_color(color(0x953800, 0xf5b27a)),
++            Self::Number | Self::JavaLiteral | Self::JavaConstant => {
++                s.text_color(color(0x953800, 0xf5b27a))
++            }
+             Self::Title => s.text_color(color(0x0550ae, 0x82b8ff)),
+-            Self::Attr => s.text_color(color(0x7d4e00, 0xf0c674)),
+-            Self::Built => s.text_color(color(0x0a7285, 0x6fd3d8)),
++            Self::Attr | Self::JavaParameter => s.text_color(color(0x7d4e00, 0xf0c674)),
++            Self::Built | Self::JavaPrimitive | Self::JavaNumberSuffix => {
++                s.text_color(color(0x0a7285, 0x6fd3d8))
++            }
+             Self::Deletion => s.text_color(color(0xcf222e, 0xf87171)),
+             Self::Bold => s.font_weight(FontWeight::BOLD),
+             Self::Italic => s.italic(),
+-            Self::Operator | Self::Storage => s,
++            Self::Operator | Self::Storage | Self::Annotation | Self::JavaField => s,
++        }
++    }
++
++    /// Application color overrides for code editors, using their existing tokens.
++    pub(crate) fn editor_style(self, tokens: &nsh_core::element::Tokens) -> StyleRefinement {
++        let name = match self {
++            Self::Comment => "editor-syntax-comment",
++            Self::Documentation | Self::DocumentationTag => "editor-syntax-documentation",
++            Self::Keyword | Self::JavaLiteral | Self::JavaPrimitive => "editor-syntax-keyword",
++            Self::String => "editor-syntax-string",
++            Self::Number | Self::JavaNumberSuffix => "editor-syntax-number",
++            Self::Title | Self::JavaParameter => "editor-syntax-title",
++            Self::Attr | Self::JavaField | Self::JavaConstant => "editor-syntax-attribute",
++            Self::Built => "editor-syntax-builtin",
++            Self::Annotation => "editor-syntax-annotation",
++            Self::Deletion => "editor-syntax-deletion",
++            _ => return self.style(),
++        };
++        let style = self.style();
++        match tokens.color(name) {
++            Some(color) if matches!(self, Self::DocumentationTag) => style.text_color(color).italic(),
++            Some(color) => style.text_color(color),
++            None => style,
+         }
+     }
+
+@@ -270,22 +306,37 @@ mod syntect_syntaxes {
+                 .strip_prefix(prefix)
+                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+         };
+-        let token = if is("meta.object-literal.key") || is("meta.mapping.key") {
++        let java = scope.ends_with(".java");
++        let token = if java && (is("variable.annotation") || is("punctuation.definition.annotation")) {
++            Token::Annotation
++        } else if is("meta.field.java") {
++            Token::JavaField
++        } else if is("meta.object-literal.key") || is("meta.mapping.key") {
+             Token::Attr
+         } else if is("punctuation") || is("invalid") || is("meta") || is("source") || is("text") {
+             // Delimiters belong to what they delimit; the rest are
+             // containers with no color of their own.
+             return None;
++        } else if is("keyword.other.documentation.javadoc") {
++            Token::DocumentationTag
++        } else if is("comment.block.documentation") || is("comment.line.documentation") {
++            Token::Documentation
+         } else if is("comment") {
+             Token::Comment
+         } else if is("string") || is("constant.character.escape") {
+             Token::String
++        } else if java && is("constant.language") {
++            Token::JavaLiteral
++        } else if java && (is("constant.other") || is("entity.name.constant")) {
++            Token::JavaConstant
+         } else if is("constant")
+             || is("support.constant")
+             || is("variable.other.constant")
+             || is("entity.name.constant")
+         {
+             Token::Number
++        } else if java && is("variable.parameter") {
++            Token::JavaParameter
+         } else if is("support.type.property-name")
+             || is("entity.other.attribute-name")
+             || is("variable.parameter")
+@@ -307,6 +358,10 @@ mod syntect_syntaxes {
+         } else if is("keyword.operator") {
+             // Words are keywords (`as`, `typeof`, `in`), symbols are plain.
+             Token::Operator
++        } else if java && is("storage.type.primitive") {
++            Token::JavaPrimitive
++        } else if java && is("storage.type.numeric") {
++            Token::JavaNumberSuffix
+         } else if is("storage.type") {
+             // `storage.type.function.rust` declares, `storage.type.numeric.go`
+             // is a type, `storage.type.rust` is either.

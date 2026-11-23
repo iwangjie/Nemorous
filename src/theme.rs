@@ -1,6 +1,6 @@
 use nsh_core::prelude::*;
 
-/// 精准复刻旧版 `theme.go` 的四主题色板（light / dark / darcula / system）。
+/// 应用界面和差异高亮共用的主题色板。
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub is_dark: bool,
@@ -159,13 +159,13 @@ pub fn darcula_palette() -> Palette {
     Palette {
         is_dark: true,
         app_bg: hex(0x2B2B2B),
-        rail_bg: hex(0x313335),
+        rail_bg: hex(0x3C3F41),
         surface: hex(0x2B2B2B),
-        surface2: hex(0x3C3F41),
+        surface2: hex(0x45484A),
         surface3: hex(0x4E5254),
         surface_hover: hex(0x434648),
-        active_row_bg: hex(0x2F65CA),
-        border: hex(0x3F4244),
+        active_row_bg: hex(0x122C40),
+        border: hex(0x4A4D4F),
         border_strong: hex(0x55585A),
 
         text_primary: hex(0xBBBBBB),
@@ -190,15 +190,34 @@ pub fn darcula_palette() -> Palette {
         purple: hex(0x9876AA),
         purple_soft: hex(0x372B40),
 
-        diff_add_line: hex_a(0x629755, 0.22),
-        diff_add_inline: hex_a(0x6A8759, 0.42),
-        diff_del_line: hex_a(0xBC3F3C, 0.24),
-        diff_del_inline: hex_a(0xCC666E, 0.42),
-        diff_mod_line: hex_a(0x6897BB, 0.20),
-        diff_gutter_add: hex(0x629755),
-        diff_gutter_del: hex(0xBC3F3C),
-        diff_gutter_mod: hex(0x6897BB),
+        diff_add_line: hex(0x294436),
+        diff_add_inline: hex(0x395745),
+        diff_del_line: hex(0x452F30),
+        diff_del_inline: hex(0x654243),
+        diff_mod_line: hex(0x344C62),
+        diff_gutter_add: hex(0x528362),
+        diff_gutter_del: hex(0xA66A64),
+        diff_gutter_mod: hex(0x6185A2),
     }
+}
+
+pub(crate) fn darcula_editor_tokens(base: &nsh_core::element::Tokens) -> nsh_core::element::Tokens {
+    let mut tokens = base.clone();
+    for (name, color) in [
+        ("editor-syntax-keyword", 0xCC7832),
+        ("editor-syntax-string", 0x6A8759),
+        ("editor-syntax-comment", 0x808080),
+        ("editor-syntax-documentation", 0x629755),
+        ("editor-syntax-number", 0x6897BB),
+        ("editor-syntax-title", 0xA9B7C6),
+        ("editor-syntax-attribute", 0x9876AA),
+        ("editor-syntax-builtin", 0xA9B7C6),
+        ("editor-syntax-annotation", 0xBBB529),
+        ("editor-syntax-deletion", 0xCE918F),
+    ] {
+        tokens.set_color(name, hex(color).into());
+    }
+    tokens
 }
 
 pub fn palette_for(theme_name: &str, system_dark: bool) -> Palette {

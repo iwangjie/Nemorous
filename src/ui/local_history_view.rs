@@ -351,6 +351,7 @@ fn history_editor(
         )
         .child(
             editor()
+                .styles(super::review_editor_styles)
                 .component_ref(&reference)
                 .test_id(id)
                 .flex_1()

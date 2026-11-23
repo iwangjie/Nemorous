@@ -1023,6 +1023,7 @@ fn render_side_by_side_diff(
                 )
                 .child(
                     editor()
+                        .styles(super::review_editor_styles)
                         .component_ref(&old_ref)
                         .test_id(if is_commit {
                             "commit-diff-old-editor"
@@ -1169,6 +1170,7 @@ fn render_side_by_side_diff(
                 )
                 .child(
                     editor()
+                        .styles(super::review_editor_styles)
                         .component_ref(&new_ref)
                         .test_id(if is_commit {
                             "commit-diff-new-editor"
@@ -1331,6 +1333,7 @@ fn render_single_column_diff(
     }
 
     editor()
+        .styles(super::review_editor_styles)
         .component_ref(&unified_ref)
         .test_id(if is_commit {
             "commit-diff-unified-editor"

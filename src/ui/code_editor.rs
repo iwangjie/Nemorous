@@ -615,6 +615,7 @@ pub fn code_editor_pane() -> impl IntoElement {
 
             let auto_focus = app_signal().with_untracked(|s| s.focus_zone == FocusZone::CodeEditor);
             super::blame_view::editor_body(editor()
+                .styles(super::review_editor_styles)
                 .component_ref(&ed_ref)
                 .test_id("code-editor-view")
                 .flex_1()

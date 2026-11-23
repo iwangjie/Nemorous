@@ -184,6 +184,7 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
         .child(strip)
         .child(
             super::blame_view::editor_body(editor()
+                .styles(super::review_editor_styles)
                 .component_ref(&ed_ref)
                 .test_id(match side {
                     PaneId::Left => "split-editor-left",

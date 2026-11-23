@@ -469,6 +469,7 @@ fn compare_side(
         )
         .child(
             editor()
+                .styles(super::review_editor_styles)
                 .component_ref(&reference)
                 .test_id(if old {
                     "comparison-left-editor"

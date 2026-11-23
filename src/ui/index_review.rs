@@ -380,6 +380,7 @@ pub(super) fn layer() -> impl IntoElement {
                             "index-review-worktree",
                         ][column];
                         let ed = editor()
+                            .styles(super::review_editor_styles)
                             .test_id(id)
                             .flex_1()
                             .default_value(Some(data.texts[column].clone().into()))

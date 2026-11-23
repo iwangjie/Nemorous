@@ -1137,9 +1137,10 @@ fn main_editor_content() -> impl IntoElement {
     })
 }
 
-/// 将 Nemorous 主题（明亮 / 暗色 / Darcula / 跟随系统）同步到 NSH 原生 Appearance，
-/// 确保 `Editor` 语法着色、活动行、行号栏与窗口外观和当前色板保持严格一致。
+/// 同步原生窗口明暗模式和编辑器语法配色。
 fn setup_theme_appearance_sync() {
+    let default_tokens = nsh_core::element::untracked(nsh_core::element::tokens);
+    let darcula_tokens = theme::darcula_editor_tokens(&default_tokens);
     effect(move || {
         let name = state::theme_signal().with(|t| t.name.clone());
         let appearance = match name.as_str() {
@@ -1148,7 +1149,40 @@ fn setup_theme_appearance_sync() {
             _ => nsh_core::platform::Appearance::Light,
         };
         nsh_core::element::set_color_scheme(appearance);
+        let tokens = if name == "darcula" {
+            &darcula_tokens
+        } else {
+            default_tokens.as_ref()
+        };
+        nsh_core::element::set_tokens(tokens.clone());
     });
+}
+
+fn review_editor_styles() -> nsh_base::EditorStyles {
+    use nsh_core::{PropertyValue, StyleKey, element::Style};
+
+    let mut styles = nsh_base::EditorStyles::default();
+    if !state::theme_signal().with(|theme| theme.name == "darcula") {
+        return styles;
+    }
+
+    let color = |key, value| {
+        Style::default()
+            .with(key, PropertyValue::Color(Some(rgb(value).into())))
+            .into()
+    };
+    let foreground = |value| color(StyleKey::Color, value);
+    let background = |value| color(StyleKey::BackgroundColor, value);
+    styles.content = Some(foreground(0xA9B7C6));
+    styles.gutter = Some(background(0x313335));
+    styles.line_number = Some(foreground(0x888888));
+    styles.active_line_number = Some(foreground(0xBBBBBB));
+    styles.active_line = Some(background(0x323232));
+    styles.selection = Some(background(0x214283));
+    styles.caret = Some(background(0xBBBBBB));
+    styles.indent_guide = Some(background(0x373737));
+    styles.whitespace = Some(foreground(0x666666));
+    styles
 }
 
 pub fn shell() -> impl IntoElement {
