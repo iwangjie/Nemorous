@@ -65,6 +65,7 @@ pub enum FocusZone {
     CommitTree,
     ProjectTree,
     GitFiles,
+    FindResults,
     CodeEditor,
     WorkingDiffOld,
     WorkingDiffNew,
@@ -501,6 +502,7 @@ pub struct AppState {
     pub prev_focus_zone: FocusZone,
 
     // Commit 树状态（选中与提交勾选独立）
+    pub tree_filter_open: Option<LeftTab>,
     pub changes_filter: String,
     pub change_selection: Option<ChangeSelection>,
     pub change_selected_dir: Option<(String, String, String)>, // (repo_id, rel_dir, abs_dir)
@@ -579,6 +581,14 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn dismiss_tree_filter(&mut self) {
+        match self.tree_filter_open.take() {
+            Some(LeftTab::Project) => self.project_filter.clear(),
+            Some(LeftTab::Commit) => self.changes_filter.clear(),
+            None => {}
+        }
+    }
+
     pub(crate) fn active_find_open(&self) -> bool {
         match self.editor_tab {
             EditorTabKind::File => self.code_find_open,
@@ -727,6 +737,7 @@ impl AppState {
             editor_tab: EditorTabKind::Welcome,
             focus_zone: FocusZone::CommitTree,
             prev_focus_zone: FocusZone::CommitTree,
+            tree_filter_open: None,
             changes_filter: String::new(),
             change_selection: None,
             change_selected_dir: None,
@@ -1489,14 +1500,6 @@ fn install_working_diff(
     }
     if has_hunks {
         reveal_opened_diff_hunk(EditorTabKind::WorkingDiff, initial_hunk_idx);
-    }
-}
-
-/// 切换工作区 Diff 的暂存/未暂存 scope。
-pub fn switch_working_diff_scope(staged_only: bool) {
-    let file = app_signal().with_untracked(|s| s.working_diff.as_ref().map(|w| w.file.clone()));
-    if let Some(cf) = file {
-        open_working_diff(cf, staged_only, true);
     }
 }
 
@@ -2436,6 +2439,7 @@ pub fn copy_for_current_focus() {
                 set_clipboard(t);
             }
         }
+        FocusZone::FindResults => {}
         FocusZone::Modal => {
             if let Some(api) = editor_refs_signal()
                 .get_untracked()
@@ -2535,7 +2539,7 @@ pub fn current_location_info() -> Option<(String, String, String, u32)> {
                 .to_string();
             Some((commit.repo_path.clone(), file.path.clone(), abs, 1))
         }
-        FocusZone::Modal | FocusZone::ComparisonOld | FocusZone::ComparisonNew => None,
+        FocusZone::Modal | FocusZone::FindResults | FocusZone::ComparisonOld | FocusZone::ComparisonNew => None,
     })
 }
 
@@ -2626,6 +2630,9 @@ pub(crate) fn setup_project_follow() {
 pub fn locate_in_project_tree(repo_id: &str, rel_path: &str) {
     app_signal().update(|s| {
         s.show_left_panel = true;
+        if s.left_tab != LeftTab::Project {
+            s.dismiss_tree_filter();
+        }
         s.left_tab = LeftTab::Project;
         let filter = s.project_filter.trim().to_ascii_lowercase();
         if !paths::normalize_slashes(rel_path).to_ascii_lowercase().contains(&filter) {

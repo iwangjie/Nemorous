@@ -179,6 +179,19 @@ fn git_run(dir: &Path, args: &[&str]) {
     );
 }
 
+fn open_working_change(app: &mut Headless, scope: &str, path: &str) {
+    let row = format!("id:change-row-{scope}-{path}");
+    app.wait_for(&row).unwrap();
+    app.press(&row).unwrap();
+    app.press_key("mod+d").unwrap();
+}
+
+fn wait_for_diff_file(app: &mut Headless, kind: &str, path: &str) {
+    let name = nemorous::paths::basename(path);
+    app.wait_for(&format!("id:{kind}-diff-pane")).unwrap();
+    app.wait_for(&format!("id:editor-tab-{kind}-diff >> text:Diff: {name}")).unwrap();
+}
+
 #[test]
 fn ui_commit_focus_single_click_vs_cmd_d_and_copy_rules() {
     let _guard = lock_env();
@@ -391,7 +404,7 @@ fn ui_review_navigation_protects_dirty_diff_and_keeps_history_on_external_write(
     for path in ["src/app.go", "notes.txt"] {
         app.press(&format!("id:change-row-unstaged-{path}")).unwrap();
         app.press_key("mod+d").unwrap();
-        app.wait_for(&format!("id:working-diff-pane >> text:{path}")).unwrap();
+        wait_for_diff_file(&mut app, "working", path);
     }
     app.type_text("id:working-diff-new-editor", "my pending review\n").unwrap();
     app.wait_for("id:diff-dirty-badge").unwrap();
@@ -404,21 +417,21 @@ fn ui_review_navigation_protects_dirty_diff_and_keeps_history_on_external_write(
     app.press("id:conflict-copy-mine-btn").unwrap();
     assert!(app.screen().clipboard().unwrap().contains("my pending review"));
     app.press("id:conflict-keep-editing-btn").unwrap();
-    app.wait_for("id:working-diff-pane >> text:notes.txt").unwrap();
+    wait_for_diff_file(&mut app, "working", "notes.txt");
     app.wait_for("id:diff-dirty-badge").unwrap();
     app.press_key("mod+[").unwrap();
     app.wait_for("id:save-conflict-modal").unwrap();
     app.press("id:conflict-accept-disk-btn").unwrap();
     app.press_key("mod+[").unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     app.press_key("mod+]").unwrap();
-    app.wait_for("id:working-diff-pane >> text:notes.txt").unwrap();
+    wait_for_diff_file(&mut app, "working", "notes.txt");
     app.wait_for("Agent wrote to disk").unwrap();
 
     app.type_text("id:working-diff-new-editor", "save on history navigation\n").unwrap();
     app.wait_for("id:diff-dirty-badge").unwrap();
     app.press_key("mod+[").unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     assert!(fs::read_to_string(&file).unwrap().contains("save on history navigation"));
 
     git_run(&fx.repo_dir, &["add", "notes.txt"]);
@@ -426,11 +439,11 @@ fn ui_review_navigation_protects_dirty_diff_and_keeps_history_on_external_write(
     app.wait_for_gone("id:change-row-unstaged-notes.txt", Duration::from_secs(4)).unwrap();
     app.press_key("mod+]").unwrap();
     app.wait_for_gone("id:diff-read-status", Duration::from_secs(4)).unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     git_run(&fx.repo_dir, &["commit", "-m", "Remove notes diff from the change list", "--", "notes.txt"]);
     app.wait_for_gone("id:change-row-unstaged-notes.txt", Duration::from_secs(4)).unwrap();
     app.press_key("mod+]").unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
 }
 
 #[cfg(target_os = "macos")]
@@ -528,7 +541,7 @@ fi
     app.press("id:conflict-copy-mine-btn").unwrap();
     assert!(app.screen().clipboard().unwrap().contains("unsaved text during conflicting read"));
     app.press("id:conflict-keep-editing-btn").unwrap();
-    app.wait_for("id:working-diff-pane >> text:notes.txt").unwrap();
+    wait_for_diff_file(&mut app, "working", "notes.txt");
     app.wait_for("id:diff-dirty-badge").unwrap();
     assert_eq!(fs::read_to_string(&notes_path).unwrap(), "Agent saved during the read\n");
     app.press(notes).unwrap();
@@ -553,12 +566,12 @@ fn ui_review_navigation_reopens_previous_committed_diff() {
         app.wait_for(&row).unwrap();
         app.press(&row).unwrap();
         app.press_key("mod+d").unwrap();
-        app.wait_for(&format!("id:commit-diff-pane >> text:{path}")).unwrap();
+        wait_for_diff_file(&mut app, "commit", path);
     }
     app.press_key("mod+[").unwrap();
-    app.wait_for("id:commit-diff-pane >> text:README.md").unwrap();
+    wait_for_diff_file(&mut app, "commit", "README.md");
     app.press_key("mod+]").unwrap();
-    app.wait_for("id:commit-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "commit", "src/app.go");
 }
 
 #[cfg(target_os = "macos")]
@@ -635,11 +648,11 @@ exec /usr/bin/git "$@"
     for path in ["src/app.go", "notes.txt"] {
         app.press(&format!("id:change-row-unstaged-{path}")).unwrap();
         app.press_key("mod+d").unwrap();
-        app.wait_for(&format!("id:working-diff-pane >> text:{path}")).unwrap();
+        wait_for_diff_file(&mut app, "working", path);
     }
     cancel_return(&mut app, "working");
     app.press_key("mod+[").unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     app.press_key("mod+]").unwrap();
     app.wait_for(source).unwrap();
 
@@ -652,7 +665,7 @@ exec /usr/bin/git "$@"
         app.wait_for(&row).unwrap();
         app.press(&row).unwrap();
         app.press_key("mod+d").unwrap();
-        app.wait_for(&format!("id:commit-diff-pane >> text:{path}")).unwrap();
+        wait_for_diff_file(&mut app, "commit", path);
     }
     cancel_return(&mut app, "commit");
     fs::write(control.join("fail"), "").unwrap();
@@ -661,7 +674,7 @@ exec /usr/bin/git "$@"
     app.wait_for(source).unwrap();
     fs::remove_file(control.join("fail")).unwrap();
     app.press_key("mod+[").unwrap();
-    app.wait_for("id:commit-diff-pane >> text:README.md").unwrap();
+    wait_for_diff_file(&mut app, "commit", "README.md");
     app.press_key("mod+]").unwrap();
     app.wait_for(source).unwrap();
 
@@ -673,16 +686,16 @@ exec /usr/bin/git "$@"
     wait_marker(&mut app, "started");
     app.wait_for("id:diff-read-status").unwrap();
     app.press("id:editor-tab-working-diff").unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     assert!(!finished.is_file());
     fs::remove_file(&hold).unwrap();
     wait_marker(&mut app, "finished");
     app.wait(Duration::from_millis(170)).unwrap();
-    app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     app.press_key("mod+shift+e").unwrap();
     app.wait_for(recent).unwrap();
     app.press(recent).unwrap();
-    app.wait_for("id:commit-diff-pane >> text:src/app.go").unwrap();
+    wait_for_diff_file(&mut app, "commit", "src/app.go");
 }
 
 #[cfg(unix)]
@@ -695,7 +708,7 @@ fn ui_review_refreshes_baseline_and_permissions_after_external_git_changes() {
     let mut app = fx.start_headless(1440.0, 900.0);
     app.press("id:change-row-unstaged-notes.txt").unwrap();
     app.press_key("mod+d").unwrap();
-    app.wait_for("id:working-diff-pane >> text:notes.txt").unwrap();
+    wait_for_diff_file(&mut app, "working", "notes.txt");
 
     git_run(&fx.repo_dir, &["add", "notes.txt"]);
     git_run(&fx.repo_dir, &["commit", "-m", "Agent committed notes", "--", "notes.txt"]);
@@ -719,10 +732,13 @@ fn ui_review_refreshes_baseline_and_permissions_after_external_git_changes() {
     app.wait_for(unstaged).unwrap();
     app.press(staged).unwrap();
     app.press_key("mod+d").unwrap();
-    app.wait_for("id:working-diff-pane >> text:notes.txt → renamed-notes.txt").unwrap();
+    wait_for_diff_file(&mut app, "working", "renamed-notes.txt");
+    app.press("id:diff-details").unwrap();
+    assert!(app.menu().unwrap().iter().any(|item| item.label.contains("notes.txt → renamed-notes.txt")));
+    app.close_menu().unwrap();
     app.press(unstaged).unwrap();
     app.press_key("mod+d").unwrap();
-    app.wait_for("id:working-diff-pane >> text:renamed-notes.txt").unwrap();
+    wait_for_diff_file(&mut app, "working", "renamed-notes.txt");
     app.wait_for("Agent changed after renaming").unwrap();
 }
 
@@ -905,7 +921,9 @@ fn ui_committed_diff_and_rename_context_copy() {
     app.press("id:git-commit-file-src/rename_new.go").unwrap();
     app.press_key("mod+d").unwrap();
     app.wait_for("id:commit-diff-pane").unwrap();
-    app.wait_for("src/rename_old.go → src/rename_new.go").unwrap();
+    app.press("id:diff-details").unwrap();
+    assert!(app.menu().unwrap().iter().any(|item| item.label.contains("src/rename_old.go → src/rename_new.go")));
+    app.close_menu().unwrap();
 
     // 1. 默认聚焦右侧（新路径）：⌘L 跳第 2 行，⌘⌥⇧C 复制新路径:2
     app.press_key("mod+l").unwrap();
@@ -1218,7 +1236,11 @@ fn ui_commit_list_scrolls_long_paths_in_both_directions() {
     app.wait_for("text:src/development/review/fixture").unwrap();
     assert!(!app.screen().matches(r"id:changes-tree-scroll >> text:/^\?$/").unwrap());
     app.scroll("id:changes-tree-rows", px(150.0)).unwrap();
-    assert!(app.screen().matches("id:changes-filter-input").unwrap());
+    assert!(!app.screen().matches("id:changes-filter-input").unwrap());
+    app.press_key("mod+f").unwrap();
+    app.wait_for("id:changes-filter-input").unwrap();
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("id:changes-filter-input", Duration::from_secs(2)).unwrap();
     app.type_text("id:git-commit-message", "Review changes").unwrap();
     app.scroll("id:changes-tree-scroll", px(-1_000.0)).unwrap();
     app.scroll("id:changes-tree-rows", px(-150.0)).unwrap();
@@ -1250,6 +1272,9 @@ fn ui_project_tree_scrolls_long_names_without_moving_the_header() {
         let mut app = fx.start_headless(1140.0, 720.0);
         app.press_key("mod+1").unwrap();
         app.wait_for(&format!("id:{row}")).unwrap_or_else(|err| panic!("{width}-point project tree: {err}"));
+        assert!(!app.screen().matches("id:project-filter-input").unwrap());
+        app.press_key("mod+f").unwrap();
+        app.wait_for("id:project-filter-input").unwrap();
         let initial_row = bounds(&app, &row);
         let initial_header = bounds(&app, header);
         let initial_filter = bounds(&app, filter);
@@ -1324,6 +1349,80 @@ fn ui_editor_structure_and_todo_navigate_to_source_lines() {
 }
 
 #[test]
+fn ui_fonts_can_be_adjusted_and_reset_independently() {
+    let _guard = lock_env();
+    let fx = Fixture::new("independent-fonts");
+    let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
+    config["editor_font_size"] = 17.0.into();
+    fs::write(&fx.config_file, config.to_string()).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press("id:rail-settings-btn").unwrap();
+    for id in ["font-increase", "tree-font-increase", "search-font-increase"] {
+        app.press(&format!("id:{id}")).unwrap();
+    }
+    let saved = || nemorous::config::load_from(&fx.config_file).unwrap();
+    let config = saved();
+    assert_eq!((config.editor_font_size, config.diff_font_size), (18.0, 17.0));
+    assert_eq!((config.tree_font_size, config.search_font_size), (12.5, 13.0));
+    app.press("id:diff-font-reset").unwrap();
+    assert_eq!(saved().diff_font_size, 14.0);
+    assert_eq!(saved().editor_font_size, 18.0);
+}
+
+#[test]
+fn ui_search_previews_selected_context_and_discards_old_queries() {
+    let _guard = lock_env();
+    let fx = Fixture::new("search-context-preview");
+    let document: String = (1..=100).map(|line| match line {
+        70 => "查找内容\n".to_owned(),
+        71 => "文档上下文\n".to_owned(),
+        90 => "远处上下文\n".to_owned(),
+        _ => format!("文档行 {line:03}\n"),
+    }).collect();
+    fs::write(fx.repo_dir.join("README.md"), document).unwrap();
+    fs::write(fx.repo_dir.join("notes.txt"), "第二处\n查找内容\n备注上下文\n").unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    let input = "id:content-search-input";
+    let preview = "id:search-preview-editor";
+    app.press_key("mod+shift+f").unwrap();
+    app.type_text(input, "查找内容").unwrap();
+    app.wait_for("id:content-search-hit-1").unwrap();
+    app.wait_for(&format!("{preview} >> text:文档上下文")).unwrap();
+    app.wait_for(&format!("{preview} >> text:70")).unwrap();
+    let preview_height = |app: &Headless| {
+        app.screen().layout_nodes().into_iter()
+            .find(|node| node.test_id.as_deref() == Some("search-code-preview"))
+            .unwrap().bounds.size.height
+    };
+    let original_height = preview_height(&app);
+    app.drag("label:调整代码预览高度", point(px(0.0), px(-45.0))).unwrap();
+    assert!(preview_height(&app) > original_height);
+    app.wheel(preview, point(px(0.0), px(390.0))).unwrap();
+    let distant = format!("{preview} >> text:远处上下文");
+    app.wait_for(&distant).unwrap();
+    app.press(&distant).unwrap();
+    app.press_key("mod+a").unwrap();
+    app.press_key("mod+c").unwrap();
+    assert!(app.screen().clipboard().unwrap_or_default().contains("远处上下文"));
+    app.press(input).unwrap();
+    app.press_key("down").unwrap();
+    app.wait_for(&format!("{preview} >> text:备注上下文")).unwrap();
+    assert!(!app.screen().matches("id:editor-tab-file-notes.txt").unwrap());
+    app.press("id:content-search-preview-toggle").unwrap();
+    app.wait_for_gone(preview, Duration::from_secs(2)).unwrap();
+    app.press("id:content-search-preview-toggle").unwrap();
+    app.wait_for(&format!("{preview} >> text:备注上下文")).unwrap();
+    app.clear(input).unwrap();
+    app.wait_for_gone(preview, Duration::from_secs(2)).unwrap();
+    app.type_text(input, "文档上下文").unwrap();
+    app.wait_for(&format!("{preview} >> text:文档上下文")).unwrap();
+    assert!(!app.screen().matches(&format!("{preview} >> text:备注上下文")).unwrap());
+    app.submit(input).unwrap();
+    app.wait_for("id:editor-tab-file-README.md").unwrap();
+}
+
+#[test]
 fn ui_find_results_pin_preserves_snapshot_and_reopens() {
     let _guard = lock_env();
     let fx = Fixture::new("find-results-pin");
@@ -1340,11 +1439,22 @@ fn ui_find_results_pin_preserves_snapshot_and_reopens() {
 
     // 2. 底部面板显示查询与分组命中。
     app.wait_for("id:find-results-panel").unwrap();
-    app.wait_for("查找：new-greeting").unwrap();
+    app.wait_for("查找 · new-greeting").unwrap();
     app.wait_for("id:find-results-hit-0").unwrap();
 
-    // 3. 点击命中直接打开源码（行/UTF-16 列来自快照）。
+    app.set_viewport(size(px(800.0), px(640.0))).unwrap();
+    let preview_width = |app: &Headless| {
+        app.screen().layout_nodes().into_iter()
+            .find(|node| node.test_id.as_deref() == Some("search-code-preview"))
+            .unwrap().bounds.size.width
+    };
+    let original_width = preview_width(&app);
+    app.drag("label:调整代码预览宽度", point(px(-45.0), px(0.0))).unwrap();
+    assert!(preview_width(&app) > original_width);
     app.press("id:find-results-hit-0").unwrap();
+    app.wait_for("id:search-preview-editor >> text:/new-greeting/").unwrap();
+    assert!(!app.screen().matches("id:editor-tab-file-src/app.go").unwrap());
+    app.press_key("enter").unwrap();
     app.wait_for("id:editor-tab-file-src/app.go").unwrap();
 
     // 4. 隐藏后经左侧「查找结果」按钮重新打开，快照仍在。
@@ -1363,7 +1473,7 @@ fn ui_find_results_pin_preserves_snapshot_and_reopens() {
     app.press_key("escape").unwrap();
     app.wait_for_gone("id:content-search-modal", Duration::from_secs(2))
         .unwrap();
-    app.wait_for("查找：new-greeting").unwrap();
+    app.wait_for("查找 · new-greeting").unwrap();
     app.wait_for("id:find-results-hit-0").unwrap();
 }
 
@@ -1400,6 +1510,7 @@ fn ui_moved_worktree_source_keeps_active_editor_at_stale_entry_points() {
     app.press("label:关闭提示").unwrap();
     app.wait_for_gone("id:toast-notification", Duration::from_secs(2)).unwrap();
     app.press("id:find-results-hit-0").unwrap();
+    app.press_key("enter").unwrap();
     app.wait_for(missing).unwrap();
     app.wait_for(readme).unwrap();
     assert!(!app.screen().matches(old_tab).unwrap());
@@ -1417,11 +1528,10 @@ fn ui_moved_worktree_source_keeps_active_editor_at_stale_entry_points() {
     app.wait_for(deleted).unwrap();
     app.press(deleted).unwrap();
     app.press_key("mod+d").unwrap();
-    let diff = "id:working-diff-pane >> text:src/app.go";
-    app.wait_for(diff).unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     app.press_key("f4").unwrap();
     app.wait_for(missing).unwrap();
-    app.wait_for(diff).unwrap();
+    wait_for_diff_file(&mut app, "working", "src/app.go");
     assert!(!app.screen().matches(old_tab).unwrap());
 }
 
@@ -2485,6 +2595,7 @@ fn ui_project_collapse_survives_refresh_and_filter_then_locate_expands() {
     app.wait_for_gone("id:project-repo-sample-repo", Duration::from_secs(2)).unwrap();
     app.press_key("mod+alt+y").unwrap();
     app.wait_for("id:project-workspace-root").unwrap();
+    app.press_key("mod+f").unwrap();
     app.type_text("id:project-filter-input", "app.go").unwrap();
     app.wait_for("id:project-file-src/app.go").unwrap();
     app.clear("id:project-filter-input").unwrap();
@@ -2594,6 +2705,7 @@ fn ui_project_header_locates_and_expands_only_the_selected_branch() {
     assert!(!app.screen().matches("id:project-file-docs/nested/guide.md").unwrap());
     app.press("id:project-collapse-all").unwrap();
     app.wait_for_gone("id:project-file-src/app.go", Duration::from_secs(2)).unwrap();
+    app.press_key("mod+f").unwrap();
     app.type_text("id:project-filter-input", "guide.md").unwrap();
     app.press("id:project-locate-current").unwrap();
     app.wait_for("id:project-file-src/app.go").unwrap();
@@ -2738,25 +2850,36 @@ fn ui_project_preview_tab_reuse_pin_and_buffer_retention() {
 fn ui_working_diff_scope_switch_single_column_and_collapse() {
     let _guard = lock_env();
     let fx = Fixture::new("diff-modes");
+    let path = fx.repo_dir.join("src/app.go");
+    let working = fs::read_to_string(&path).unwrap();
+    let staged = working.replace("new-greeting", "staged-greeting");
+    fs::write(&path, &staged).unwrap();
+    git_run(&fx.repo_dir, &["add", "src/app.go"]);
+    fs::write(&path, &working).unwrap();
     let mut app = fx.start_headless(1440.0, 900.0);
 
-    app.press("id:change-row-unstaged-src/app.go").unwrap();
-    app.press_key("mod+d").unwrap();
-    app.wait_for("id:working-diff-pane").unwrap();
-    app.wait_for("id:working-diff-new-editor").unwrap();
+    open_working_change(&mut app, "staged", "src/app.go");
+    app.wait_for("id:diff-old-pane-bar >> text:HEAD · src/app.go").unwrap();
+    app.wait_for("id:working-diff-new-editor >> text:/staged-greeting/").unwrap();
+    app.wait_for("id:diff-new-pane-bar >> text:只读").unwrap();
 
-    // 切到暂存区 -> 只读
-    app.press("id:diff-scope-staged").unwrap();
-    app.wait_for("只读").unwrap();
+    open_working_change(&mut app, "unstaged", "src/app.go");
+    app.wait_for("id:working-diff-new-editor >> text:/new-greeting/").unwrap();
+    app.wait_for("id:working-diff-old-editor >> text:/staged-greeting/").unwrap();
+    for control in ["diff-scope-staged", "diff-scope-unstaged", "diff-save-btn"] {
+        assert!(!app.screen().matches(&format!("id:{control}")).unwrap());
+    }
+    app.type_text("id:working-diff-new-editor", "// draft from Diff\n").unwrap();
+    app.wait_for("id:editor-tab-working-diff >> id:diff-dirty-badge").unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:diff-dirty-badge", Duration::from_secs(3)).unwrap();
+    assert!(fs::read_to_string(&path).unwrap().contains("draft from Diff"));
+    assert_eq!(nemorous::git::run_git_string(&fx.repo_dir, &["show", ":src/app.go"]).unwrap().trim(), staged.trim());
 
-    // 切回未暂存 -> 切单栏模式 -> 切回双栏
-    app.press("id:diff-scope-unstaged").unwrap();
     app.press("id:diff-layout-toggle").unwrap();
     app.wait_for("id:working-diff-unified-editor").unwrap();
     app.press("id:diff-layout-toggle").unwrap();
     app.wait_for("id:working-diff-new-editor").unwrap();
-
-    // 折叠/展开未改动行按钮可点击无报错
     app.press("id:diff-collapse-btn").unwrap();
     app.press("id:diff-collapse-btn").unwrap();
 }
@@ -3060,7 +3183,9 @@ fn ui_open_worktree_diff_displays_unavailable_disk_without_losing_review() {
     fs::remove_dir(&path).unwrap();
     app.press_key("mod+alt+y").unwrap();
     app.wait_for("id:diff-disk-state >> text:磁盘文件已移动或删除").unwrap();
-    app.wait_for("id:working-diff-pane >> text:+0").unwrap();
+    app.press("id:diff-details").unwrap();
+    assert!(app.menu().unwrap().iter().any(|item| item.label.starts_with("+0 /")));
+    app.close_menu().unwrap();
     assert!(!app.screen().matches("id:working-diff-new-editor >> text:/new-greeting/").unwrap());
 
     fs::rename(&moved, &path).unwrap();
@@ -3114,7 +3239,9 @@ fn ui_diff_preserves_draft_while_the_staged_baseline_is_not_text() {
     app.wait_for("id:diff-disk-state >> text:Git 比较基准为二进制或非 UTF-8 文件").unwrap();
     app.wait_for(draft).unwrap();
     app.wait_for(old).unwrap();
-    assert!(!app.screen().matches("id:diff-stat-added").unwrap());
+    app.press("id:diff-details").unwrap();
+    assert!(!app.menu().unwrap().iter().any(|item| item.label.starts_with('+')));
+    app.close_menu().unwrap();
     app.right_click(&format!("{draft} >> nth=0")).unwrap();
     let menu = app.menu().unwrap();
     assert!(!menu.iter().any(|item| matches!(item.label.as_str(), "暂存此块" | "回滚当前块")));
@@ -3134,7 +3261,9 @@ fn ui_diff_preserves_draft_while_the_staged_baseline_is_not_text() {
     stage(original.trim());
     app.wait_for_gone(badge, Duration::from_secs(4)).unwrap();
     app.wait_for(draft).unwrap();
-    app.wait_for("id:diff-stat-added").unwrap();
+    app.press("id:diff-details").unwrap();
+    assert!(app.menu().unwrap().iter().any(|item| item.label.starts_with('+')));
+    app.close_menu().unwrap();
 
     stage(binary.trim());
     app.wait_for("id:diff-disk-state >> text:Git 比较基准为二进制或非 UTF-8 文件").unwrap();
@@ -3144,7 +3273,9 @@ fn ui_diff_preserves_draft_while_the_staged_baseline_is_not_text() {
     assert!(fs::read_to_string(&path).unwrap().contains("retained text draft"));
     let staged = nemorous::git::run_git_string(&fx.repo_dir, &["rev-parse", ":src/app.go"]).unwrap();
     assert_eq!(staged, binary);
-    assert!(!app.screen().matches("id:diff-stat-added").unwrap());
+    app.press("id:diff-details").unwrap();
+    assert!(!app.menu().unwrap().iter().any(|item| item.label.starts_with('+')));
+    app.close_menu().unwrap();
     assert!(!app.screen().matches("id:diff-dirty-badge").unwrap());
 
     stage(original.trim());
@@ -3303,7 +3434,7 @@ fn ui_working_unified_diff_edits_only_local_text_and_shares_undo() {
     assert!(index.status.success());
     assert_eq!(index.stdout, staged.as_bytes());
 
-    app.press("id:diff-scope-staged").unwrap();
+    open_working_change(&mut app, "staged", "README.md");
     app.wait_for_gone("text:+ pasted two", Duration::from_secs(3)).unwrap();
     app.wait_for("text:+ # Staged").unwrap();
     app.press("text:+ # Staged").unwrap();
@@ -3440,7 +3571,7 @@ fn ui_working_diff_keeps_each_files_undo_after_switching() {
             app.press("id:change-row-unstaged-src/app.go").unwrap();
             app.press_key("mod+d").unwrap();
         }
-        app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+        wait_for_diff_file(&mut app, "working", "src/app.go");
         app.press("id:diff-new-pane-bar").unwrap();
         app.press_key("mod+z").unwrap();
         app.wait_for("id:diff-dirty-badge").unwrap();
@@ -3485,7 +3616,7 @@ fn ui_working_diff_clears_a_parked_undo_after_external_replacement() {
         fs::write(&replacement, &external).unwrap();
         fs::rename(replacement, &path).unwrap();
         app.press_key("mod+[").unwrap();
-        app.wait_for("id:working-diff-pane >> text:src/app.go").unwrap();
+        wait_for_diff_file(&mut app, "working", "src/app.go");
         app.press("id:diff-new-pane-bar").unwrap();
         for shortcut in ["mod+z", "mod+shift+z"] {
             app.press_key(shortcut).unwrap();
@@ -3581,6 +3712,7 @@ fn ui_modal_escape_restores_focus_and_cmd0_cmd1_focus_routing() {
 
     // 2.5 验证 `<input>` 输入框内按 ⌘C 绝不被树复制劫持（选中 notes.txt 后在筛选框内键入并按 ⌘C，剪贴板不得被覆写为 notes.txt 路径）
     app.press("id:change-row-unstaged-notes.txt").unwrap();
+    app.press_key("mod+f").unwrap();
     app.type_text("id:changes-filter-input", "app").unwrap();
     app.press_key("mod+c").unwrap();
     assert_eq!(
@@ -3870,6 +4002,8 @@ fn ui_alt_arrows_preserve_editor_input_word_nav_and_modal_blocks_shortcuts() {
     app.wait_for("1:1").unwrap();
 
     // 2. 在筛选 <input> 内按 alt+left / alt+right 绝不劫持切入 WorkingDiff
+    app.press_key("mod+0").unwrap();
+    app.press_key("mod+f").unwrap();
     app.type_text("id:changes-filter-input", "app.go").unwrap();
     app.press_key("alt+left").unwrap();
     app.press_key("alt+right").unwrap();
@@ -4974,7 +5108,7 @@ fn ui_diff_blame_uses_the_visible_revision_and_dismisses_on_scroll() {
     app.wait(Duration::from_millis(350)).unwrap();
     assert!(!app.screen().matches(tooltip).unwrap(), "a waiting hover survived a scrollbar move");
     app.scroll(left, px(-360.0)).unwrap();
-    app.hover("id:diff-header-path").unwrap();
+    app.hover("id:diff-details").unwrap();
     app.hover("text:/^committed 008 /").unwrap();
     app.wait_for(tooltip).unwrap();
     app.wait_for("id:diff-blame-tooltip >> text:/Review Author · [0-9]{4}-[0-9]{2}-[0-9]{2}/").unwrap();
@@ -5033,7 +5167,7 @@ fn ui_diff_blame_rechecks_a_line_after_an_unsaved_edit() {
     app.type_text(editor, "header\nlocal_marker\ntail\n").unwrap();
     app.wait_for(replacement).unwrap();
     app.wait_for_gone(tooltip, Duration::from_secs(2)).unwrap();
-    app.hover("id:diff-header-path").unwrap();
+    app.hover("id:diff-details").unwrap();
     app.hover(replacement).unwrap();
     app.wait_for("id:diff-blame-tooltip >> text:未提交的本地修改").unwrap();
     assert_eq!(fs::read_to_string(&file).unwrap(), published);
@@ -5148,7 +5282,7 @@ fn ui_working_attribution_follows_head_with_identical_file_contents() {
     app.wait_for("id:diff-blame-tooltip >> text:/Earlier Author/").unwrap();
     git_run(&fx.repo_dir, &["update-ref", "HEAD", current.trim(), earlier.trim()]);
     let diff_hidden = app.wait_for_gone("id:diff-blame-tooltip", Duration::from_secs(3));
-    app.hover("id:diff-header-path").unwrap();
+    app.hover("id:diff-details").unwrap();
     app.hover(diff_line).unwrap();
     let diff_current = app.wait_for("id:diff-blame-tooltip >> text:/Current Author/");
 
@@ -6096,7 +6230,7 @@ fn ui_diff_stages_and_unstages_only_the_clicked_line_in_both_layouts() {
         assert_eq!(read_index(), initially_staged.replace("old B", "new B").as_bytes());
         assert_eq!(fs::read(&path).unwrap(), working.as_bytes());
 
-        app.press("id:diff-scope-staged").unwrap();
+        open_working_change(&mut app, "staged", "lines.txt");
         let staged_scope = if single {
             "id:working-diff-unified-editor >> text:+ pre-staged tail"
         } else {
@@ -6208,7 +6342,7 @@ fn ui_diff_stages_one_hunk_and_unstages_it_without_writing_worktree() {
     let read = || nemorous::git::run_git_string(&fx.repo_dir, &["show", ":many.txt"]).unwrap();
     assert_eq!(read(), format!("old first\n{context}new last\n"));
     assert_eq!(fs::read_to_string(&path).unwrap(), new);
-    app.press("id:diff-scope-staged").unwrap();
+    open_working_change(&mut app, "staged", "many.txt");
     app.wait_for("id:diff-old-pane-bar >> text:HEAD · many.txt").unwrap();
     app.press("id:diff-layout-toggle").unwrap();
     app.wait_for("id:working-diff-unified-editor >> text:+ new last").unwrap();

@@ -110,6 +110,17 @@ pub struct SearchHit {
     pub raw_sha256: String,
 }
 
+/// A preview uses the bounded file that was searched. Match offsets are
+/// valid only for the exact on-disk text recorded by the search.
+pub(crate) fn read_preview_file(hit: &SearchHit) -> Option<String> {
+    let path = Path::new(&hit.abs_path);
+    if fs::canonicalize(path).ok()? != path {
+        return None;
+    }
+    let body = read_text(path)?;
+    (crate::local_history::sha256_hex(body.as_bytes()) == hit.raw_sha256).then_some(body)
+}
+
 /// Result of one search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchOutcome {

@@ -90,6 +90,9 @@ pub struct Config {
     pub git_log_columns: GitLogColumns,
     pub git_log_group_files: bool,
     pub editor_font_size: f32,
+    pub diff_font_size: f32,
+    pub tree_font_size: f32,
+    pub search_font_size: f32,
     pub editor_soft_wrap: bool,
     pub format_on_save: bool,
     pub format_command: String,
@@ -131,6 +134,9 @@ impl Default for Config {
             git_log_columns: GitLogColumns::default(),
             git_log_group_files: false,
             editor_font_size: 14.0,
+            diff_font_size: 14.0,
+            tree_font_size: 11.5,
+            search_font_size: 12.0,
             editor_soft_wrap: true,
             format_on_save: false,
             format_command: String::new(),
@@ -189,8 +195,15 @@ impl Config {
         if self.theme.is_empty() {
             self.theme = "light".to_string();
         }
-        if self.editor_font_size < 10.0 || self.editor_font_size > 24.0 {
-            self.editor_font_size = 14.0;
+        for (size, default) in [
+            (&mut self.editor_font_size, 14.0),
+            (&mut self.diff_font_size, 14.0),
+            (&mut self.tree_font_size, 11.5),
+            (&mut self.search_font_size, 12.0),
+        ] {
+            if !(10.0..=24.0).contains(size) {
+                *size = default;
+            }
         }
         if self.diff_inline_mode.is_empty() {
             self.diff_inline_mode = "word".to_string();
@@ -410,11 +423,15 @@ pub fn load_from(path: &Path) -> Result<Config> {
         .with_context(|| format!("读取配置文件失败: {}", path.display()))?;
     let raw: serde_json::Value = serde_json::from_str(&data)
         .with_context(|| format!("解析配置文件失败: {}", path.display()))?;
+    let separate_diff_font = raw.get("diff_font_size").is_some();
     let modern_column = raw.get("diff_single_column").is_some();
     let modern_whitespace = raw.get("diff_whitespace_mode").is_some();
     let mut cfg: Config = serde_json::from_value(raw)
         .with_context(|| format!("解析配置字段失败: {}", path.display()))?;
     cfg.sync_from_legacy_extra(modern_column, modern_whitespace);
+    if !separate_diff_font {
+        cfg.diff_font_size = cfg.editor_font_size;
+    }
     if let Ok(ws) = std::env::var("NEMOROUS_WORKSPACE") {
         let trimmed = ws.trim();
         if !trimmed.is_empty() {

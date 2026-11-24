@@ -3,6 +3,7 @@ use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 use serde_json::{Value, json};
 
+use super::font_zoom::FontArea;
 use super::workbench::button;
 use crate::config::Config;
 use crate::state::{self, app_signal, current_palette};
@@ -286,30 +287,10 @@ fn appearance() -> impl IntoElement {
                 .child(button("放大", "zoom-increase", || zoom(0.1)))
                 .child(button("重置", "zoom-reset", || zoom(0.0))),
         )
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(5.0))
-                .min_h(px(28.0))
-                .px(px(6.0))
-                .child(
-                    text("编辑器字号")
-                        .flex_1()
-                        .text_color(p.text_primary)
-                        .text_size(px(12.0)),
-                )
-                .child(
-                    text(|| app_signal().with(|s| format!("{:.0}", s.cfg.editor_font_size)))
-                        .text_color(p.text_muted),
-                )
-                .child(button("减小", "font-decrease", || {
-                    change(|cfg| cfg.editor_font_size = (cfg.editor_font_size - 1.0).max(10.0))
-                }))
-                .child(button("增大", "font-increase", || {
-                    change(|cfg| cfg.editor_font_size = (cfg.editor_font_size + 1.0).min(24.0))
-                })),
-        )
+        .child(font_row("源码字号", FontArea::Source, ["font-decrease", "font-increase", "font-reset"], p))
+        .child(font_row("Diff 字号", FontArea::Diff, ["diff-font-decrease", "diff-font-increase", "diff-font-reset"], p))
+        .child(font_row("文件树字号", FontArea::Tree, ["tree-font-decrease", "tree-font-increase", "tree-font-reset"], p))
+        .child(font_row("查找结果字号", FontArea::Search, ["search-font-decrease", "search-font-increase", "search-font-reset"], p))
         .child(extra_toggle("工具按钮文字标签", "nav_show_labels", false))
         .child(toggle(
             "编辑器软换行",
@@ -323,6 +304,26 @@ fn appearance() -> impl IntoElement {
             |cfg| cfg.diff_show_whitespaces,
             |cfg, v| cfg.diff_show_whitespaces = v,
         ))
+}
+
+fn font_row(
+    label: &'static str,
+    area: FontArea,
+    [decrease, increase, reset]: [&'static str; 3],
+    p: crate::theme::Palette,
+) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .min_h(px(28.0))
+        .px(px(6.0))
+        .child(text(label).flex_1().text_left().text_color(p.text_primary).text_size(px(12.0)))
+        .child(text(move || app_signal().with(|s| format!("{}", area.size(&s.cfg))))
+            .text_color(p.text_muted))
+        .child(button("减小", decrease, move || area.change(-1.0)))
+        .child(button("增大", increase, move || area.change(1.0)))
+        .child(button("重置", reset, move || area.change(0.0)))
 }
 
 fn general() -> impl IntoElement {

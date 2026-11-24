@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use nsh_base::{EditorPosition, input};
+use nsh_base::{
+    Editor, EditorApi, EditorDecoration, EditorPosition, EditorRange, editor, h_resizable, input,
+    resizable_panel, v_resizable,
+};
 use nsh_core::prelude::*;
 
 use crate::git::WorkspaceFile;
@@ -19,7 +22,7 @@ use crate::search::{
 };
 use crate::state::{self, app_signal, current_palette};
 use crate::theme::Palette;
-use crate::ui::icons::{self, ICO_CLOSE};
+use crate::ui::icons::{self, ICO_CLOSE, ICO_COLUMNS};
 
 /// 每次按键后等待多久才真正开始扫描。
 const DEBOUNCE: Duration = Duration::from_millis(220);
@@ -46,7 +49,7 @@ struct ContentSearchState {
     /// 打开弹窗时一次性快照的工作区文件索引，避免每次按键重复枚举。
     index: Option<Arc<Vec<WorkspaceFile>>>,
     running: bool,
-    hits: Vec<SearchHit>,
+    hits: Arc<[SearchHit]>,
     truncated: bool,
     selected: usize,
     error: Option<String>,
@@ -76,7 +79,7 @@ fn update_state(f: impl FnOnce(&mut ContentSearchState)) {
 struct FindResultsView {
     workspace: String,
     query: String,
-    hits: Vec<SearchHit>,
+    hits: Arc<[SearchHit]>,
     index: Arc<Vec<WorkspaceFile>>,
 }
 
@@ -84,6 +87,7 @@ struct FindResultsView {
 struct FindResultsState {
     open: bool,
     view: Option<FindResultsView>,
+    selected: usize,
 }
 
 fn find_sig() -> Signal<FindResultsState> {
@@ -105,6 +109,19 @@ pub(crate) fn find_panel_available_in(workspace: &str) -> bool {
 
 pub fn hide_find_panel() {
     find_sig().update(|s| s.open = false);
+    if app_signal().with_untracked(|s| s.focus_zone == state::FocusZone::FindResults) {
+        app_signal().update(|s| s.focus_zone = state::editor_focus_zone(s));
+        state::focus_active_editor_ref();
+    }
+}
+
+fn focus_find_panel() {
+    let editor = app_signal().with_untracked(state::editor_focus_zone);
+    if let Some(editor) = state::active_editor_api(editor) {
+        editor.blur();
+    }
+    state::set_text_input_focused(false);
+    app_signal().update(|s| s.focus_zone = state::FocusZone::FindResults);
 }
 
 /// 左侧「查找结果」按钮的状态（同时作为高亮与可见性来源）。
@@ -123,6 +140,7 @@ pub fn toggle_find_panel() {
 pub(crate) fn show_find_panel() {
     app_signal().update(|s| s.show_git_panel = false);
     find_sig().update(|s| s.open = true);
+    focus_find_panel();
 }
 
 /// 「在查找窗口中打开」：钉入快照、关闭模态，再显示底部面板。
@@ -142,9 +160,25 @@ fn pin_to_find_results() {
         Some(view) => view,
         None => return,
     };
-    find_sig().update(|s| s.view = Some(view));
+    let selected = with_state(|s| s.selected);
+    find_sig().update(|s| {
+        s.view = Some(view);
+        s.selected = selected;
+    });
     state::close_active_modal();
     show_find_panel();
+}
+
+pub(super) fn move_find_selection(delta: isize) {
+    find_sig().update(|s| {
+        if let Some(view) = &s.view {
+            s.selected = s.selected.saturating_add_signed(delta).min(view.hits.len().saturating_sub(1));
+        }
+    });
+}
+
+pub(super) fn activate_find_selection() {
+    activate_find_hit(find_sig().with_untracked(|s| s.selected));
 }
 
 /// 打开面板中的命中；快照所属工作区已变化时拒绝导航。
@@ -238,7 +272,7 @@ pub fn close_if_open() -> bool {
             s.replacement.clear();
             s.mask.clear();
             s.mask_enabled = false;
-            s.hits.clear();
+            s.hits = Arc::default();
             s.truncated = false;
             s.selected = 0;
             s.error = None;
@@ -257,10 +291,16 @@ fn open_with(scope: Option<PathBuf>, replace_mode: bool) {
         Some(dir) => relative_label(dir),
     };
     let workspace = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
-    let initial = initial_query();
-    let initial = initial.unwrap_or_default();
+    let initial = initial_query().unwrap_or_default();
     let index = Arc::new(candidates());
 
+    // Release the underlying native editor before the search input mounts.
+    let editor_zone = app_signal().with_untracked(state::editor_focus_zone);
+    if let Some(editor) = state::active_editor_api(editor_zone) {
+        editor.blur();
+    }
+    app_signal().update(state::enter_modal_focus);
+    state::set_text_input_focused(true);
     update_state(|s| {
         s.cancel.cancel();
         s.cancel = CancelToken::new();
@@ -273,15 +313,12 @@ fn open_with(scope: Option<PathBuf>, replace_mode: bool) {
         s.index = Some(index);
         s.running = false;
         s.error = None;
-        s.hits.clear();
+        s.hits = Arc::default();
         s.truncated = false;
         s.selected = 0;
         s.multiline = initial.contains('\n');
         s.query = initial;
     });
-
-    app_signal().update(|s| state::enter_modal_focus(s));
-    state::set_text_input_focused(true);
 
     if with_state(|s| !s.query.trim().is_empty()) {
         schedule();
@@ -346,7 +383,7 @@ fn schedule() {
         s.cancel.cancel();
         s.cancel = CancelToken::new();
         s.error = None;
-        s.hits.clear();
+        s.hits = Arc::default();
         s.truncated = false;
         s.selected = 0;
         if s.query.trim().is_empty() {
@@ -454,10 +491,10 @@ fn apply_results(
                 s.error = None;
                 s.selected = 0;
                 s.truncated = o.truncated;
-                s.hits = o.hits;
+                s.hits = o.hits.into();
             }
             Err(e) => {
-                s.hits.clear();
+                s.hits = Arc::default();
                 s.truncated = false;
                 s.selected = 0;
                 s.error = Some(e.to_string());
@@ -527,6 +564,17 @@ pub fn modal_layer() -> impl IntoElement {
 
 fn content_search_modal() -> impl IntoElement {
     let p = current_palette();
+    let preview = signal(true);
+    let query = element_ref();
+    after_answer(move || query.focus());
+    let target = computed(move || {
+        let workspace = app_signal().with(|s| s.cfg.workspace_path.clone());
+        with_state(|s| {
+            (s.open && !s.replace_mode && s.workspace == workspace)
+                .then(|| s.hits.get(s.selected).cloned()).flatten()
+        })
+    });
+    let show_preview = computed(move || preview.get() && target.with(Option::is_some));
     view()
         .test_id("content-search-modal")
         .absolute()
@@ -538,9 +586,9 @@ fn content_search_modal() -> impl IntoElement {
         .child(
             view()
                 .w_full()
-                .max_w(px(820.0))
+                .max_w(px(900.0))
                 .h_full()
-                .max_h(px(560.0))
+                .max_h(px(640.0))
                 .rounded(px(12.0))
                 .bg(p.surface)
                 .border_1()
@@ -548,7 +596,7 @@ fn content_search_modal() -> impl IntoElement {
                 .flex_col()
                 .overflow_hidden()
                 .child(header(p))
-                .child(query_row(p))
+                .child(query_row(p, query))
                 .child(options_row(p))
                 .child(when(
                     || with_state(|s| s.replace_mode),
@@ -559,7 +607,20 @@ fn content_search_modal() -> impl IntoElement {
                             .child(dynamic(move || replacement_actions(p)))
                     },
                 ))
-                .child(dynamic(move || results_view())),
+                .child(
+                    v_resizable()
+                        .test_id("content-search-result-split")
+                        .handle_accessibility_label(Some(SharedString::from("调整代码预览高度")))
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .child(resizable_panel().min_size(px(90.0)).child(results_view(preview)))
+                        .child(
+                            resizable_panel()
+                                .visible(move || show_preview.get())
+                                .size_range(px(100.0)..px(460.0))
+                                .child(code_preview(target, show_preview, false)),
+                        ),
+                ),
         )
 }
 
@@ -605,7 +666,7 @@ fn header(p: Palette) -> impl IntoElement {
         )
 }
 
-fn query_row(p: Palette) -> impl IntoElement {
+fn query_row(p: Palette, query: ElementRef) -> impl IntoElement {
     let multiline = computed(query_is_multiline);
     view()
         .px(px(14.0))
@@ -615,9 +676,12 @@ fn query_row(p: Palette) -> impl IntoElement {
         .child(
             input()
                 .test_id("content-search-input")
+                .element_ref(&query)
                 .auto_focus(true)
-                .h(move || if multiline.get() { px(84.0) } else { px(30.0) })
+                .h(move || if multiline.get() { px(84.0) } else { px(32.0) })
                 .px(px(8.0))
+                .py(move || if multiline.get() { px(6.0) } else { px(7.0) })
+                .line_height(px(16.0))
                 .rounded(px(6.0))
                 .flex_1()
                 .bg(p.rail_bg)
@@ -938,6 +1002,7 @@ fn pin_button(p: Palette) -> impl IntoElement {
         .px(px(8.0))
         .rounded(px(5.0))
         .items_center()
+        .justify_center()
         .bg(bg)
         .cursor(Cursor::Pointer)
         .label("在查找窗口中打开")
@@ -949,175 +1014,381 @@ fn pin_button(p: Palette) -> impl IntoElement {
         .child(text("在查找窗口中打开").text_size(px(11.0)).text_color(fg))
 }
 
-/// 模态与底部面板共用的结果行渲染：分组标题 + 命中行（点击回调由调用方提供）。
+fn preview_toggle(p: Palette, preview: Signal<bool>, id: &'static str) -> impl IntoElement {
+    view()
+        .test_id(id)
+        .w(px(25.0)).h(px(24.0)).flex_none()
+        .rounded(px(4.0)).justify_center().items_center()
+        .cursor(Cursor::Pointer)
+        .label(move || if preview.get() { "隐藏代码预览" } else { "显示代码预览" })
+        .bg(move || if preview.get() { p.accent_soft } else { transparent_black() })
+        .hover(move |style| style.bg(p.surface_hover))
+        .on_press(move || preview.update(|enabled| *enabled = !*enabled))
+        .child(icons::icon(ICO_COLUMNS, 13.0, p.text_control))
+}
+
+#[derive(Clone, Default)]
+struct PreviewFocus(Option<bool>);
+
+pub(super) fn preview_has_focus() -> bool {
+    global::<PreviewFocus>().with(|focus| focus.0.is_some())
+}
+
+fn clear_preview_focus(pinned: bool) {
+    let focus = global::<PreviewFocus>();
+    if focus.with_untracked(|focus| focus.0 == Some(pinned)) {
+        focus.set(PreviewFocus(None));
+        state::set_text_input_focused(false);
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct PreviewKey {
+    path: String,
+    digest: String,
+}
+
+impl From<&SearchHit> for PreviewKey {
+    fn from(hit: &SearchHit) -> Self {
+        Self { path: hit.abs_path.clone(), digest: hit.raw_sha256.clone() }
+    }
+}
+
+fn code_preview(
+    target: Memo<Option<SearchHit>>,
+    visible: Memo<bool>,
+    pinned: bool,
+) -> impl IntoElement {
+    let loaded = signal(None::<(PreviewKey, Option<SharedString>)>);
+    let desired = computed(move || {
+        visible.get().then(|| target.with(|hit| hit.as_ref().map(PreviewKey::from))).flatten()
+    });
+    let owner = Owner::current();
+    effect(move || {
+        let Some(key) = desired.get() else {
+            clear_preview_focus(pinned);
+            loaded.set(None);
+            return;
+        };
+        if loaded.with_untracked(|preview| preview.as_ref().is_some_and(|(loaded, _)| *loaded == key)) {
+            return;
+        }
+        let Some(hit) = target.get_untracked() else { return };
+        owner.run(|| {
+            set_timeout(Duration::from_millis(45), move || {
+                if desired.with_untracked(|wanted| wanted.as_ref() != Some(&key)) {
+                    return;
+                }
+                spawn(async move {
+                    let body = blocking(move || crate::search::read_preview_file(&hit)).await
+                        .ok().flatten().map(SharedString::from);
+                    if owner.is_live() && desired.with_untracked(|wanted| wanted.as_ref() == Some(&key)) {
+                        loaded.set(Some((key, body)));
+                    }
+                });
+            });
+        });
+    });
+    cleanup(move || clear_preview_focus(pinned));
+    let document = computed(move || {
+        let key = desired.get()?;
+        loaded.with(|preview| preview.as_ref().filter(|(loaded, _)| *loaded == key).cloned())
+    });
+    let font_size = computed(|| app_signal().with(|s| s.cfg.editor_font_size));
+    let title = computed(move || target.with(|hit| hit.as_ref().map(|hit| (
+        crate::paths::basename(&hit.rel_path),
+        hit.rel_path.rsplit_once('/').map_or_else(String::new, |(parent, _)| parent.to_owned()),
+        hit.line,
+        hit.column,
+    ))));
+    let p = current_palette();
+
+    view()
+        .test_id("search-code-preview")
+        .flex_1()
+        .min_h(px(0.0))
+        .flex_col()
+        .overflow_hidden()
+        .bg(p.surface)
+        .child(dynamic(move || {
+            let (file, directory, line, column) = title.get()?;
+            Some(view().h(px(28.0)).px(px(10.0)).flex_none().flex_row().items_center().gap(px(7.0))
+                .border_b_1().border_color(p.border).bg(p.rail_bg)
+                .child(icons::file_icon(&file, 12.0, p))
+                .child(text(file).text_left().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.text_primary).number_of_lines(1u32))
+                .child(text(directory).flex_1().min_w(px(0.0)).text_left().text_size(px(11.0))
+                    .text_color(p.text_muted).number_of_lines(1u32))
+                .child(text(format!("{line}:{column}")).flex_none().text_size(px(10.5)).text_color(p.text_secondary)))
+        }))
+        .child(dynamic(move || {
+            let status = match document.get() {
+                Some((key, Some(source))) => {
+                    let language = target.with_untracked(|hit| hit.as_ref().map(|hit| SharedString::from(hit.rel_path.clone())));
+                    let range = computed(move || target.with(|hit| {
+                        let hit = hit.as_ref()?;
+                        preview_range(hit, &source)
+                    }));
+                    let text = document.with_untracked(|loaded| loaded.as_ref().and_then(|(_, body)| body.clone()));
+                    let ed = component_ref::<Editor>();
+                    effect(move || {
+                        if let Some(range) = range.get() {
+                            after_answer(move || {
+                                if let Some(api) = ed.api::<EditorApi>() {
+                                    api.reveal_position(range.start, true);
+                                }
+                            });
+                        }
+                    });
+                    return view().key(key.path).flex_1().min_h(px(0.0)).overflow_hidden()
+                        .child(editor()
+                            .test_id("search-preview-editor")
+                            .component_ref(&ed)
+                            .styles(super::review_editor_styles)
+                            .default_value(text)
+                            .language(language)
+                            .font_size(move || px(font_size.get()))
+                            .read_only(true)
+                            .folding(false)
+                            .active_line(false)
+                            .accessibility_label(Some(SharedString::from("只读代码预览")))
+                            .decorations(move || range.get().map_or_else(Vec::new, |range| preview_decorations(range, p)))
+                            .on_focus(move || {
+                                if pinned {
+                                    app_signal().update(|s| s.focus_zone = state::FocusZone::FindResults);
+                                }
+                                global::<PreviewFocus>().set(PreviewFocus(Some(pinned)));
+                                state::set_text_input_focused(true);
+                            })
+                            .on_blur(move || clear_preview_focus(pinned))
+                            .flex_1())
+                        .into_element();
+                }
+                None => "正在读取预览…",
+                Some((_, None)) => "文件已变化或无法读取，请重新查找。",
+            };
+            text(status).test_id("search-preview-status").px(px(12.0)).py(px(8.0))
+                .text_left().text_size(px(11.0)).text_color(p.text_muted).into_element()
+        }))
+}
+
+fn preview_range(hit: &SearchHit, source: &str) -> Option<EditorRange> {
+    let matched = source.get(hit.file_range.start as usize..hit.file_range.end as usize)?;
+    let line = hit.line.saturating_sub(1);
+    let newlines = matched.bytes().filter(|byte| *byte == b'\n').count();
+    let end_column = if newlines == 0 {
+        hit.column_utf16 + matched.encode_utf16().count()
+    } else {
+        matched.rsplit('\n').next().unwrap_or_default().encode_utf16().count()
+    };
+    Some(EditorRange::new(
+        EditorPosition::new(line as u32, hit.column_utf16 as u32),
+        EditorPosition::new((line + newlines) as u32, end_column as u32),
+    ))
+}
+
+fn preview_decorations(range: EditorRange, p: Palette) -> Vec<EditorDecoration> {
+    let bg = |color: Hsla| nsh_core::element::Style::default().with(
+        nsh_core::StyleKey::BackgroundColor,
+        nsh_core::PropertyValue::Color(Some(color.into())),
+    );
+    let mut row = EditorDecoration::default();
+    row.range = EditorRange::new(range.start, range.start);
+    row.line_style = Some(bg(p.surface2));
+    let mut hit = EditorDecoration::default();
+    hit.range = range;
+    hit.style = Some(bg(p.accent_soft).with(
+        nsh_core::StyleKey::Color,
+        nsh_core::PropertyValue::Color(Some(p.accent_soft_text.into())),
+    ));
+    vec![row, hit]
+}
+
 fn hit_rows(
     p: Palette,
     hits: &[SearchHit],
     scope: &str,
-    on_activate: fn(usize),
-    selected: Option<usize>,
-) -> Vec<AnyElement> {
+    selected: impl Fn(usize) -> bool + Copy + 'static,
+    on_press: impl Fn(usize, &PressEvent) + Copy + 'static,
+    size: f32,
+) -> AnyElement {
     let mut rows: Vec<AnyElement> = Vec::new();
-    let mut last_group: Option<String> = None;
+    let mut last_group = None;
     for (idx, hit) in hits.iter().enumerate() {
-        let group = format!("{}::{}", hit.repo_id, hit.rel_path);
-        if last_group.as_deref() != Some(group.as_str()) {
+        let row = element_ref();
+        let is_selected = computed(move || selected(idx));
+        effect(move || {
+            if is_selected.get() {
+                super::reveal_selected_row(row);
+            }
+        });
+        let group = (&hit.repo_id, &hit.rel_path);
+        if last_group != Some(group) {
             last_group = Some(group);
+            let file = crate::paths::basename(&hit.rel_path);
+            let dir = hit.rel_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            let location = if dir.is_empty() { hit.repo_name.clone() } else { format!("{} / {dir}", hit.repo_name) };
             rows.push(
                 view()
                     .test_id(&format!("{scope}-group-{}", hit.rel_path))
-                    .h(px(22.0))
-                    .px(px(14.0))
-                    .items_center()
-                    .child(
-                        text(format!("{} · {}", hit.repo_name, hit.rel_path))
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_muted),
-                    )
+                    .h(px(size + 12.0)).px(px(10.0)).flex_row().items_center().gap(px(7.0))
+                    .overflow_hidden()
+                    .bg(p.rail_bg)
+                    .child(icons::file_icon(&file, 12.0, p))
+                    .child(text(file).text_left().text_size(px(size)).font_weight(FontWeight::SEMIBOLD)
+                        .text_color(p.text_primary).number_of_lines(1u32))
+                    .child(text(location).flex_1().min_w(px(0.0)).text_left()
+                        .text_size(px((size - 1.0).max(10.0))).text_color(p.text_muted).number_of_lines(1u32))
                     .into_element(),
             );
         }
+        let range = hit.match_in_snippet.clone();
+        let before = hit.snippet.get(..range.start).unwrap_or("");
+        let matched = hit.snippet.get(range.clone()).unwrap_or("");
+        let after = hit.snippet.get(range.end..).unwrap_or("");
         rows.push(
             view()
                 .test_id(&format!("{scope}-hit-{idx}"))
-                .h(px(22.0))
-                .pl(px(22.0))
-                .pr(px(14.0))
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
+                .element_ref(&row)
+                .h(px(size + 10.0)).px(px(10.0)).flex_row().items_center().gap(px(8.0))
                 .cursor(Cursor::Pointer)
-                .bg(if selected == Some(idx) {
-                    p.surface_hover
-                } else {
-                    p.surface
-                })
-                .hover(move |s| s.bg(p.surface_hover))
-                .on_press(move || on_activate(idx))
+                .bg(move || if is_selected.get() { p.active_row_bg } else { p.surface })
+                .hover(move |style| style.bg(p.surface_hover))
+                .on_press(move |e: &PressEvent| on_press(idx, e))
                 .child(
                     text(format!("{}:{}", hit.line, hit.column))
-                        .text_size(px(10.5))
-                        .text_color(p.text_muted),
+                        .w(px(size * 5.5)).flex_none().text_right()
+                        .text_size(px((size - 1.0).max(10.0))).text_color(p.text_muted),
                 )
                 .child(
-                    text(hit.snippet.clone())
-                        .text_size(px(11.5))
-                        .text_color(p.text_primary),
+                    text(before.to_owned())
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_left()
+                        .text_size(px(size))
+                        .font_family("monospace")
+                        .number_of_lines(1u32)
+                        .text_color(p.text_secondary)
+                        .child(text(matched.to_owned()).text_color(p.accent_soft_text).bg(p.accent_soft))
+                        .child(text(after.to_owned())),
                 )
                 .into_element(),
         );
     }
-    rows
+    view().flex_col().children(rows).into_element()
 }
-
-// ============================================================================
-// 底部查找结果面板
-// ============================================================================
 
 pub fn find_panel() -> impl IntoElement {
     let visible = computed(find_panel_visible);
-    when(move || visible.get(), || dynamic(find_panel_body))
+    when(move || visible.get(), find_panel_body)
 }
 
 fn find_panel_body() -> impl IntoElement {
     let p = current_palette();
-    let (query, hits) = find_sig().with(|s| match s.view.as_ref() {
-        Some(v) => (v.query.clone(), v.hits.clone()),
-        None => (String::new(), Vec::new()),
+    let preview = signal(true);
+    let focus = element_ref();
+    let target = computed(|| {
+        let workspace = app_signal().with(|s| s.cfg.workspace_path.clone());
+        find_sig().with(|s| {
+            s.view.as_ref().filter(|v| v.workspace == workspace)?.hits.get(s.selected).cloned()
+        })
     });
+    let show_preview = computed(move || preview.get() && target.with(Option::is_some));
+    let results = computed(|| find_sig().with(|s| s.view.as_ref().map(|v| v.hits.clone()).unwrap_or_default()));
+    let font_size = computed(|| app_signal().with(|s| s.cfg.search_font_size));
+    let query = computed(|| find_sig().with(|s| s.view.as_ref().map(|v| v.query.clone()).unwrap_or_default()));
     view()
         .test_id("find-results-panel")
-        .h(px(200.0))
-        .flex_none()
-        .flex_col()
-        .overflow_hidden()
-        .border_1()
-        .border_color(p.border)
-        .bg(p.surface)
+        .element_ref(&focus)
+        .focusable(true)
+        .on_focus(focus_find_panel)
+        .h(px(276.0)).flex_none().flex_col().overflow_hidden()
+        .border_1().border_color(p.border).bg(p.surface)
         .child(
-            view()
-                .h(px(32.0))
-                .px(px(12.0))
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .bg(p.rail_bg)
+            view().h(px(32.0)).px(px(10.0)).flex_row().items_center().gap(px(8.0)).bg(p.rail_bg)
                 .child(
-                    view().test_id("find-results-title").flex_1().child(
-                        text(format!("查找：{query}"))
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.text_primary),
-                    ),
+                    text(move || format!("查找 · {}", query.get()))
+                        .test_id("find-results-title").flex_1().text_left().number_of_lines(1u32)
+                        .text_size(px(12.0)).font_weight(FontWeight::SEMIBOLD).text_color(p.text_primary),
                 )
+                .child(preview_toggle(p, preview, "find-results-preview-toggle"))
                 .child(
-                    view()
-                        .test_id("find-results-hide")
-                        .cursor(Cursor::Pointer)
-                        .label("隐藏查找结果")
-                        .on_press(hide_find_panel)
+                    view().test_id("find-results-hide").cursor(Cursor::Pointer)
+                        .label("隐藏查找结果").on_press(hide_find_panel)
                         .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),
                 ),
         )
         .child(
-            scroll().flex_1().overflow_hidden().child(
-                hit_rows(p, &hits, "find-results", activate_find_hit, None)
-                    .into_iter()
-                    .fold(view().flex_col().gap(px(1.0)), |acc, row| acc.child(row)),
-            ),
+            h_resizable()
+                .test_id("find-results-preview-split")
+                .handle_accessibility_label(Some(SharedString::from("调整代码预览宽度")))
+                .flex_1()
+                .min_h(px(0.0))
+                .child(resizable_panel().min_size(px(130.0)).child(
+                    scroll().flex_1().overflow_hidden().child(dynamic(move || {
+                        let size = font_size.get();
+                        hit_rows(p, &results.get(), "find-results",
+                            |idx| find_sig().with(|s| s.selected == idx),
+                            move |idx, e| {
+                                find_sig().update(|s| s.selected = idx);
+                                if e.clicks >= 2 {
+                                    activate_find_hit(idx);
+                                } else {
+                                    focus_find_panel();
+                                    focus.focus();
+                                }
+                            },
+                            size,
+                        )
+                    })),
+                ))
+                .child(
+                    resizable_panel()
+                        .visible(move || show_preview.get())
+                        .min_size(px(170.0))
+                        .child(code_preview(target, show_preview, true)),
+                ),
         )
 }
 
-fn results_view() -> impl IntoElement {
+fn results_view(preview: Signal<bool>) -> impl IntoElement {
     let p = current_palette();
-    let (running, error, hits, truncated, query_empty) = with_state(|s| {
-        (
-            s.running,
-            s.error.clone(),
-            s.hits.clone(),
-            s.truncated,
-            s.query.trim().is_empty(),
-        )
-    });
-
-    let mut rows: Vec<AnyElement> = Vec::new();
-
-    let (status, status_color) = if let Some(err) = &error {
-        (format!("搜索表达式无效：{err}"), p.danger)
-    } else if running {
-        ("正在搜索…".to_string(), p.text_muted)
-    } else if hits.is_empty() {
-        if query_empty {
-            ("输入关键字开始搜索".to_string(), p.text_muted)
-        } else {
-            ("无匹配结果".to_string(), p.text_muted)
-        }
-    } else if truncated {
-        (
-            format!("{} 条匹配（已达到上限，结果可能被截断）", hits.len()),
-            p.text_muted,
-        )
-    } else {
-        (format!("{} 条匹配", hits.len()), p.text_muted)
-    };
-
-    rows.push(
-        view()
-            .test_id("content-search-status")
-            .h(px(24.0))
-            .px(px(14.0))
-            .items_center()
-            .child(text(status).text_size(px(11.0)).text_color(status_color))
-            .into_element(),
-    );
-
-    let selected = Some(with_state(|s| s.selected));
-    rows.extend(hit_rows(p, &hits, "content-search", activate, selected));
-
-    let list = rows
-        .into_iter()
-        .fold(view().flex_col().gap(px(1.0)), |acc, row| acc.child(row));
-
-    scroll().flex_1().overflow_hidden().child(list)
+    let status = computed(|| with_state(|s| (
+        s.running, s.error.clone(), s.hits.len(), s.truncated, s.query.trim().is_empty(), s.replace_mode,
+    )));
+    let results = computed(|| with_state(|s| s.hits.clone()));
+    let font_size = computed(|| app_signal().with(|s| s.cfg.search_font_size));
+    view().flex_1().min_h(px(0.0)).flex_col().overflow_hidden()
+        .child(dynamic(move || {
+            let (running, error, count, truncated, empty_query, replace) = status.get();
+            let (status, color) = if let Some(err) = error {
+                (format!("搜索表达式无效：{err}"), p.danger)
+            } else if running {
+                ("正在搜索…".to_string(), p.text_muted)
+            } else if count == 0 {
+                (if empty_query { "输入关键字开始搜索" } else { "无匹配结果" }.to_string(), p.text_muted)
+            } else if truncated {
+                (format!("{count} 条匹配（达到上限）"), p.text_muted)
+            } else {
+                (format!("{count} 条匹配"), p.text_muted)
+            };
+            view().h(px(30.0)).px(px(10.0)).flex_none().flex_row().items_center()
+                .child(text(status).test_id("content-search-status").flex_1().text_left()
+                    .text_size(px(11.0)).text_color(color))
+                .child((!replace && count != 0).then(|| preview_toggle(p, preview, "content-search-preview-toggle")))
+        }))
+        .child(scroll().flex_1().overflow_hidden().child(dynamic(move || {
+            let size = font_size.get();
+            hit_rows(p, &results.get(), "content-search",
+                |idx| with_state(|s| s.selected == idx),
+                |idx, e| {
+                    if e.clicks >= 2 {
+                        activate(idx);
+                    } else if matches!(replacement_flow::phase(), Phase::Idle) {
+                        update_state(|s| s.selected = idx);
+                    }
+                },
+                size,
+            )
+        })))
 }

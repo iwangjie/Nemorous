@@ -7,7 +7,7 @@ use crate::state::{
     request_close_all_code_tabs, request_close_code_tab, request_close_other_code_tabs,
     request_close_working_diff,
 };
-use crate::theme::{repo_badge_colors, status_text_color};
+use crate::theme::status_text_color;
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
@@ -45,7 +45,6 @@ pub fn editor_tab_bar() -> impl IntoElement {
         for (idx, tab) in code_tabs.iter().enumerate() {
             let active = editor_tab == EditorTabKind::File && idx == active_idx;
             let dirty = tab.is_dirty();
-            let badge = repo_badge_colors(tab.file.color_idx, p.is_dark);
             let title = tab.title();
             let tid_close = tab.id.clone();
             let tid_cm = tab.id.clone();
@@ -113,13 +112,7 @@ pub fn editor_tab_bar() -> impl IntoElement {
                         }));
                         crate::state::show_popup_menu_at(items, e.page_position);
                     })
-                    .child(
-                        view()
-                            .w(px(6.0))
-                            .h(px(6.0))
-                            .rounded(px(3.0))
-                            .bg(badge.text),
-                    )
+                    .child(icons::file_icon(&tab.file.rel_path, 13.0, p))
                     .child(title_el)
                     .child(dirty.then(|| {
                         view()
@@ -201,7 +194,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                             .number_of_lines(1u32),
                     )
                     .child(dirty.then(|| {
-                        view().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(p.amber)
+                        view().test_id("diff-dirty-badge").label("差异有未保存的编辑")
+                            .w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(p.amber)
                     }))
                     .child(
                         view()
@@ -318,12 +312,15 @@ pub fn editor_tab_bar() -> impl IntoElement {
             .child(
                 scroll()
                     .horizontal()
+                    .scrollbar(false)
+                    .min_w(px(0.0))
                     .flex_1()
                     .child(view().flex_row().items_center().gap(px(4.0)).children(tab_els)),
             )
             .child(
                 view()
                     .test_id("editor-all-tabs-btn")
+                    .flex_none()
                     .w(px(24.0))
                     .h(px(24.0))
                     .rounded(px(4.0))

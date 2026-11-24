@@ -24,8 +24,15 @@ pub const ICO_SETTINGS: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="1
 pub const ICO_SUN: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>"#;
 pub const ICO_MOON: &str = r#"<svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>"#;
 pub const ICO_MONITOR: &str = r#"<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8 21h8M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>"#;
+pub const ICO_TERMINAL: &str = r#"<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m6 9 3 3-3 3m6 0h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+pub const ICO_PLAY: &str = r#"<svg viewBox="0 0 24 24"><path d="M6 4.5 20 12 6 19.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>"#;
+const FILE_CODE: &str = r#"<svg viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-2-14-4 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+const FILE_CONFIG: &str = r#"<svg viewBox="0 0 24 24"><path d="M9 4H7a2 2 0 0 0-2 2v3a3 3 0 0 1-3 3 3 3 0 0 1 3 3v3a2 2 0 0 0 2 2h2m6-16h2a2 2 0 0 1 2 2v3a3 3 0 0 0 3 3 3 3 0 0 0-3 3v3a2 2 0 0 1-2 2h-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+const FILE_MARKUP: &str = r#"<svg viewBox="0 0 24 24"><path d="M4 18V6l5 6 5-6v12m3-4 2 4 2-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 pub const ICO_LIST: &str = r#"<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="3.5" cy="6" r="1" fill="currentColor"/><circle cx="3.5" cy="12" r="1" fill="currentColor"/><circle cx="3.5" cy="18" r="1" fill="currentColor"/></svg>"#;
+pub const ICO_LOGS: &str = r#"<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 8h8M8 12h8m-8 4h5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>"#;
 pub const ICO_ARCHIVE: &str = r#"<svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9M10 13h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>"#;
+pub const ICO_INFO: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 11v5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="8" r="1" fill="currentColor"/></svg>"#;
 pub const ICO_ALERT: &str = r#"<svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17" r="1" fill="currentColor"/></svg>"#;
 
 pub const ICO_MORE_VERTICAL: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>"#;
@@ -44,4 +51,15 @@ pub fn icon(
         .h(px(size_px))
         .flex_none()
         .text_color(color)
+}
+
+pub fn file_icon(path: &str, size: f32, p: crate::theme::Palette) -> impl IntoElement {
+    let (markup, color) = match std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+        Some("java" | "kt" | "kts" | "rs") => (FILE_CODE, p.amber),
+        Some("js" | "jsx" | "ts" | "tsx" | "go" | "py" | "rb" | "cs" | "c" | "h" | "cpp" | "swift" | "sh") => (FILE_CODE, p.blue),
+        Some("json" | "jsonc" | "toml" | "yaml" | "yml" | "xml" | "ini" | "properties") => (FILE_CONFIG, p.green),
+        Some("md" | "mdx" | "rst") => (FILE_MARKUP, p.blue),
+        _ => (ICO_FILE, p.text_muted),
+    };
+    icon(markup, size, color)
 }

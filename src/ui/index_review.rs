@@ -383,7 +383,7 @@ pub(super) fn layer() -> impl IntoElement {
                             .test_id(id)
                             .flex_1()
                             .default_value(Some(data.texts[column].clone().into()))
-                            .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
+                            .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
                             .read_only(move || {
                                 column != 1 || !editable || signal().with(|r| r.saving)
                             })
@@ -407,7 +407,8 @@ pub(super) fn layer() -> impl IntoElement {
                             .child(view().h(px(24.0)).px(px(10.0)).bg(p.surface2).child(
                                 text(label).text_color(p.text_secondary).text_size(px(11.5)),
                             ))
-                            .child(ed)
+                            .child(view().flex_1().overflow_hidden()
+                                .on_pinch(super::font_zoom::FontArea::Diff.pinch()).child(ed))
                     }),
             );
             panel = panel.child(row);

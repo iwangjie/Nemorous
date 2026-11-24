@@ -44,6 +44,7 @@ pub(crate) mod rebase_plan_view;
 pub mod project_pane;
 mod workspace_menu;
 mod left_tool_window;
+mod font_zoom;
 pub(crate) mod sync_dialog;
 
 use nsh_base::{EditorCommand, h_resizable, resizable_panel, v_resizable};
@@ -325,10 +326,17 @@ fn tool_window_focus(tab: LeftTab) -> FocusZone {
     }
 }
 
+fn tree_filter_has_focus(s: &state::AppState) -> bool {
+    s.show_left_panel
+        && s.tree_filter_open == Some(s.left_tab)
+        && s.focus_zone == tool_window_focus(s.left_tab)
+}
+
 fn hide_tool_window(tab: LeftTab) {
     let refocus = app_signal().with_untracked(|s| s.focus_zone == tool_window_focus(tab));
     app_signal().update(|s| {
         s.show_left_panel = false;
+        s.dismiss_tree_filter();
         if refocus {
             s.focus_zone = state::editor_focus_zone(s);
         }
@@ -350,6 +358,9 @@ fn focus_tool_window(tab: LeftTab, toggle: bool) {
     state::set_text_input_focused(false);
     app_signal().update(|s| {
         s.show_left_panel = true;
+        if s.left_tab != tab {
+            s.dismiss_tree_filter();
+        }
         s.left_tab = tab;
         s.focus_zone = focus;
         if tab == LeftTab::Commit && s.change_selection.is_none() && s.change_selected_dir.is_none() {
@@ -416,6 +427,7 @@ fn setup_shortcuts() {
                 || s.goto_line_open
                 || s.picker_open.is_some()
                 || s.stash_modal_open
+                || tree_filter_has_focus(s)
                 || s.active_find_open()
         })
     });
@@ -473,7 +485,15 @@ fn setup_shortcuts() {
             bookmarks::toggle_current_line();
         });
         bind_action(&keys, "find", always, |_| {
-            open_find_bar(false);
+            let tree = app_signal().with_untracked(|s| {
+                (s.show_left_panel && s.focus_zone == tool_window_focus(s.left_tab))
+                    .then_some(s.left_tab)
+            });
+            if let Some(tab) = tree {
+                left_tool_window::open_tree_filter(tab);
+            } else {
+                open_find_bar(false);
+            }
         });
         bind_action(&keys, "replace", always, |_| open_find_bar(true));
         bind_action(&keys, "findNext", always, |_| {
@@ -589,7 +609,7 @@ fn setup_shortcuts() {
         if workspace_search_open.get() {
             if multiline_search.get() {
                 bind_application_key("mod+enter", always, |_| content_search::activate_selected());
-            } else {
+            } else if !content_search::preview_has_focus() {
                 bind_application_key("up", always, |_| content_search::move_selection(-1));
                 bind_application_key("down", always, |_| content_search::move_selection(1));
             }
@@ -716,6 +736,18 @@ fn setup_shortcuts() {
         });
     });
 
+    effect(move || {
+        if zone_memo.get() == FocusZone::FindResults
+            && content_search::find_panel_visible()
+            && !content_search::preview_has_focus()
+        {
+            let repeat = KeyOptions { repeat: true, ..not_editing };
+            bind_application_key("up", repeat, |_| content_search::move_find_selection(-1));
+            bind_application_key("down", repeat, |_| content_search::move_find_selection(1));
+            bind_application_key("enter", not_editing, |_| content_search::activate_find_selection());
+        }
+    });
+
     let tree_focus = computed(move || match zone_memo.get() {
         zone @ (FocusZone::CommitTree | FocusZone::ProjectTree | FocusZone::GitFiles) => Some(zone),
         _ => None,
@@ -796,7 +828,12 @@ fn setup_shortcuts() {
     effect(move || {
         if dismissable_memo.get() {
             bind_application_key("escape", always, |_| {
-                state::close_active_modal();
+                if app_signal().with_untracked(tree_filter_has_focus) {
+                    app_signal().update(state::AppState::dismiss_tree_filter);
+                    state::set_text_input_focused(false);
+                } else {
+                    state::close_active_modal();
+                }
             });
         }
     });
@@ -1034,18 +1071,18 @@ fn left_rail() -> impl IntoElement {
             .border_r_1()
             .border_color(p.border)
             .child(rail_btn(
-                "rail-commit-btn",
-                "Commit (⌘0)",
-                ICO_COMMIT,
-                show_left && left_tab == LeftTab::Commit,
-                || toggle_rail_tool_window(LeftTab::Commit),
-            ))
-            .child(rail_btn(
                 "rail-project-btn",
                 "Project (⌘1)",
                 ICO_FOLDER,
                 show_left && left_tab == LeftTab::Project,
                 || toggle_rail_tool_window(LeftTab::Project),
+            ))
+            .child(rail_btn(
+                "rail-commit-btn",
+                "Commit (⌘0)",
+                ICO_COMMIT,
+                show_left && left_tab == LeftTab::Commit,
+                || toggle_rail_tool_window(LeftTab::Commit),
             ))
             .child(rail_btn(
                 "rail-git-btn",
@@ -1058,13 +1095,14 @@ fn left_rail() -> impl IntoElement {
                     app_signal().update(|s| s.show_git_panel = !s.show_git_panel);
                 },
             ))
-            .child(rail_btn("rail-terminal-btn", "终端", ICO_MONITOR,
-                workbench::active() == Some(workbench::Panel::Terminal), terminal_panel::toggle))
-            .child(rail_btn("rail-run-btn", "运行 / 调试 / 测试", ICO_ARROW_RIGHT,
+            .child(view().flex_1())
+            .child(rail_btn("rail-run-btn", "运行 / 调试 / 测试", ICO_PLAY,
                 workbench::active() == Some(workbench::Panel::Run), || workbench::toggle(workbench::Panel::Run)))
+            .child(rail_btn("rail-terminal-btn", "终端", ICO_TERMINAL,
+                workbench::active() == Some(workbench::Panel::Terminal), terminal_panel::toggle))
             .child(mani_panel::enabled().then(|| rail_btn("rail-mani-btn", "Mani", ICO_LIST,
                 workbench::active() == Some(workbench::Panel::Mani), mani_panel::toggle)))
-            .child(rail_btn("rail-logs-btn", "日志", ICO_ARCHIVE,
+            .child(rail_btn("rail-logs-btn", "日志", ICO_LOGS,
                 workbench::active() == Some(workbench::Panel::Logs), || workbench::toggle(workbench::Panel::Logs)))
             .child(content_search::find_panel_available().then(|| {
                 rail_btn(
@@ -1075,7 +1113,6 @@ fn left_rail() -> impl IntoElement {
                     content_search::toggle_find_panel,
                 )
             }))
-            .child(view().flex_1())
             .child(rail_btn("rail-settings-btn","设置",ICO_SETTINGS,false,settings::open))
             .child(rail_btn(
                 "rail-theme-btn",

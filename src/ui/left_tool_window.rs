@@ -6,6 +6,88 @@ use crate::theme::Palette;
 
 use super::icons::{self, ICO_MINUS, ICO_MORE_VERTICAL};
 
+#[derive(Clone, Default)]
+struct TreeFilterRefs {
+    project: Option<ElementRef>,
+    commit: Option<ElementRef>,
+}
+
+pub(super) fn open_tree_filter(tab: LeftTab) {
+    app_signal().update(|s| {
+        if s.tree_filter_open != Some(tab) {
+            s.dismiss_tree_filter();
+            s.tree_filter_open = Some(tab);
+        }
+    });
+    after_answer(move || {
+        if !app_signal().with_untracked(|s| {
+            s.show_left_panel && s.left_tab == tab && s.tree_filter_open == Some(tab)
+                && s.focus_zone == super::tool_window_focus(tab)
+        }) {
+            return;
+        }
+        let input = global::<TreeFilterRefs>().with_untracked(|refs| match tab {
+            LeftTab::Project => refs.project,
+            LeftTab::Commit => refs.commit,
+        });
+        if let Some(input) = input {
+            input.focus();
+        }
+    });
+}
+
+pub(super) fn tree_filter(
+    tab: LeftTab,
+    id: &'static str,
+    placeholder: &'static str,
+) -> impl IntoElement {
+    let input_ref = element_ref();
+    global::<TreeFilterRefs>().update(|refs| match tab {
+        LeftTab::Project => refs.project = Some(input_ref),
+        LeftTab::Commit => refs.commit = Some(input_ref),
+    });
+    let open = computed(move || app_signal().with(|s| s.tree_filter_open == Some(tab)));
+    when(move || open.get(), move || {
+        let p = current_palette();
+        view()
+            .px(px(8.0))
+            .py(px(5.0))
+            .flex_none()
+            .border_b_1()
+            .border_color(p.border)
+            .child(
+                nsh_base::input()
+                    .element_ref(&input_ref)
+                    .test_id(id)
+                    .auto_focus(true)
+                    .h(px(26.0))
+                    .px(px(8.0))
+                    .rounded(px(5.0))
+                    .bg(p.surface)
+                    .border_1()
+                    .border_color(p.border)
+                    .text_size(px(11.5))
+                    .text_color(p.text_primary)
+                    .placeholder(placeholder)
+                    .value(move || app_signal().with(|s| match tab {
+                        LeftTab::Project => s.project_filter.clone(),
+                        LeftTab::Commit => s.changes_filter.clone(),
+                    }))
+                    .on_focus(move || {
+                        app_signal().update(|s| s.focus_zone = super::tool_window_focus(tab));
+                        state::set_text_input_focused(true);
+                    })
+                    .on_blur(|| state::set_text_input_focused(false))
+                    .on_change(move |value: &str| {
+                        app_signal().update(|s| match tab {
+                            LeftTab::Project => value.clone_into(&mut s.project_filter),
+                            LeftTab::Commit => value.clone_into(&mut s.changes_filter),
+                        });
+                    }),
+            )
+    })
+}
+
 pub(super) fn tree_scroll(
     viewport: &'static str,
     rows: &'static str,

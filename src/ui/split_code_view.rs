@@ -214,7 +214,7 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
                     !code_split_runtime::file_properties(side).is_some_and(|props| props.1)
                 })
                 .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
-                .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
+                .font_size(move || px(super::font_zoom::FontArea::Source.current()))
                 .decorations(move || crate::ui::bookmarks::editor_decorations_for_split(side))
                 .search(move || {
                     app_signal().with(|s| {

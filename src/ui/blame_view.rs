@@ -406,6 +406,7 @@ pub(super) fn editor_body(
                 .relative()
                 .flex_1()
                 .overflow_hidden()
+                .on_pinch(super::font_zoom::FontArea::Source.pinch())
                 .on_wheel(move |_: &WheelEvent| {
                     if active.get_untracked().is_some() {
                         last_wheel.replace(Some(nsh_core::time::now()));

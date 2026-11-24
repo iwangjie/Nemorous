@@ -486,6 +486,7 @@ fn compare_side(
     view()
         .flex_1()
         .flex_col()
+        .on_pinch(super::font_zoom::FontArea::Diff.pinch())
         .child(
             view()
                 .h(px(26.0))
@@ -521,7 +522,7 @@ fn compare_side(
                 .language(source.language.clone().map(SharedString::from))
                 .decorations(decorations)
                 .soft_wrap(|| app_signal().with(|s| s.cfg.editor_soft_wrap))
-                .font_size(|| px(app_signal().with(|s| s.cfg.editor_font_size)))
+                .font_size(|| px(super::font_zoom::FontArea::Diff.current()))
                 .search(move || diff_search(EditorTabKind::Comparison, side))
                 .on_search_change(move |result: &EditorSearchResult| {
                     record_diff_search(EditorTabKind::Comparison, side, result);

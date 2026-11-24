@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashSet};
 
-use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -424,33 +423,7 @@ pub fn commit_pane() -> impl IntoElement {
                 })
                 .into_element()
         }))
-        // 过滤输入框
-        .child(
-            view()
-                .px(px(8.0))
-                .py(px(6.0))
-                .border_b_1()
-                .border_color(move || current_palette().border)
-                .child(
-                    input()
-                        .test_id("changes-filter-input")
-                        .h(px(26.0))
-                        .px(px(8.0))
-                        .rounded(px(5.0))
-                        .bg(move || current_palette().surface)
-                        .border_1()
-                        .border_color(move || current_palette().border)
-                        .text_size(px(11.5))
-                        .text_color(move || current_palette().text_primary)
-                        .placeholder("筛选变更文件…")
-                        .value(move || app_signal().with(|s| s.changes_filter.clone()))
-                        .on_focus(|| state::set_text_input_focused(true))
-                        .on_blur(|| state::set_text_input_focused(false))
-                        .on_change(|v: &str| {
-                            app_signal().update(|s| s.changes_filter = v.to_string());
-                        }),
-                ),
-        )
+        .child(super::left_tool_window::tree_filter(LeftTab::Commit, "changes-filter-input", "筛选变更文件…"))
         // 双分区变更列表
         .child(
             tree_scroll(
@@ -458,6 +431,7 @@ pub fn commit_pane() -> impl IntoElement {
                 "changes-tree-rows",
                 dynamic(move || {
                     let p = current_palette();
+                    let font_size = app_signal().with(|s| s.cfg.tree_font_size);
                     let snapshot = app_signal().with(|s| {
                         (
                             s.statuses.iter().cloned().map(|mut status| {
@@ -561,6 +535,7 @@ pub fn commit_pane() -> impl IntoElement {
                                 tree_focused,
                                 selected_row,
                                 p,
+                                font_size,
                             )
                             .into_element(),
                         );
@@ -580,6 +555,7 @@ pub fn commit_pane() -> impl IntoElement {
                                 tree_focused,
                                 selected_row,
                                 p,
+                                font_size,
                             )
                             .into_element(),
                         );
@@ -607,6 +583,7 @@ fn render_section(
     tree_focused: bool,
     selected_row: ElementRef,
     p: Palette,
+    font_size: f32,
 ) -> impl IntoElement {
     let section_keys: Vec<String> = repo_groups
         .iter()
@@ -621,7 +598,7 @@ fn render_section(
     let mut children: Vec<AnyElement> = Vec::new();
     children.push(
         view()
-            .h(px(26.0))
+            .h(px(font_size + 14.5))
             .px(px(8.0))
             .flex_row()
             .items_center()
@@ -652,7 +629,7 @@ fn render_section(
             }))
             .child(
                 text(title)
-                    .text_size(px(11.5))
+                    .text_size(px(font_size))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(p.text_primary)
                     .number_of_lines(1u32),
@@ -678,7 +655,7 @@ fn render_section(
                 let rkeys = repo_keys.clone();
                 children.push(
                     view()
-                        .h(px(24.0))
+                        .h(px(font_size + 12.5))
                         .pl(px(18.0))
                         .pr(px(8.0))
                         .flex_row()
@@ -724,7 +701,7 @@ fn render_section(
                         .child(
                             text(st.repo.label().to_owned())
                                 .flex_none()
-                                .text_size(px(11.5))
+                                .text_size(px(font_size))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(p.text_primary)
                                 .number_of_lines(1u32),
@@ -750,6 +727,7 @@ fn render_section(
                                 tree_focused,
                                 selected_row,
                                 p,
+                                font_size,
                             )
                             .into_element(),
                         );
@@ -769,6 +747,7 @@ fn render_section(
                         tree_focused,
                         selected_row,
                         p,
+                        font_size,
                         &mut children,
                     );
                 }
@@ -793,6 +772,7 @@ fn render_change_dir_children(
     tree_focused: bool,
     selected_row: ElementRef,
     p: Palette,
+    font_size: f32,
     out: &mut Vec<AnyElement>,
 ) {
     let indent = 10.0 + (depth as f32) * 14.0;
@@ -835,7 +815,7 @@ fn render_change_dir_children(
         out.push(
             view()
                 .test_id(&dir_test_id)
-                .h(px(24.0))
+                .h(px(font_size + 12.5))
                 .pl(px(indent))
                 .pr(px(8.0))
                 .flex_row()
@@ -905,7 +885,7 @@ fn render_change_dir_children(
                 .child(
                     text(sub.name.clone())
                         .flex_none()
-                        .text_size(px(11.5))
+                        .text_size(px(font_size))
                         .text_color(p.text_primary)
                         .number_of_lines(1u32),
                 )
@@ -926,6 +906,7 @@ fn render_change_dir_children(
                 tree_focused,
                 selected_row,
                 p,
+                font_size,
                 out,
             );
         }
@@ -943,6 +924,7 @@ fn render_change_dir_children(
                 tree_focused,
                 selected_row,
                 p,
+                font_size,
             )
             .into_element(),
         );
@@ -960,6 +942,7 @@ fn render_change_file_row(
     tree_focused: bool,
     selected_row: ElementRef,
     p: Palette,
+    font_size: f32,
 ) -> impl IntoElement {
     let key = cf.key();
     let is_selected = selection
@@ -992,7 +975,7 @@ fn render_change_file_row(
 
     let name_el = text(filename.to_owned())
         .flex_none()
-        .text_size(px(11.5))
+        .text_size(px(font_size))
         .text_color(status_col)
         .number_of_lines(1u32);
     let name_el = if is_deleted {
@@ -1004,7 +987,7 @@ fn render_change_file_row(
     view()
         .test_id(&test_id_val)
         .when(is_selected, |row| row.element_ref(&selected_row))
-        .h(px(24.0))
+        .h(px(font_size + 12.5))
         .pl(px(indent))
         .pr(px(8.0))
         .flex_row()

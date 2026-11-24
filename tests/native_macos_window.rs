@@ -27,17 +27,75 @@ mod macos {
     use std::time::{Duration, Instant};
 
     use nsh_platform_macos as platform;
-    use platform::objc2::{MainThreadMarker, MainThreadOnly, Message, rc::Retained, sel};
+    use platform::objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, rc::Retained, sel};
     use platform::objc2_app_kit::{
         NSAccessibility, NSAccessibilityElement, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
         NSBitmapImageFileType, NSBitmapImageRepPropertyKey, NSEvent, NSEventModifierFlags,
-        NSEventType, NSMenuItem, NSPanel, NSPasteboard, NSPasteboardTypeString, NSScreen, NSView, NSWindow,
+        NSEventPhase, NSEventType, NSMenuItem, NSPanel, NSPasteboard, NSPasteboardTypeString, NSScreen, NSView, NSWindow,
         NSWindowStyleMask,
     };
     use platform::objc2_foundation::{
         NSDate, NSDictionary, NSIntersectionRect, NSNumber, NSPoint, NSProcessInfo, NSRect, NSRunLoop,
         NSSize, NSString,
     };
+
+    struct PinchIvars {
+        point: NSPoint,
+        phase: NSEventPhase,
+        amount: f64,
+    }
+
+    define_class!(
+        #[unsafe(super(NSEvent))]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = PinchIvars]
+        struct TestPinchEvent;
+
+        impl TestPinchEvent {
+            #[unsafe(method(type))]
+            fn event_type(&self) -> NSEventType {
+                NSEventType::Magnify
+            }
+
+            #[unsafe(method(phase))]
+            fn phase(&self) -> NSEventPhase {
+                self.ivars().phase
+            }
+
+            #[unsafe(method(magnification))]
+            fn magnification(&self) -> f64 {
+                self.ivars().amount
+            }
+
+            #[unsafe(method(locationInWindow))]
+            fn location(&self) -> NSPoint {
+                self.ivars().point
+            }
+
+            #[unsafe(method(modifierFlags))]
+            fn flags(&self) -> NSEventModifierFlags {
+                NSEventModifierFlags::empty()
+            }
+
+            #[unsafe(method(timestamp))]
+            fn timestamp(&self) -> f64 {
+                NSProcessInfo::processInfo().systemUptime()
+            }
+        }
+    );
+
+    fn pinch(mtm: MainThreadMarker, input: &NSView, point: NSPoint) {
+        for (phase, amount) in [
+            (NSEventPhase::Began, 0.0),
+            (NSEventPhase::Changed, 0.2),
+            (NSEventPhase::Ended, 0.0),
+        ] {
+            let event = mtm.alloc::<TestPinchEvent>().set_ivars(PinchIvars { point, phase, amount });
+            let event: Retained<TestPinchEvent> = unsafe { msg_send![super(event), init] };
+            input.magnifyWithEvent(&event);
+            pump(50);
+        }
+    }
 
     fn pasteboard_available() -> bool {
         unsafe {
@@ -504,7 +562,7 @@ mod macos {
         wait_until("pinned Find result", Duration::from_secs(4), || {
             view_with_id(root, "find-results-hit-0").is_some()
         });
-        send_click(window, &view_with_id(root, "find-results-hit-0").unwrap(), 1);
+        send_click(window, &view_with_id(root, "find-results-hit-0").unwrap(), 2);
         wait_until("opened source caret at matching line", Duration::from_secs(4), || {
             view_with_id(root, "editor-tab-file-tracked.txt").is_some()
                 && view_with_id(root, "status-cursor-pos")
@@ -695,7 +753,11 @@ mod macos {
         wait("change-row-staged-batch3-ticket.txt");
         assert!(fs::read_to_string(repo.join("batch3-ticket.txt")).unwrap().contains("edited last"));
         save_window_png(window, &evidence.join("native-selected-hunk.png"));
-        click("diff-scope-staged");
+        click("change-row-staged-batch3-ticket.txt");
+        send_key(app, window, "d", "d", 2, command);
+        wait_until("staged Diff is open", Duration::from_secs(6), || {
+            view_with_id(root, "diff-old-pane-bar").is_some_and(|view| a11y_contains(&view, "HEAD"))
+        });
         wait(editor);
         choose_diff_context_item(window, &view_with_id(root, editor).unwrap(), "取消暂存此块");
         wait_until("selected staged hunk was reverted from the index", Duration::from_secs(6), || {
@@ -706,7 +768,8 @@ mod macos {
         });
         println!("BATCH3_NATIVE_STAGE_AND_UNSTAGE ok");
 
-        click("diff-scope-unstaged");
+        click(row);
+        send_key(app, window, "d", "d", 2, command);
         click("diff-index-review");
         wait("index-review-middle");
         wait("index-review-head");
@@ -1552,7 +1615,7 @@ exec /usr/bin/git "$@"
 
         let hold = scope_gate.join("hold");
         fs::write(&hold, "").unwrap();
-        send_click(window, &wait("diff-scope-staged"), 1);
+        send_click(window, &wait("change-row-staged-review-lines.txt"), 2);
         wait_until("staged Diff is waiting for Git", Duration::from_secs(4), || {
             scope_gate.join("reading").is_dir()
         });
@@ -1742,7 +1805,7 @@ exec /usr/bin/git "$@"
         assert_eq!(git_run(repo, &["show", ":line-staging.txt"]), "new A\nold B\ncontext\nlast");
         assert_eq!(fs::read_to_string(&line_path).unwrap(), working_lines);
 
-        send_click(window, &wait("diff-scope-staged"), 1);
+        send_click(window, &wait("change-row-staged-line-staging.txt"), 2);
         wait_until("staged line in unified Diff", Duration::from_secs(6), || {
             view_with_id(root, "working-diff-unified-editor").is_some_and(|editor| {
                 a11y_contains(&editor, "+ new A") && !a11y_contains(&editor, "+ new B")
@@ -2040,6 +2103,7 @@ exec /usr/bin/git "$@"
         let tool_width = std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
             .map(|width| width.parse::<f32>().expect("left tool window width"));
         let primary = if linked { fixture.join("primary") } else { repo.clone() };
+        let ux = std::env::var_os("NEMOROUS_NATIVE_UX").is_some();
         let path = repo.join("history.txt");
         let attribution_file = "attribution.txt";
         let committed_file = "committed-attribution.txt";
@@ -2061,6 +2125,13 @@ exec /usr/bin/git "$@"
         if tool_width.is_some() {
             write_left_tool_files(&primary);
         }
+        if ux {
+            let java = format!(
+                "package example;\n\nfinal class APreview {{\n{}    String label() {{\n        String attribution = \"中文示例\";\n        return attribution.strip();\n    }}\n}}\n",
+                "    // Context above the selected result\n".repeat(70),
+            );
+            fs::write(primary.join("APreview.java"), java).unwrap();
+        }
         git_run(&primary, &["init", "-b", "main"]);
         git_run(&primary, &["add", "."]);
         git_run(&primary, &["-c", "user.name=Crisp First Author", "-c", "user.email=first@example.invalid", "-c", "commit.gpgsign=false", "commit", "--date", CRISP_FIRST_AUTHOR_DATE, "-m", "Crisp initial rows"]);
@@ -2071,6 +2142,10 @@ exec /usr/bin/git "$@"
         let first_commit = git_run(&primary, &["rev-parse", "--short", "HEAD^"]);
         if linked {
             git_run(&primary, &["worktree", "add", "-b", "crisp-review", repo.to_str().unwrap(), "HEAD"]);
+        }
+        if ux {
+            fs::write(&path, baseline.replace("baseline 115", "CRISP_STAGED_CHANGE")).unwrap();
+            git_run(&repo, &["add", "history.txt"]);
         }
         fs::write(&path, &modified).unwrap();
         let attribution_working = attribution_after
@@ -2138,6 +2213,7 @@ exec /usr/bin/git "$@"
         let mut options = platform::AppOptions::default();
         options.title = "Nemorous Crisp Test".to_owned();
         options.size = (1280, 800);
+        let startup = Instant::now();
         let surface = platform::AppView::new(mtm, options);
         window.setContentView(Some(&surface.view()));
         assert!(surface.suppress_background_test_cursor());
@@ -2211,6 +2287,107 @@ exec /usr/bin/git "$@"
                     .is_some_and(|responder| responder.isDescendantOf(&editor))
             })
         };
+
+        if ux {
+            wait_until("workspace renders a change row", Duration::from_secs(8), || {
+                view_with_id(&root, "change-row-unstaged-history.txt").is_some()
+            });
+            let change_tree_ms = startup.elapsed().as_millis();
+            check_window();
+            key("1", "1", 18, NSEventModifierFlags::Command);
+            wait_until("Project renders a real file row", Duration::from_secs(8), || {
+                view_with_id(&root, "project-file-history.txt").is_some()
+            });
+            let project_visible_ms = startup.elapsed().as_millis();
+            assert!(view_with_id(&root, "project-filter-input").is_none());
+            key("f", "f", 3, NSEventModifierFlags::Command);
+            wait_until("Project filter opens", Duration::from_secs(4), || {
+                view_with_id(&root, "project-filter-input").is_some()
+            });
+            key("\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+            clean("project-filter-input");
+            click("project-file-history.txt", 2);
+            expect("code-editor-view", "baseline 001");
+            key("f", "f", 3, NSEventModifierFlags::Command);
+            wait_until("source search bar opens", Duration::from_secs(4), || {
+                view_with_id(&root, "code-find-bar").is_some()
+            });
+            key("\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+            clean("code-find-bar");
+            save_window_png(&window, &fixture.join("source-tabs.png"));
+            let fonts = || nemorous::config::load_from(&config).unwrap();
+            let code = view_with_id(&root, "code-editor-view").unwrap();
+            pinch(mtm, &input_surface, center_in_window(&code));
+            wait_until("source pinch saves its area only", Duration::from_secs(4), || {
+                let cfg = fonts();
+                cfg.editor_font_size == 17.0 && cfg.diff_font_size == 14.0
+            });
+            check_window();
+
+            key("F", "f", 3, NSEventModifierFlags::Command | NSEventModifierFlags::Shift);
+            wait_until("workspace search input", Duration::from_secs(4), || {
+                view_with_id(&root, "content-search-input").is_some()
+            });
+            for (character, code) in [("a", 0), ("t", 17), ("t", 17), ("r", 15), ("i", 34), ("b", 11), ("u", 32), ("t", 17), ("i", 34), ("o", 31), ("n", 45)] {
+                key(character, character, code, NSEventModifierFlags::empty());
+            }
+            let query = Instant::now();
+            expect("content-search-input", "attribution");
+            assert!(!a11y_contains(&view_with_id(&root, "code-editor-view").unwrap(), "abaseline"));
+            wait_until("workspace search result", Duration::from_secs(6), || {
+                view_with_id(&root, "content-search-hit-0").is_some()
+            });
+            let result_ms = query.elapsed().as_millis();
+            expect("search-preview-editor", "attribution");
+            expect("search-preview-editor", "中文示例");
+            let preview_ms = query.elapsed().as_millis().saturating_sub(result_ms);
+            save_window_png(&window, &fixture.join("search-preview.png"));
+            click("content-search-pin", 1);
+            wait_until("pinned search result", Duration::from_secs(4), || {
+                view_with_id(&root, "find-results-hit-0").is_some()
+            });
+            click("find-results-hit-0", 1);
+            expect("search-preview-editor", "attribution");
+            assert!(view_with_id(&root, "editor-tab-file-history.txt").is_some());
+            save_window_png(&window, &fixture.join("pinned-search.png"));
+            click("find-results-hit-0", 2);
+            expect("code-editor-view", "attribution");
+            click("find-results-hide", 1);
+
+            key("0", "0", 29, NSEventModifierFlags::Command);
+            click("change-row-staged-history.txt", 2);
+            expect("working-diff-new-editor", "CRISP_STAGED_CHANGE");
+            expect("diff-old-pane-bar", "HEAD");
+            click("change-row-unstaged-history.txt", 2);
+            expect("working-diff-new-editor", "CRISP_FIRST_CHANGE");
+            assert!(view_with_id(&root, "diff-header-path").is_none());
+            assert!(view_with_id(&root, "diff-details").is_some());
+            for control in ["diff-scope-staged", "diff-scope-unstaged", "diff-save-btn"] {
+                assert!(view_with_id(&root, control).is_none(), "{control} must be absent");
+            }
+            assert!(view_with_id(&root, "diff-dirty-badge").is_none());
+            let diff = view_with_id(&root, "working-diff-new-editor").unwrap();
+            pinch(mtm, &input_surface, center_in_window(&diff));
+            wait_until("Diff pinch saves its area only", Duration::from_secs(4), || {
+                let cfg = fonts();
+                cfg.editor_font_size == 17.0 && cfg.diff_font_size == 17.0
+            });
+            save_window_png(&window, &fixture.join("compact-diff.png"));
+            click("working-diff-new-editor", 1);
+            key("x", "x", 7, NSEventModifierFlags::empty());
+            wait_until("Diff tab marks the saved draft", Duration::from_secs(4), || {
+                view_with_id(&root, "diff-dirty-badge").is_some()
+            });
+            key("s", "s", 1, NSEventModifierFlags::Command);
+            clean("diff-dirty-badge");
+            assert_ne!(fs::read_to_string(&path).unwrap(), modified);
+            assert!(git_run(&repo, &["show", ":history.txt"]).contains("CRISP_STAGED_CHANGE"));
+            check_window();
+            window.close();
+            assert!(!runtime_panicked.load(std::sync::atomic::Ordering::Relaxed));
+            println!("NATIVE_CRISP_UX PASS display={number} change_tree_ms={change_tree_ms} project_visible_ms={project_visible_ms} result_ms={result_ms} preview_after_result_ms={preview_ms} evidence={}", fixture.display());
+            return;
+        }
 
         if let Some(width) = tool_width {
             let hover = |id: &str| {
@@ -2827,7 +3004,11 @@ public final class RetryPolicy implements java.io.Serializable {
             );
         }
         // 点击筛选 <input> 后，原生菜单「编辑 > 复制」必须切换回标准 MenuRole::Copy (sel!(copy:), target=None) 绝不劫持输入框
-        let filter_input = view_with_id(&root, "changes-filter-input").expect("changes-filter-input");
+        send_key(&app, &window, "f", "f", 3, NSEventModifierFlags::Command);
+        wait_until("Commit filter opens", Duration::from_secs(4), || {
+            view_with_id(&root, "changes-filter-input").is_some()
+        });
+        let filter_input = view_with_id(&root, "changes-filter-input").unwrap();
         send_click(&window, &filter_input, 1);
         wait_until("Edit > Copy switches to native role copy: on <input> focus", Duration::from_secs(3), || {
             find_edit_copy_menu_item(&app)
@@ -2878,18 +3059,11 @@ public final class RetryPolicy implements java.io.Serializable {
         send_click(&window, &new_row, 2);
         wait_until("Diff tab switches to new.txt", Duration::from_secs(4), || {
             view_with_id(&root, "working-diff-pane").is_some()
-                && view_with_id(&root, "diff-header-path")
-                    .is_some_and(|v| view_a11y_text(&v).contains("new.txt"))
+                && view_with_id(&root, "editor-tab-working-diff")
+                    .is_some_and(|v| a11y_contains(&v, "new.txt"))
         });
-        let added_txt = view_with_id(&root, "diff-stat-added")
-            .map(|v| view_a11y_text(&v))
-            .unwrap_or_default();
-        let deleted_txt = view_with_id(&root, "diff-stat-deleted")
-            .map(|v| view_a11y_text(&v))
-            .unwrap_or_default();
-        assert_eq!(added_txt.trim(), "+1", "new.txt single line must show +1");
-        assert_eq!(deleted_txt.trim(), "-0", "new.txt single line must show -0");
-        println!("STEP7_DOUBLE_CLICK_NEW_TXT ok stats={added_txt}/{deleted_txt}");
+        assert!(view_with_id(&root, "diff-details").is_some());
+        println!("STEP7_DOUBLE_CLICK_NEW_TXT ok");
 
         // 8. 调整真实窗口到 1040×660 验证窄栏布局并截屏
         let narrow_rect = NSRect::new(NSPoint::new(80.0, 80.0), NSSize::new(1040.0, 660.0));

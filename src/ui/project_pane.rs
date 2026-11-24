@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
-use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -173,41 +172,14 @@ pub fn project_pane() -> impl IntoElement {
         .overflow_hidden()
         .child(header)
         .child(workspace_notice(WorkspaceData::Files))
-        .child(
-            view()
-                .px(px(8.0))
-                .py(px(6.0))
-                .border_b_1()
-                .border_color(move || current_palette().border)
-                .child(
-                    input()
-                        .test_id("project-filter-input")
-                        .h(px(26.0))
-                        .px(px(8.0))
-                        .rounded(px(5.0))
-                        .bg(move || current_palette().surface)
-                        .border_1()
-                        .border_color(move || current_palette().border)
-                        .text_size(px(11.5))
-                        .text_color(move || current_palette().text_primary)
-                        .placeholder("过滤文件…")
-                        .value(move || app_signal().with(|s| s.project_filter.clone()))
-                        .on_focus(|| {
-                            app_signal().update(|s| s.focus_zone = FocusZone::ProjectTree);
-                            state::set_text_input_focused(true);
-                        })
-                        .on_blur(|| crate::state::set_text_input_focused(false))
-                        .on_change(|v: &str| {
-                            app_signal().update(|s| s.project_filter = v.to_string());
-                        }),
-                ),
-        )
+        .child(super::left_tool_window::tree_filter(LeftTab::Project, "project-filter-input", "过滤文件…"))
         .child(
             tree_scroll(
                 "project-tree-scroll",
                 "project-tree-rows",
                 dynamic(move || {
                     let p = current_palette();
+                    let font_size = app_signal().with(|s| s.cfg.tree_font_size);
                     let snap = app_signal().with(|s| {
                         let mut status_map: HashMap<String, String> = HashMap::new();
                         let mut dirty_dirs: HashSet<String> = HashSet::new();
@@ -264,7 +236,7 @@ pub fn project_pane() -> impl IntoElement {
                     rows.push(
                         view()
                             .test_id("project-workspace-root")
-                            .h(px(26.0))
+                            .h(px(font_size + 14.5))
                             .px(px(8.0))
                             .flex_row()
                             .items_center()
@@ -291,7 +263,7 @@ pub fn project_pane() -> impl IntoElement {
                             .child(
                                 text(if workspace_name.is_empty() { "工作区".into() } else { workspace_name })
                                     .flex_none()
-                                    .text_size(px(11.5))
+                                    .text_size(px(font_size))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(p.text_primary),
                             )
@@ -311,7 +283,7 @@ pub fn project_pane() -> impl IntoElement {
                         rows.push(
                             view()
                                 .test_id(&format!("project-repo-{}", repo.id))
-                                .h(px(26.0))
+                                .h(px(font_size + 14.5))
                                 .px(px(8.0))
                                 .flex_row()
                                 .items_center()
@@ -362,7 +334,7 @@ pub fn project_pane() -> impl IntoElement {
                                 .child(
                                     text(repo.label().to_owned())
                                         .flex_none()
-                                        .text_size(px(11.5))
+                                        .text_size(px(font_size))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(p.text_primary)
                                         .number_of_lines(1u32),
@@ -383,6 +355,7 @@ pub fn project_pane() -> impl IntoElement {
                                 &status_map,
                                 &dirty_dirs,
                                 p,
+                                font_size,
                                 &mut rows,
                             );
                         }
@@ -407,6 +380,7 @@ fn render_project_dir(
     status_map: &HashMap<String, String>,
     dirty_dirs: &HashSet<String>,
     p: Palette,
+    font_size: f32,
     out: &mut Vec<AnyElement>,
 ) {
     let indent = 12.0 + (depth as f32) * 14.0;
@@ -437,7 +411,7 @@ fn render_project_dir(
             view()
                 .test_id(&format!("project-dir-{}", sub.rel_path))
                 .when(selected, |row| row.element_ref(&located_row))
-                .h(px(24.0))
+                .h(px(font_size + 12.5))
                 .pl(px(indent))
                 .pr(px(8.0))
                 .flex_row()
@@ -515,7 +489,7 @@ fn render_project_dir(
                 .child(
                     text(sub.name.clone())
                         .flex_none()
-                        .text_size(px(11.5))
+                        .text_size(px(font_size))
                         .text_color(p.text_primary)
                         .number_of_lines(1u32),
                 )
@@ -535,6 +509,7 @@ fn render_project_dir(
                 status_map,
                 dirty_dirs,
                 p,
+                font_size,
                 out,
             );
         }
@@ -559,7 +534,7 @@ fn render_project_dir(
             view()
                 .test_id(&format!("project-file-{}", wf.rel_path))
                 .when(located_key.0.as_deref() == Some(key.as_str()), |row| row.element_ref(&located_row))
-                .h(px(24.0))
+                .h(px(font_size + 12.5))
                 .pl(px(indent + 16.0))
                 .pr(px(8.0))
                 .flex_row()
@@ -654,11 +629,11 @@ fn render_project_dir(
                     ));
                     crate::state::show_popup_menu_at(items, e.page_position);
                 })
-                .child(icons::icon(ICO_FILE, 11.5, text_col))
+                .child(icons::file_icon(&wf.rel_path, 12.0, p))
                 .child(
                     text(base)
                         .flex_none()
-                        .text_size(px(11.5))
+                        .text_size(px(font_size))
                         .text_color(text_col)
                         .number_of_lines(1u32),
                 )

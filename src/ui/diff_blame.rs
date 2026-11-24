@@ -125,6 +125,7 @@ impl Hover {
             wheel_position: signal(None),
         };
         let layout = computed(move || {
+            let font_size = super::font_zoom::FontArea::Diff.current();
             app_signal().with(|s| {
                 let revision = if is_commit {
                     s.commit_diff.as_ref().map(|diff| (diff.content_rev, true, None))
@@ -140,7 +141,7 @@ impl Hover {
                     s.editor_tab,
                     s.cfg.diff_collapse_unchanged,
                     s.cfg.editor_soft_wrap,
-                    s.cfg.editor_font_size,
+                    font_size,
                 )
             })
         });

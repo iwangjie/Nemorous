@@ -16,7 +16,7 @@ use crate::diff_model::{
 use crate::state::{
     self, AppState, EditorTabKind, FocusZone, DocumentUndo, app_signal, current_palette, editor_refs_signal, jump_diff_hunk,
     jump_from_diff_to_source, move_change_selection, move_commit_diff_file, open_find_bar,
-    save_working_diff_with_format, set_inline_mode, set_whitespace_mode, switch_working_diff_scope,
+    set_inline_mode, set_whitespace_mode,
 };
 use crate::theme::Palette;
 use crate::ui::commit_pane::build_location_menu_items;
@@ -217,13 +217,12 @@ struct DiffControls {
     visible: bool,
     repo: String,
     path: String,
+    file_path: String,
     revisions: String,
     added: usize,
     deleted: usize,
     hunks: usize,
     hunk: usize,
-    dirty: bool,
-    staged: bool,
     editable: bool,
     can_open_source: bool,
     can_switch_files: bool,
@@ -261,6 +260,7 @@ fn diff_controls(
                     visible: true,
                     repo: diff.commit.repo_name.clone(),
                     path: path_label(&diff.data.old_path, &diff.data.new_path),
+                    file_path: diff.data.new_path.clone(),
                     revisions: format!("{} → {}", diff.data.old_title, diff.data.new_title),
                     added: diff.computed.added_lines,
                     deleted: diff.computed.deleted_lines,
@@ -283,13 +283,12 @@ fn diff_controls(
                     visible: true,
                     repo: diff.file.repo_name.clone(),
                     path: path_label(&diff.data.old_path, &diff.data.new_path),
+                    file_path: diff.data.new_path.clone(),
                     revisions: format!("{} → {}", diff.data.old_title, diff.data.new_title),
                     added: diff.computed.added_lines,
                     deleted: diff.computed.deleted_lines,
                     hunks: diff.computed.hunks.len(),
                     hunk: diff.computed.hunk_navigation(diff.active_side, diff.active_cursor(), split_text).counter_index(),
-                    dirty: diff.is_dirty(),
-                    staged: diff.data.staged_only,
                     editable: diff.editor_editable(),
                     can_open_source: Path::new(&diff.file.abs_path()).is_file(),
                     can_switch_files: true,
@@ -316,182 +315,60 @@ fn diff_controls(
                 .bg(move || current_palette().rail_bg)
                 .border_b_1()
                 .border_color(move || current_palette().border)
-                .child(diff_header(controls, is_commit))
                 .child(diff_toolbar(controls, is_commit, toggle_layout))
+                .child(when(
+                    move || controls.with(|d| d.notice.is_some()),
+                    move || {
+                        view().px(px(10.0)).py(px(4.0)).test_id("diff-disk-state").child(
+                            text(move || controls.with(|d| d.notice.unwrap_or_default()))
+                                .text_size(px(11.0))
+                                .text_color(move || current_palette().amber),
+                        )
+                    },
+                ))
         },
     )
 }
 
-fn diff_header(controls: Memo<DiffControls>, is_commit: bool) -> impl IntoElement {
-    let dirty = move || controls.with(|d| d.dirty);
-    let staged = move || controls.with(|d| d.staged);
-    let comparable = move || controls.with(|d| d.comparable);
+fn diff_details(controls: Memo<DiffControls>) -> impl IntoElement {
+    let summary = move || controls.with(|d| {
+        let details = format!("{} · {}\n{}", d.repo, d.path, d.revisions);
+        if d.comparable {
+            format!("{details}    +{}  −{}", d.added, d.deleted)
+        } else {
+            details
+        }
+    });
     view()
-        .h(px(36.0))
-        .px(px(12.0))
-        .flex_row()
+        .test_id("diff-details")
+        .w(px(24.0))
+        .h(px(24.0))
+        .flex_none()
+        .rounded(px(4.0))
+        .justify_center()
         .items_center()
-        .justify_between()
-        .border_b_1()
-        .border_color(move || current_palette().border)
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .overflow_hidden()
-                .child(
-                    view()
-                        .px(px(6.0))
-                        .py(px(2.0))
-                        .rounded(px(4.0))
-                        .bg(move || current_palette().accent_soft)
-                        .child(
-                            text(move || controls.with(|d| d.repo.clone()))
-                                .text_size(px(10.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(move || current_palette().accent_soft_text),
-                        ),
-                )
-                .child(
-                    text(move || controls.with(|d| d.path.clone()))
-                        .test_id("diff-header-path")
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(move || current_palette().text_primary)
-                        .number_of_lines(1u32),
-                )
-                .child(when(
-                    move || controls.with(|d| d.single),
-                    move || {
-                        text(move || controls.with(|d| d.revisions.clone()))
-                            .text_size(px(10.5))
-                            .text_color(move || current_palette().text_muted)
-                            .number_of_lines(1u32)
-                    },
-                ))
-                .child(when(comparable, move || {
-                    text(move || controls.with(|d| format!("+{}", d.added)))
-                        .test_id("diff-stat-added")
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(move || current_palette().green)
-                }))
-                .child(when(comparable, move || {
-                    text(move || controls.with(|d| format!("-{}", d.deleted)))
-                        .test_id("diff-stat-deleted")
-                        .text_size(px(10.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(move || current_palette().danger)
-                }))
-                .child(when(
-                    move || controls.with(|d| d.conflict),
-                    || {
-                        toolbar_text_btn(
-                            "解决冲突".to_owned(),
-                            true,
-                            "diff-open-conflicts",
-                            || {
-                                let file = app_signal().with_untracked(|s| {
-                                    s.working_diff
-                                        .as_ref()
-                                        .filter(|diff| diff.file.conflict)
-                                        .map(|diff| {
-                                            (diff.file.repo_path.clone(), diff.file.path.clone())
-                                        })
-                                });
-                                if let Some((repo, path)) = file {
-                                    super::conflict_workbench::open_file(repo.into(), path);
-                                }
-                            },
-                        )
-                    },
-                ))
-                .child(when(dirty, || {
-                    view()
-                        .test_id("diff-dirty-badge")
-                        .px(px(6.0))
-                        .py(px(1.5))
-                        .rounded(px(4.0))
-                        .bg(move || current_palette().amber_soft)
-                        .child(
-                            text("未保存")
-                                .text_size(px(10.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(move || current_palette().amber),
-                        )
-                }))
-                .child(when(
-                    move || controls.with(|d| d.notice.is_some()),
-                    move || {
-                        view().test_id("diff-disk-state").child(
-                            text(move || controls.with(|d| d.notice.unwrap_or_default()))
-                                .text_size(px(10.5))
-                                .text_color(move || current_palette().amber),
-                        )
-                    },
-                ))
-                .child(when(
-                    move || controls.with(|d| d.single && !d.editable),
-                    || {
-                        view()
-                            .px(px(5.0))
-                            .py(px(1.5))
-                            .rounded(px(4.0))
-                            .bg(move || current_palette().surface2)
-                            .child(
-                                text("只读")
-                                    .text_size(px(10.0))
-                                    .text_color(move || current_palette().text_muted),
-                            )
-                    },
-                )),
-        )
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .child((!is_commit).then(|| {
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(3.0))
-                        .child(toolbar_text_btn(
-                            "未暂存".to_owned(),
-                            move || !staged(),
-                            "diff-scope-unstaged",
-                            || switch_working_diff_scope(false),
-                        ))
-                        .child(toolbar_text_btn(
-                            "暂存区".to_owned(),
-                            staged,
-                            "diff-scope-staged",
-                            || switch_working_diff_scope(true),
-                        ))
-                }))
-                .child(when(dirty, || {
-                    view()
-                        .test_id("diff-save-btn")
-                        .h(px(24.0))
-                        .px(px(10.0))
-                        .rounded(px(5.0))
-                        .bg(move || current_palette().accent)
-                        .items_center()
-                        .justify_center()
-                        .cursor(Cursor::Pointer)
-                        .hover(|style| style.bg(move || current_palette().accent_hover))
-                        .on_press(|| {
-                            save_working_diff_with_format();
-                        })
-                        .child(
-                            text("保存")
-                                .text_size(px(11.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(move || current_palette().accent_text),
-                        )
-                })),
-        )
+        .cursor(Cursor::Pointer)
+        .label("差异详情")
+        .hover(|style| style.bg(move || current_palette().surface_hover))
+        .tooltip(dynamic(move || {
+            let p = current_palette();
+            view().max_w(px(460.0)).px(px(8.0)).py(px(5.0)).rounded(px(5.0)).bg(p.surface)
+                .border_1().border_color(p.border)
+                .child(text(summary()).text_left().text_size(px(11.0)).text_color(p.text_primary))
+        }).into_element())
+        .on_press(move || {
+            let details = controls.get_untracked();
+            let mut items = vec![
+                MenuItem::new(format!("{} · {}", details.repo, details.path)).disabled(true),
+                MenuItem::new(details.revisions).disabled(true),
+            ];
+            if details.comparable {
+                items.push(MenuItem::new(format!("+{} / −{}", details.added, details.deleted)).disabled(true));
+            }
+            items.push(MenuItem::new("复制相对路径").on_select(move || set_clipboard(details.file_path.clone())));
+            state::show_popup_menu(items);
+        })
+        .child(icons::icon(ICO_INFO, 14.0, move || current_palette().text_control))
 }
 
 fn diff_toolbar(
@@ -632,6 +509,21 @@ fn diff_toolbar(
             "diff-options-btn",
             show_diff_display_menu,
         ))
+        .child(diff_details(controls))
+        .child(when(move || controls.with(|d| d.conflict), || {
+            toolbar_text_btn("解决冲突".to_owned(), true, "diff-open-conflicts", || {
+                let file = app_signal().with_untracked(|s| {
+                    s.working_diff.as_ref().filter(|diff| diff.file.conflict)
+                        .map(|diff| (diff.file.repo_path.clone(), diff.file.path.clone()))
+                });
+                if let Some((repo, path)) = file {
+                    super::conflict_workbench::open_file(repo.into(), path);
+                }
+            })
+        }))
+        .child(when(move || controls.with(|d| d.single && !d.editable), || {
+            text("只读").text_size(px(10.5)).text_color(move || current_palette().text_muted)
+        }))
         .child(view().flex_1())
         .child(toolbar_icon_btn(
             move || shortcut_hint("上一个文件", "previousDiffFile"),
@@ -1157,6 +1049,7 @@ fn render_side_by_side_diff(
                 .flex_1()
                 .flex_col()
                 .overflow_hidden()
+                .on_pinch(super::font_zoom::FontArea::Diff.pinch())
                 .on_wheel(move |ev: &WheelEvent| {
                     remember_scroll(Some(DiffSide::Old));
                     old_hover.scroll(ev);
@@ -1212,7 +1105,7 @@ fn render_side_by_side_diff(
                         .read_only(true)
                         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
                         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
-                        .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
+                        .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
                         .decorations(move || old_decs.get())
                         .search(move || diff_search(tab, Some(DiffSide::Old)))
                         .on_focus(move || {
@@ -1250,6 +1143,7 @@ fn render_side_by_side_diff(
                 .flex_1()
                 .flex_col()
                 .overflow_hidden()
+                .on_pinch(super::font_zoom::FontArea::Diff.pinch())
                 .on_wheel(move |ev: &WheelEvent| {
                     remember_scroll(Some(DiffSide::New));
                     new_hover.scroll(ev);
@@ -1318,7 +1212,7 @@ fn render_side_by_side_diff(
                         })
                         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
                         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
-                        .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
+                        .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
                         .decorations(move || new_decs.get())
                         .search(move || diff_search(tab, Some(DiffSide::New)))
                         .on_focus(move || {
@@ -1477,7 +1371,7 @@ fn render_single_column_diff(
         }))
         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
-        .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
+        .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
         .decorations(move || doc.with(|doc| doc.decorations_with_inline(inline_mode.get(), p)))
         .search(move || diff_search(tab, None))
         .on_search_change(move |res: &EditorSearchResult| record_diff_search(tab, None, res))
@@ -1519,6 +1413,7 @@ fn render_single_column_diff(
     view()
         .flex_1()
         .overflow_hidden()
+        .on_pinch(super::font_zoom::FontArea::Diff.pinch())
         .on_wheel(move |ev: &WheelEvent| hover.scroll(ev))
         .child(content)
         .child(hover.tooltip())
