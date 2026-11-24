@@ -1,2 +1,2 @@
 scripts/prepare-nsh.sh text eol=lf
-scripts/nsh-editor-syntax-colors.patch text eol=lf
+scripts/nsh-*.patch text eol=lf

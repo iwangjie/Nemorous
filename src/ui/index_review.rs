@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use nsh_base::{Editor, EditorApi, editor};
 use nsh_core::prelude::*;
 
@@ -66,7 +66,7 @@ pub(super) fn open(file: ChangedFile) {
                     r.draft = versions.texts[1].clone();
                     r.data = Some(Rc::new(versions));
                 }
-                Ok(Err(err)) => r.issue = Some(err.to_string()),
+                Ok(Err(err)) => r.issue = Some(format!("{err:#}")),
                 Err(err) => r.issue = Some(err.to_string()),
             }
         });
@@ -92,14 +92,13 @@ fn read_versions(file: &ChangedFile) -> Result<Versions> {
         .map(|entry| git_index::read_index_blob(dir, entry))
         .transpose()?
         .unwrap_or_default();
-    let worktree = git::read_review_worktree(Path::new(&file.abs_path()));
-    ensure!(
-        !worktree.binary && !worktree.too_large,
-        "此文件超出暂存区文本审阅范围"
-    );
+    let worktree = git::read_worktree_source(Path::new(&file.abs_path()))
+        .with_context(|| format!("无法读取工作区文件 {}", file.path))?;
+    ensure!(worktree.as_ref().is_none_or(|file| !file.binary && !file.too_large),
+        "此文件超出暂存区文本审阅范围");
     let text = |blob: Vec<u8>| LineEnding::normalize_to_lf(&String::from_utf8_lossy(&blob));
     Ok(Versions {
-        texts: [text(head), text(index), worktree.text],
+        texts: [text(head), text(index), worktree.map_or_else(String::new, |file| file.text)],
         index: entry,
         ending,
     })

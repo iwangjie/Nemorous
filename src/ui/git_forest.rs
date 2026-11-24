@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,10 +31,10 @@ impl Grouping {
         }
     }
 
-    pub(super) fn key(self, commit: &CommitEntry) -> Option<&str> {
+    pub(super) fn key<'a>(self, commit: &'a CommitEntry, local_date: &'a str) -> Option<&'a str> {
         match self {
             Self::Graph => None,
-            Self::Date => Some(commit.date.get(..10).unwrap_or(&commit.date)),
+            Self::Date => Some(local_date.get(..10).unwrap_or(local_date)),
             Self::Repository => Some(&commit.repo_name),
         }
     }
@@ -61,6 +61,7 @@ pub(super) struct Results {
 struct Forest {
     generation: u64,
     branch_generation: u64,
+    branch_revision: u64,
     workspace: String,
     filters: Filters,
     results: Results,
@@ -70,6 +71,13 @@ struct Forest {
 
 fn forest() -> Signal<Forest> {
     global::<Forest>()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Request {
+    Immediate,
+    FilterEdit,
+    RepositoryRefresh,
 }
 
 pub(super) fn rows() -> Results {
@@ -114,7 +122,8 @@ pub(super) fn setup() {
             });
         }
         if open {
-            request(false);
+            invalidate_branches();
+            request(Request::Immediate);
         } else {
             forest().update(|s| {
                 s.generation = s.generation.wrapping_add(1);
@@ -130,7 +139,7 @@ fn change(update: impl FnOnce(&mut Filters)) {
         s.filters.query.limit = PAGE_SIZE;
         s.revealed = None;
     });
-    request(true);
+    request(Request::FilterEdit);
 }
 
 fn clear() {
@@ -147,15 +156,34 @@ fn clear() {
 }
 
 fn refresh() {
-    forest().update(|s| s.branch_list = Arc::default());
-    request(false);
+    invalidate_branches();
+    request(Request::Immediate);
+}
+
+fn invalidate_branches() {
+    forest().update(|s| {
+        s.branch_list = Arc::default();
+        s.branch_revision = s.branch_revision.wrapping_add(1);
+    });
+}
+
+pub(crate) fn repository_history_changed(repo_ids: &HashSet<String>) {
+    invalidate_branches();
+    let open_log = app_signal().with_untracked(|s| s.show_git_panel && s.file_history.is_none());
+    if open_log
+        && forest().with_untracked(|s| {
+            s.filters.repo_id.is_empty() || repo_ids.contains(&s.filters.repo_id)
+        })
+    {
+        request(Request::RepositoryRefresh);
+    }
 }
 
 fn load_more() {
     forest().update(|s| {
         s.filters.query.limit = (s.filters.query.limit.max(PAGE_SIZE) + PAGE_SIZE).min(MAX_LIMIT);
     });
-    request(false);
+    request(Request::Immediate);
 }
 
 pub(super) fn reveal(commit: CommitEntry) {
@@ -169,10 +197,11 @@ pub(super) fn reveal(commit: CommitEntry) {
         s.file_history = None;
     });
     super::git_pane::select_commit(commit);
-    request(false);
+    request(Request::Immediate);
 }
 
-fn request(debounce: bool) {
+fn request(reason: Request) {
+    let background = reason == Request::RepositoryRefresh;
     let (workspace, repos) =
         app_signal().with_untracked(|s| (s.cfg.workspace_path.clone(), s.repos.clone()));
     let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) else {
@@ -180,7 +209,7 @@ fn request(debounce: bool) {
     };
     forest().update(|s| {
         s.generation = s.generation.wrapping_add(1);
-        s.results.loading = !repos.is_empty();
+        s.results.loading = !repos.is_empty() && (!background || s.results.commits.is_empty());
         s.results.errors = Arc::default();
     });
     let (generation, filters) = forest().with_untracked(|s| (s.generation, s.filters.clone()));
@@ -196,29 +225,62 @@ fn request(debounce: bool) {
             {
                 return;
             }
-            let first = result.as_ref().ok().and_then(|page| page.commits.first()).cloned();
-            forest().update(|s| {
-                s.results = match result {
-                    Ok(mut result) => {
-                        result.grouping = s.results.grouping;
-                        result
-                    }
-                    Err(err) => Results {
-                        grouping: s.results.grouping,
-                        errors: Arc::new(vec![err.to_string()]),
-                        ..Results::default()
-                    },
-                };
-            });
-            if app_signal().with_untracked(|s| s.selected_commit.is_none())
-                && let Some(commit) = first
+            let mut page = match result {
+                Ok(page) => page,
+                Err(err) => Results {
+                    errors: Arc::new(vec![err.to_string()]),
+                    ..Results::default()
+                },
+            };
+            if background
+                && !page.errors.is_empty()
+                && forest().with_untracked(|s| !s.results.commits.is_empty())
             {
-                super::git_pane::select_commit(commit);
+                forest().update(|s| {
+                    s.results.loading = false;
+                    s.results.errors = page.errors;
+                });
+                return;
+            }
+            let first = page.commits.first().cloned();
+            let commits = page.commits.clone();
+            forest().update(|s| {
+                page.grouping = s.results.grouping;
+                if let Some(revealed) = &mut s.revealed
+                    && let Some(entry) = page
+                        .commits
+                        .iter()
+                        .find(|entry| same_commit(entry, revealed))
+                {
+                    *revealed = entry.clone();
+                }
+                s.results = page;
+            });
+            let selected = app_signal().with_untracked(|s| s.selected_commit.clone());
+            if let Some(selected) = &selected {
+                if let Some(entry) = commits.iter().find(|entry| same_commit(entry, selected)) {
+                    if entry != selected {
+                        app_signal().update(|s| s.selected_commit = Some(entry.clone()));
+                    }
+                    return;
+                }
+                if forest().with_untracked(|s| {
+                    s.revealed
+                        .as_ref()
+                        .is_some_and(|entry| same_commit(entry, selected))
+                }) {
+                    return;
+                }
+            }
+            if let Some(commit) = first {
+                super::git_pane::load_commit_selection(commit, !background);
+            } else if selected.is_some() {
+                super::git_pane::clear_commit_selection();
             }
         });
     };
     owner.run(|| {
-        if debounce {
+        if reason == Request::FilterEdit {
             set_timeout(Duration::from_millis(150), install);
         } else {
             install();
@@ -237,24 +299,30 @@ fn fetch(repos: &[RepoInfo], mut filters: Filters) -> Results {
     {
         match git_log_query::query(repo, &filters.query) {
             Ok(page) => {
-                streams.push(VecDeque::from(page.commits));
+                let commits = page.commits.into_iter().map(|commit| {
+                    let timestamp = chrono::DateTime::parse_from_rfc3339(&commit.date)
+                        .ok()
+                        .map(|date| date.timestamp());
+                    (timestamp, commit)
+                });
+                streams.push(commits.peekable());
                 result.more |= page.more;
                 result.scan_limited |= page.scan_limited;
             }
-            Err(err) => errors.push(format!("{}：{err:#}", repo.name)),
+            Err(err) => errors.push(format!("{}：{err:#}", repo.label())),
         }
     }
-    // Merge the per-repository topological sequences without reordering a parent
-    // ahead of its child when commit clocks disagree.
+    // Compare author instants across repositories while preserving each Git
+    // sequence, where a parent must remain after its child.
     let mut entries = Vec::new();
     while let Some(index) = streams
-        .iter()
+        .iter_mut()
         .enumerate()
-        .filter_map(|(index, commits)| commits.front().map(|commit| (index, &commit.date)))
-        .max_by(|(_, a), (_, b)| a.cmp(b))
+        .filter_map(|(index, commits)| commits.peek().map(|(timestamp, _)| (index, *timestamp)))
+        .max_by_key(|(_, timestamp)| *timestamp)
         .map(|(index, _)| index)
     {
-        entries.extend(streams[index].pop_front());
+        entries.extend(streams[index].next().map(|(_, commit)| commit));
     }
     result.commits = Arc::new(entries);
     result.errors = Arc::new(errors);
@@ -523,7 +591,7 @@ pub(super) fn controls() -> impl IntoElement {
         .child(when(|| app_signal().with(|s| s.repos.len() > 1), || {
             filter_button("git-repo-filter", "仓库", || {
                 let id = forest().with(|s| s.filters.repo_id.clone());
-                app_signal().with(|s| s.repos.iter().find(|repo| repo.id == id).map(|repo| repo.name.clone()))
+                app_signal().with(|s| s.repos.iter().find(|repo| repo.id == id).map(|repo| repo.label().to_owned()))
             }, repo_menu)
         }))
         .child(dynamic(|| {
@@ -540,7 +608,25 @@ pub(super) fn controls() -> impl IntoElement {
             icon_action("git-clear-filters", "清除筛选", ICO_CLOSE, false, active, clear)
         }))
         .child(icon_action("git-reload", "刷新 Git 记录", ICO_REFRESH, false, true, refresh))
-        .child(icon_action("git-panel-options", "Git 面板选项", ICO_EYE, false, true, super::git_pane::show_panel_options))
+        .child(icon_action("git-log-view-options", "提交列表视图选项", ICO_EYE, false, true, super::git_pane::show_log_options))
+        .child(icon_action("git-log-actions", "更多 Git 操作", ICO_MORE, false, true, || {
+            state::show_popup_menu(vec![
+                MenuItem::new("GitHub PR / CI").on_select(open_github),
+            ]);
+        }))
+}
+
+fn open_github() {
+    let filter = forest().with_untracked(|s| s.filters.repo_id.clone());
+    let selected = app_signal().with_untracked(|s| {
+        s.selected_commit.as_ref().map(|commit| commit.repo_id.clone())
+    });
+    let repo_id = if filter.is_empty() {
+        selected.as_deref()
+    } else {
+        Some(filter.as_str())
+    };
+    super::github_panel::open_for_repository(repo_id);
 }
 
 fn repo_menu() {
@@ -558,7 +644,7 @@ fn repo_menu() {
             }),
     ];
     items.extend(repos.into_iter().map(|repo| {
-        MenuItem::new(repo.name)
+        MenuItem::new(repo.label().to_owned())
             .checked(current == repo.id)
             .on_select(move || {
                 change(|s| {
@@ -581,7 +667,8 @@ fn branch_menu() {
     };
     let (workspace, repos) =
         app_signal().with_untracked(|s| (s.cfg.workspace_path.clone(), s.repos.clone()));
-    let generation = forest().with_untracked(|s| s.branch_generation.wrapping_add(1));
+    let (generation, revision) =
+        forest().with_untracked(|s| (s.branch_generation.wrapping_add(1), s.branch_revision));
     forest().update(|s| s.branch_generation = generation);
     owner.run(|| {
         spawn(async move {
@@ -596,12 +683,17 @@ fn branch_menu() {
             })
             .await;
             if !forest().with_untracked(|s| s.branch_generation == generation)
-                || !app_signal()
-                    .with_untracked(|s| s.show_git_panel && s.cfg.workspace_path == workspace)
+                || !app_signal().with_untracked(|s| {
+                    s.show_git_panel
+                        && s.file_history.is_none()
+                        && s.cfg.workspace_path == workspace
+                })
             {
                 return;
             }
-            if let Ok(branches) = result {
+            if forest().with_untracked(|s| s.branch_revision != revision) {
+                branch_menu();
+            } else if let Ok(branches) = result {
                 let branches = Arc::new(branches);
                 forest().update(|s| s.branch_list = branches.clone());
                 show_branch_menu(&branches);
@@ -643,7 +735,7 @@ fn show_branch_menu(branches: &[(RepoInfo, Vec<Branch>)]) {
             })
             .collect();
         if !options.is_empty() {
-            items.push(MenuItem::submenu(repo.name.clone(), options));
+            items.push(MenuItem::submenu(repo.label().to_owned(), options));
         }
     }
     state::show_popup_menu(items);

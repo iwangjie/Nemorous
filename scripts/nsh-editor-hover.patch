@@ -1,0 +1,98 @@
+--- a/crates/nsh-base/src/editor/hooks.rs
++++ b/crates/nsh-base/src/editor/hooks.rs
+@@ -132,6 +132,8 @@
+ struct Hover {
+     /// Where the pointer is, while it is over the rows.
+     pointer: Option<Pointer>,
++    /// The resting pointer after the text moved under it.
++    suppressed_pointer: Option<Point<Points>>,
+     /// A task waits for the pointer to rest.
+     waiting: bool,
+     /// The range of the hover reported, until it ends.
+@@ -313,6 +315,10 @@
+     shown.start <= offset && offset < shown.end.max(shown.start + 1)
+ }
+
++fn same_pointer(a: Point<Points>, b: Point<Points>) -> bool {
++    (a.x - b.x).abs() < px(1.0) && (a.y - b.y).abs() < px(1.0)
++}
++
+ /// The rows (from the first one in view) the viewport shows, with
+ /// `scroll_y` the vertical offset, `rows_top` where the rows start in the
+ /// scrolled content, `height` the viewport's.
+@@ -343,7 +349,7 @@
+             ed.text_rev.get();
+             ed.scroll_x.get();
+             ed.scroll_y.get();
+-            ed.end_hover();
++            ed.invalidate_hover();
+         });
+         let ed = self.clone();
+         let gutter = computed(move || {
+@@ -417,6 +423,13 @@
+         if e.pressed_button.is_some() {
+             return;
+         }
++        {
++            let mut hover = self.hooks.hover.borrow_mut();
++            if hover.suppressed_pointer.is_some_and(|point| same_pointer(point, e.page_position)) {
++                return;
++            }
++            hover.suppressed_pointer = None;
++        }
+         self.pointer_seen(e.position, e.page_position);
+         let before = self.hooks.hover.borrow().pointer;
+         // Only the modifiers changed: the pointer still rests since it came.
+@@ -507,8 +520,25 @@
+     }
+
+     /// The mouse left the rows.
+-    pub(crate) fn hover_out(&self) {
+-        self.hooks.hover.borrow_mut().pointer = None;
++    pub(crate) fn hover_out(&self, e: &MouseEvent) {
++        {
++            let mut hover = self.hooks.hover.borrow_mut();
++            hover.pointer = None;
++            if hover.suppressed_pointer.is_some_and(|point| !same_pointer(point, e.page_position)) {
++                hover.suppressed_pointer = None;
++            }
++        }
++        self.hide_definition_link();
++        self.end_hover();
++    }
++
++    pub(crate) fn invalidate_hover(&self) {
++        {
++            let mut hover = self.hooks.hover.borrow_mut();
++            if let Some(pointer) = hover.pointer.take() {
++                hover.suppressed_pointer = Some(pointer.page);
++            }
++        }
+         self.hide_definition_link();
+         self.end_hover();
+     }
+--- a/crates/nsh-base/src/editor/mod.rs
++++ b/crates/nsh-base/src/editor/mod.rs
+@@ -635,6 +635,11 @@
+         self.ed.scroll_offset()
+     }
+
++    /// Ends the current hover and waits for the pointer to move.
++    pub fn invalidate_hover(&self) {
++        self.ed.invalidate_hover();
++    }
++
+     /// Scrolls the text to `offset` (the horizontal one is ignored while
+     /// lines wrap).
+     pub fn set_scroll_offset(&self, offset: Point<Points>) {
+--- a/crates/nsh-base/src/editor/view.rs
++++ b/crates/nsh-base/src/editor/view.rs
+@@ -930,7 +930,7 @@
+             })
+         })
+         .on_mouse_move(move |e: &MouseEvent| hover.hover_move(e))
+-        .on_mouse_leave(move |_: &MouseEvent| hover_end.hover_out())
++        .on_mouse_leave(move |e: &MouseEvent| hover_end.hover_out(e))
+         // The mouse selects as it drags (a finger scrolls): the rows take
+         // its touches, which the scroll views around them keep off.
+         .claim_touches(TouchClaim::on_start().ask(move |request: &ClaimRequest| {

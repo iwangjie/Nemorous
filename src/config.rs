@@ -51,12 +51,29 @@ where
     Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitLogColumns {
+    pub author: bool,
+    pub date: bool,
+    pub hash: bool,
+    pub refs: bool,
+}
+
+impl Default for GitLogColumns {
+    fn default() -> Self {
+        Self { author: true, date: true, hash: false, refs: true }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub workspace_path: String,
     pub recent_workspaces: Vec<String>,
     pub hidden_repos: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) repository_id_bindings: BTreeMap<String, BTreeMap<String, String>>,
     pub bookmarks: Vec<Bookmark>,
     pub theme: String,
     pub release_branch: String,
@@ -69,6 +86,9 @@ pub struct Config {
     pub changes_flat: bool,
     pub change_diff_preview: bool,
     pub git_log_diff_preview: bool,
+    pub git_log_show_details: bool,
+    pub git_log_columns: GitLogColumns,
+    pub git_log_group_files: bool,
     pub editor_font_size: f32,
     pub editor_soft_wrap: bool,
     pub format_on_save: bool,
@@ -78,6 +98,7 @@ pub struct Config {
     pub diff_whitespace_mode: String,
     pub diff_show_whitespaces: bool,
     pub diff_collapse_unchanged: bool,
+    pub diff_sync_scroll: bool,
     pub commit_left_width: f32,
     pub code_left_width: f32,
     pub git_panel_height: f32,
@@ -95,6 +116,7 @@ impl Default for Config {
             workspace_path: String::new(),
             recent_workspaces: Vec::new(),
             hidden_repos: Vec::new(),
+            repository_id_bindings: BTreeMap::new(),
             bookmarks: Vec::new(),
             theme: "light".to_string(),
             release_branch: "release".to_string(),
@@ -105,6 +127,9 @@ impl Default for Config {
             changes_flat: false,
             change_diff_preview: false,
             git_log_diff_preview: false,
+            git_log_show_details: true,
+            git_log_columns: GitLogColumns::default(),
+            git_log_group_files: false,
             editor_font_size: 14.0,
             editor_soft_wrap: true,
             format_on_save: false,
@@ -114,6 +139,7 @@ impl Default for Config {
             diff_whitespace_mode: "none".to_string(),
             diff_show_whitespaces: false,
             diff_collapse_unchanged: false,
+            diff_sync_scroll: false,
             commit_left_width: 320.0,
             code_left_width: 260.0,
             git_panel_height: 290.0,
@@ -126,6 +152,9 @@ impl Default for Config {
 }
 
 impl Config {
+    pub(crate) fn workspace_repository_ids(&self) -> BTreeMap<String, String> {
+        self.repository_id_bindings.get(&self.workspace_path).cloned().unwrap_or_default()
+    }
     pub(crate) fn extra_bool(&self, key: &str, default: bool) -> bool {
         self.extra.get(key).and_then(serde_json::Value::as_bool).unwrap_or(default)
     }

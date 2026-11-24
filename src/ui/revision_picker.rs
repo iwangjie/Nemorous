@@ -285,7 +285,10 @@ fn revisions() -> impl IntoElement {
                     .child(
                         text(format!(
                             "{} · {} · {} · {}",
-                            entry.short_hash, entry.author, entry.date, entry.path
+                            entry.short_hash,
+                            entry.author,
+                            super::git_pane::local_author_date(&entry.date),
+                            entry.path,
                         ))
                         .number_of_lines(1u32)
                         .text_size(px(10.5))

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -179,7 +179,7 @@ fn run() {
     let ui_root = task_root.clone();
     let started = state::run_git_action(
         move || {
-            let mut results = BTreeMap::new();
+            let mut results = Vec::with_capacity(repos.len());
             for repo in repos {
                 let result = merge_tasks::start(
                     &task_root,
@@ -188,13 +188,14 @@ fn run() {
                     &target,
                     strategy,
                 );
-                results.insert(repo.name, result);
+                results.push((repo.label().to_owned(), result));
             }
             results
         },
-        move |results: BTreeMap<String, Result<BeginMerge>>| {
+        move |results: Vec<(String, Result<BeginMerge>)>| {
             let mut details = Vec::new();
             let mut pending = Vec::new();
+            let mut failed = false;
             for (repo, result) in results {
                 match result {
                     Ok(BeginMerge::Complete(hash)) => {
@@ -207,11 +208,14 @@ fn run() {
                         ));
                         pending.push(task);
                     }
-                    Err(err) => details.push(format!("{repo} 合并失败：{err}")),
+                    Err(err) => {
+                        failed = true;
+                        details.push(format!("{repo} 合并失败：{err}"));
+                    }
                 }
             }
             state::show_toast(
-                if pending.is_empty() { "ok" } else { "warn" },
+                if pending.is_empty() && !failed { "ok" } else { "warn" },
                 details.join("\n"),
             );
             if let [task] = pending.as_slice() {
@@ -381,7 +385,7 @@ pub(super) fn layer() -> impl IntoElement {
                                                     format!(
                                                         "{} {}",
                                                         if checked { "✓" } else { "□" },
-                                                        repo.name
+                                                        repo.label()
                                                     )
                                                 })
                                                 .text_color(p.text_primary),

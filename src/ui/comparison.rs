@@ -1,11 +1,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use nsh_base::{Editor, EditorApi, EditorPosition, editor, h_resizable, resizable_panel};
+use nsh_base::{Editor, EditorPosition, EditorSearchResult, EditorSelection, editor, h_resizable, resizable_panel};
 use nsh_core::prelude::*;
 
+use super::diff_view::{
+    bind_comparison_hunk_keys, diff_find_bar, diff_find_button, diff_search, record_diff_search,
+    reveal_comparison_hunk,
+};
 use crate::diff_model::{
-    InlineHighlightMode, WhitespaceMode, build_side_by_side_decorations, compute_diff,
+    DiffSide, InlineHighlightMode, WhitespaceMode, build_side_by_side_decorations, compute_diff,
 };
 use crate::git::{self, LineEnding, WorkspaceFile};
 use crate::paths::basename;
@@ -29,7 +33,6 @@ struct ComparisonState {
     current: Option<Arc<Pair>>,
     previous: Option<(EditorTabKind, FocusZone)>,
     whitespace: WhitespaceMode,
-    active_change: usize,
     generation: u64,
 }
 
@@ -73,8 +76,8 @@ fn file_source(file: WorkspaceFile, live: Option<String>) -> anyhow::Result<Sour
     let text = if let Some(text) = live {
         text
     } else {
-        let worktree = git::read_review_worktree(Path::new(&file.abs_path));
-        anyhow::ensure!(worktree.version.exists, "文件不存在：{}", file.rel_path);
+        let worktree = git::read_worktree_source(Path::new(&file.abs_path))?
+            .ok_or_else(|| anyhow::anyhow!("文件不存在：{}", file.rel_path))?;
         anyhow::ensure!(
             !worktree.binary && !worktree.too_large,
             "无法比较此文件：{}",
@@ -126,7 +129,6 @@ fn present(pair: Pair) {
             s.previous = Some(previous);
         }
         s.whitespace = whitespace;
-        s.active_change = 0;
     });
     activate();
 }
@@ -166,8 +168,7 @@ pub fn open_project_selection() -> bool {
 }
 
 fn revision_source(repo_path: &str, hash: &str, short_hash: &str, path: String) -> anyhow::Result<Source> {
-    let spec = format!("{hash}:{path}");
-    let (text, binary, too_large) = git::read_git_object_text(Path::new(repo_path), &spec)?;
+    let (text, binary, too_large) = git::read_tree_version_text(Path::new(repo_path), hash, &path)?;
     anyhow::ensure!(!binary && !too_large, "无法比较此修订版本");
     Ok(Source {
         text: checked_text(text)?,
@@ -257,6 +258,8 @@ pub fn title() -> Option<String> {
 }
 
 pub fn activate() {
+    crate::state::cancel_diff_read();
+    state::capture_editor_views();
     app_signal().update(|s| {
         s.editor_tab = EditorTabKind::Comparison;
         s.focus_zone = FocusZone::ComparisonNew;
@@ -273,6 +276,7 @@ pub fn close() {
         };
     });
     app_signal().update(|s| {
+        s.comparison_find_open = false;
         if s.editor_tab != EditorTabKind::Comparison {
             return;
         }
@@ -326,24 +330,45 @@ fn pane_for(pair: Arc<Pair>) -> impl IntoElement {
         )
     });
 
-    let move_change = move |delta: isize| {
-        let computed = diff.get();
-        if computed.hunks.is_empty() {
-            return;
-        }
-        let len = computed.hunks.len() as isize;
-        let mut change = 0;
-        signal().update(|s| {
-            s.active_change = (s.active_change as isize + delta).rem_euclid(len) as usize;
-            change = s.active_change;
-        });
-        let hunk = &computed.hunks[change];
-        for (reference, line) in [(left_ref, hunk.old_start), (right_ref, hunk.new_start)] {
-            if let Some(api) = reference.api::<EditorApi>() {
-                api.reveal_position(EditorPosition::new(line as u32, 0), true);
-            }
+    let old_caret = nsh_core::element::signal(EditorPosition::new(0, 0));
+    let new_caret = nsh_core::element::signal(EditorPosition::new(0, 0));
+    let focus = computed(|| app_signal().with(|s| s.focus_zone));
+    let caret_pair = pair.clone();
+    let navigation = computed(move || {
+        let (side, caret, text) = if focus.get() == FocusZone::ComparisonOld {
+            (DiffSide::Old, old_caret.get(), caret_pair.left.text.as_str())
+        } else {
+            (DiffSide::New, new_caret.get(), caret_pair.right.text.as_str())
+        };
+        diff.with(|value| {
+            let nav = value.hunk_navigation(side, caret, Some(text));
+            (nav.previous, nav.next, nav.counter_index(), value.hunks.len())
+        })
+    });
+    let reveal = move |index| {
+        let hunk = diff.with_untracked(|value| value.hunks.get(index).cloned());
+        if let Some(hunk) = hunk {
+            reveal_comparison_hunk(&hunk, left_ref, right_ref);
         }
     };
+    effect(move || {
+        mode.get();
+        after_answer(move || reveal(0));
+    });
+    let move_change = move |direction| {
+        let (previous, next, _, _) = navigation.get();
+        if let Some(index) = if direction < 0 { previous } else { next } {
+            reveal(index);
+        }
+    };
+    bind_comparison_hunk_keys(
+        move || {
+            matches!(focus.get(), FocusZone::ComparisonOld | FocusZone::ComparisonNew)
+                && !crate::history_runtime::is_open()
+                && !state::text_input_focus_signal().with(|input| input.focused)
+        },
+        move_change,
+    );
 
     let toolbar = view()
         .h(px(35.0))
@@ -354,25 +379,32 @@ fn pane_for(pair: Arc<Pair>) -> impl IntoElement {
         .child(action_button(
             "comparison-prev-change",
             "上一处",
+            move || navigation.with(|(previous, ..)| previous.is_some()),
             move || move_change(-1),
         ))
         .child(action_button(
             "comparison-next-change",
             "下一处",
+            move || navigation.with(|(_, next, ..)| next.is_some()),
             move || move_change(1),
         ))
         .child(
             text(move || {
-                let count = diff.with(|value| value.hunks.len());
-                format!("变更 {}", count)
+                let (_, _, index, count) = navigation.get();
+                if count == 0 {
+                    "变更 0".to_string()
+                } else {
+                    format!("{}/{count}", index + 1)
+                }
             })
             .test_id("comparison-change-count")
             .text_size(px(11.0))
             .text_color(p.text_muted),
         )
+        .child(diff_find_button("comparison-find-btn", super::keymap_memo()))
         .child(view().flex_1())
         .child(dynamic(move || {
-            action_button("comparison-whitespace", mode.get().label(), move || {
+            action_button("comparison-whitespace", mode.get().label(), true, move || {
                 let items = [
                     WhitespaceMode::None,
                     WhitespaceMode::Trim,
@@ -384,10 +416,7 @@ fn pane_for(pair: Arc<Pair>) -> impl IntoElement {
                     nsh_core::element::desktop::MenuItem::new(option.label())
                         .checked(mode.get() == option)
                         .on_select(move || {
-                            signal().update(|s| {
-                                s.whitespace = option;
-                                s.active_change = 0;
-                            })
+                            signal().update(|s| s.whitespace = option)
                         })
                 })
                 .collect();
@@ -401,6 +430,7 @@ fn pane_for(pair: Arc<Pair>) -> impl IntoElement {
         .flex_col()
         .overflow_hidden()
         .child(toolbar)
+        .child(diff_find_bar(EditorTabKind::Comparison))
         .child(
             h_resizable()
                 .flex_1()
@@ -408,12 +438,14 @@ fn pane_for(pair: Arc<Pair>) -> impl IntoElement {
                     &pair.left,
                     left_ref,
                     true,
+                    old_caret,
                     move || decorations.with(|both| both.0.clone()),
                 )))
                 .child(resizable_panel().child(compare_side(
                     &pair.right,
                     right_ref,
                     false,
+                    new_caret,
                     move || decorations.with(|both| both.1.clone()),
                 ))),
         )
@@ -422,9 +454,11 @@ fn pane_for(pair: Arc<Pair>) -> impl IntoElement {
 fn action_button(
     id: &'static str,
     label: &'static str,
+    enabled: impl IntoReactive<bool>,
     on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
+    let disabled = enabled.into_reactive().map(|enabled| !enabled);
     view()
         .test_id(id)
         .h(px(24.0))
@@ -432,6 +466,8 @@ fn action_button(
         .rounded(px(4.0))
         .items_center()
         .cursor(Cursor::Pointer)
+        .disabled(disabled.clone())
+        .style_when(disabled, |style| style.opacity(0.45).cursor(Cursor::Default))
         .bg(p.surface2)
         .hover(move |style| style.bg(p.surface_hover))
         .on_press(move || on_press())
@@ -442,9 +478,11 @@ fn compare_side(
     source: &Source,
     reference: ComponentRef<Editor>,
     old: bool,
+    caret: Signal<EditorPosition>,
     decorations: impl Fn() -> Vec<nsh_base::EditorDecoration> + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
+    let side = Some(if old { DiffSide::Old } else { DiffSide::New });
     view()
         .flex_1()
         .flex_col()
@@ -484,6 +522,15 @@ fn compare_side(
                 .decorations(decorations)
                 .soft_wrap(|| app_signal().with(|s| s.cfg.editor_soft_wrap))
                 .font_size(|| px(app_signal().with(|s| s.cfg.editor_font_size)))
+                .search(move || diff_search(EditorTabKind::Comparison, side))
+                .on_search_change(move |result: &EditorSearchResult| {
+                    record_diff_search(EditorTabKind::Comparison, side, result);
+                })
+                .on_selection_change(move |selections: &Vec<EditorSelection>| {
+                    if let Some(selection) = selections.last() {
+                        caret.set(selection.head);
+                    }
+                })
                 .on_focus(move || {
                     state::set_text_input_focused(false);
                     app_signal().update(|s| {

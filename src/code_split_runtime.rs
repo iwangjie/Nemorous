@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use nsh_base::{Editor, EditorApi, EditorPosition};
 use nsh_core::prelude::*;
 
@@ -50,7 +52,7 @@ pub(crate) fn file_properties(side: PaneId) -> Option<(String, bool)> {
     app_signal().with(|s| {
         let id = s.code_split.as_ref()?.pane(side).active()?;
         let tab = s.code_tabs.iter().find(|tab| tab.id == id)?;
-        Some((tab.file.rel_path.clone(), tab.editable))
+        Some((tab.file.rel_path.clone(), tab.editor_editable()))
     })
 }
 
@@ -87,6 +89,7 @@ pub(crate) fn split_active() {
 }
 
 pub(crate) fn split_for_tab(id: &str) {
+    state::capture_editor_views();
     let is_visible = app_signal().with_untracked(|s| {
         s.editor_tab == EditorTabKind::File
             && s.code_tabs.get(s.active_code_tab_idx).is_some_and(|tab| tab.id == id)
@@ -256,23 +259,26 @@ pub(crate) fn save_view(
 }
 
 pub(crate) fn record_editor_change(id: &str, value: &str) {
+    let mut refresh = None;
     app_signal().update(|s| {
         let Some(tab) = s.code_tabs.iter_mut().find(|tab| tab.id == id) else {
             return;
         };
-        if !tab.editable || tab.text == value {
+        if !tab.editor_editable() || tab.text == value {
             return;
         }
-        s.code_undo
-            .entry(id.to_string())
-            .or_default()
-            .record(&tab.text, value);
-        tab.text = value.to_string();
+        let history = s.code_undo.entry(id.to_string()).or_default().clone();
+        history.record_source_replacement(&tab.text, value);
+        let before = std::mem::replace(&mut tab.text, value.to_string());
         if tab.is_dirty() {
             tab.preview = false;
         }
         tab.content_rev += 1;
+        refresh = s.mirror_source_edit(id, &before, &history);
     });
+    if let Some(repo) = refresh {
+        state::refresh_workspace_async(Some(HashSet::from([repo])));
+    }
 }
 
 pub(crate) fn change(side: PaneId, id: &str, value: &str) {
@@ -304,25 +310,27 @@ pub(crate) fn set_active_position(s: &mut AppState, position: EditorPosition) {
 }
 
 pub(crate) fn undo(redo: bool) {
+    let mut refresh = None;
     app_signal().update(|s| {
         let Some(tab) = s.code_tabs.get_mut(s.active_code_tab_idx) else {
             return;
         };
-        let Some(log) = s.code_undo.get_mut(&tab.id) else {
+        if !tab.editor_editable() {
+            return;
+        }
+        let Some(history) = s.code_undo.get(&tab.id).cloned() else {
             return;
         };
-        let Some(offset) = log.apply(&mut tab.text, redo) else {
+        let Some((text, caret)) = history.step(&tab.text, redo) else {
             return;
         };
+        let before = std::mem::replace(&mut tab.text, text);
+        let id = tab.id.clone();
         tab.content_rev += 1;
-        let before = &tab.text[..offset];
-        let line = before.bytes().filter(|byte| *byte == b'\n').count() as u32;
-        let column = before
-            .rsplit('\n')
-            .next()
-            .unwrap_or_default()
-            .encode_utf16()
-            .count() as u32;
-        set_active_position(s, EditorPosition::new(line, column));
+        refresh = s.mirror_source_edit(&id, &before, &history);
+        set_active_position(s, caret);
     });
+    if let Some(repo) = refresh {
+        state::refresh_workspace_async(Some(HashSet::from([repo])));
+    }
 }

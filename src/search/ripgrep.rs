@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,7 +36,7 @@ pub(super) fn matching_files(
         ));
     }
 
-    let mut command = Command::new(binary);
+    let mut command = crate::tool_command::command(binary);
     command
         .arg("--no-config")
         .arg("--no-ignore")

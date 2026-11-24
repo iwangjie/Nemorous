@@ -1,16 +1,18 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nsh_base::{EditorApi, EditorPosition, EditorSelection};
+use nsh_base::{EditorApi, EditorPosition, EditorSearch, EditorSearchResult, EditorSelection};
+use nsh_base::editor::EditorUndoHistory;
 use nsh_core::{element::after_answer, prelude::*};
 
 use crate::config::{self, Config};
-use crate::editor_split::{EditorSplit, UndoLog};
+use crate::editor_split::EditorSplit;
 use crate::diff_model::{
     ComputedDiff, DiffSide, InlineHighlightMode, WhitespaceMode, compute_diff,
-    compute_unified_layout, map_side_line_to_unified, source_position,
+    map_editable_side_line_to_unified, map_side_line_to_unified, source_position,
 };
 use crate::git::{
     self, ChangedFile, CommitDiffData, CommitEntry, CommitFileEntry, LineEnding, RepoInfo,
@@ -23,6 +25,23 @@ use crate::paths::{
 };
 use crate::theme::{self, Palette};
 use crate::watcher::{WatchHint, WorkspaceWatcher};
+
+mod diff_open;
+mod diff_viewport;
+mod navigation;
+mod refresh;
+mod source_open;
+pub use diff_open::{move_commit_diff_file, open_commit_diff};
+pub(crate) use diff_open::{cancel_diff_read, diff_read_pending, preview_commit_diff, set_commit_diff_preview};
+use diff_open::open_working_diff_with_hunk;
+pub use diff_viewport::{DiffViewport, jump_diff_hunk};
+use diff_viewport::reveal_opened_diff_hunk;
+pub(crate) use diff_viewport::{copy_diff_selection, focus_diff_side, record_diff_caret, restore_diff_view_after_render, sync_diff_scroll, toggle_diff_layout};
+use navigation::navigate_history;
+pub use navigation::{open_revision_code_file, restore_nav_target};
+use refresh::{OpenReviewDocuments, ReviewReads};
+pub use source_open::{open_code_file, open_code_file_preview};
+pub(crate) use source_open::prepare_workspace_edit_tab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeftTab {
@@ -71,6 +90,7 @@ pub enum NavTarget {
     CodeFile {
         repo_id: String,
         rel_path: String,
+        revision: String,
         pos: EditorPosition,
         scroll_y: i32,
     },
@@ -79,15 +99,16 @@ pub enum NavTarget {
         staged: bool,
         side: DiffSide,
         pos: EditorPosition,
-        scroll_y: i32,
+        viewport: Option<DiffViewport>,
     },
     CommitDiff {
         repo_id: String,
         commit_hash: String,
         file_path: String,
+        scope: CommitDiffScope,
         side: DiffSide,
         pos: EditorPosition,
-        scroll_y: i32,
+        viewport: Option<DiffViewport>,
     },
 }
 
@@ -108,16 +129,70 @@ pub struct CodeTab {
     pub cursor: EditorPosition,
     pub scroll_y: f32,
     pub(crate) scroll_x: f32,
-    pub external_changed: bool,
+    pub(crate) disk_state: ReviewDiskState,
     /// 未钉住的预览标签：斜体显示，可被后续预览复用替换；编辑或双击后转为普通标签
     pub preview: bool,
     /// 递增版本号，用于受控同步外部刷新/恢复内容到 Editor
     pub content_rev: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ReviewDiskState {
+    #[default]
+    Current,
+    Modified,
+    Missing,
+    Unreadable,
+}
+
+impl ReviewDiskState {
+    fn for_diff(data: &ReviewChangeData) -> Self {
+        if !data.staged_only && !data.version.exists {
+            Self::Missing
+        } else {
+            Self::Current
+        }
+    }
+
+    pub(crate) fn notice(self) -> Option<&'static str> {
+        match self {
+            Self::Current => None,
+            Self::Modified => Some("磁盘文件已修改"),
+            Self::Missing => Some("磁盘文件已移动或删除"),
+            Self::Unreadable => Some("磁盘文件暂不可读"),
+        }
+    }
+}
+
 impl CodeTab {
+    fn from_read(file: WorkspaceFile, revision: String, read: git::WorktreeRead, cursor: EditorPosition, preview: bool) -> Self {
+        Self {
+            id: code_tab_id(&file.repo_id, &file.rel_path, &revision),
+            file,
+            revision,
+            text: read.text.clone(),
+            saved_text: read.text,
+            line_ending: read.line_ending,
+            version: read.version,
+            editable: read.editable,
+            readonly_reason: read.readonly_reason,
+            binary: read.binary,
+            too_large: read.too_large,
+            cursor,
+            scroll_y: 0.0,
+            scroll_x: 0.0,
+            preview,
+            disk_state: ReviewDiskState::Current,
+            content_rev: 1,
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.editable && self.revision.is_empty() && self.text != self.saved_text
+    }
+
+    pub(crate) fn editor_editable(&self) -> bool {
+        self.editable && (self.is_dirty() || !matches!(self.disk_state, ReviewDiskState::Missing | ReviewDiskState::Unreadable))
     }
 
     pub fn title(&self) -> String {
@@ -140,17 +215,126 @@ pub struct WorkingDiffSession {
     pub active_side: DiffSide,
     pub old_cursor: EditorPosition,
     pub new_cursor: EditorPosition,
-    pub old_scroll_y: f32,
-    pub new_scroll_y: f32,
-    pub current_hunk: usize,
+    viewport: Option<DiffViewport>,
     pub boundary_hint: Option<i32>, // -1 上边界，+1 下边界
-    pub external_changed: bool,
+    pub(crate) disk_state: ReviewDiskState,
+    pub(crate) git_baseline_issue: Option<GitBaselineIssue>,
     pub content_rev: u64,
+    pub(crate) undo_history: DocumentUndo,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DocumentUndo(Arc<Mutex<Option<EditorUndoHistory>>>);
+
+impl PartialEq for DocumentUndo {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl DocumentUndo {
+    pub(crate) fn park(&self, editor: &EditorApi) {
+        if let Some(history) = editor.take_undo_history() {
+            let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                *slot = Some(history);
+            }
+        }
+    }
+
+    pub(crate) fn resume(&self, editor: &EditorApi) {
+        let history = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(history) = history {
+            editor.restore_undo_history(history);
+        }
+    }
+
+    fn record_replacement(&self, before: &str, after: &str, caret: EditorPosition) {
+        let mut history = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *history = EditorUndoHistory::record_replacement(history.take(), before, after, caret);
+    }
+
+    pub(crate) fn record_source_replacement(&self, before: &str, after: &str) {
+        let mut history = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *history = EditorUndoHistory::record_source_replacement(history.take(), before, after);
+    }
+
+    pub(crate) fn step(&self, expected: &str, redo: bool) -> Option<(String, EditorPosition)> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).as_mut()?.step(expected, redo)
+    }
+
+    fn clear(&self) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ParkedWorkingDiffUndo {
+    repo_id: String,
+    repo_path: String,
+    path: String,
+    version: ReviewVersion,
+    history: DocumentUndo,
+}
+
+impl ParkedWorkingDiffUndo {
+    fn matches_file(&self, file: &ChangedFile) -> bool {
+        self.repo_id == file.repo_id && self.repo_path == file.repo_path && self.path == file.path
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitBaselineIssue {
+    ReadFailed,
+    TextBlocked(git::ReviewTextBlock),
 }
 
 impl WorkingDiffSession {
+    fn replace_external_text(&mut self, text: String) {
+        if text != self.current_new_text {
+            self.undo_history.clear();
+            self.current_new_text = text;
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.data.editable && !self.data.staged_only && self.current_new_text != self.saved_new_text
+    }
+
+    pub(crate) fn editor_editable(&self) -> bool {
+        self.data.editable && !self.data.staged_only
+            && (self.is_dirty() || self.read_failure_notice().is_none())
+    }
+
+    pub(crate) fn read_failure_notice(&self) -> Option<&'static str> {
+        match self.git_baseline_issue {
+            Some(GitBaselineIssue::ReadFailed) => Some("Git 比较基准暂不可读"),
+            Some(GitBaselineIssue::TextBlocked(git::ReviewTextBlock::Binary)) => {
+                Some("Git 比较基准为二进制或非 UTF-8 文件")
+            }
+            Some(GitBaselineIssue::TextBlocked(git::ReviewTextBlock::TooLarge)) => {
+                Some("Git 比较基准超过 2 MiB 审阅上限")
+            }
+            None if self.disk_state == ReviewDiskState::Unreadable => self.disk_state.notice(),
+            None => None,
+        }
+    }
+
+    pub(crate) fn can_compare_text(&self) -> bool {
+        self.data.can_compare_text() && self.read_failure_notice().is_none()
+    }
+
+    pub(crate) fn recompute_diff(&mut self, mode: WhitespaceMode) {
+        let draft = self.is_dirty().then_some(self.current_new_text.as_str());
+        self.computed = compute_working_text_diff(&self.data, draft, mode);
+    }
+
+    fn update_draft_comparison(&mut self, mode: WhitespaceMode, was_dirty: bool) -> Option<String> {
+        self.recompute_diff(mode);
+        self.boundary_hint = None;
+        (was_dirty && !self.is_dirty()
+            && matches!(self.git_baseline_issue, Some(GitBaselineIssue::TextBlocked(_))))
+            .then(|| self.file.repo_id.clone())
     }
 
     pub fn active_cursor(&self) -> EditorPosition {
@@ -159,6 +343,40 @@ impl WorkingDiffSession {
             DiffSide::New => self.new_cursor,
         }
     }
+
+    pub(crate) fn active_text(&self) -> &str {
+        match self.active_side {
+            DiffSide::Old => &self.data.old_text,
+            DiffSide::New => &self.current_new_text,
+        }
+    }
+}
+
+fn compute_working_text_diff(
+    data: &ReviewChangeData,
+    draft: Option<&str>,
+    mode: WhitespaceMode,
+) -> ComputedDiff {
+    if data.old_text_block.is_some() || (data.new_text_block.is_some() && draft.is_none()) {
+        return ComputedDiff::default();
+    }
+    compute_diff(&data.old_text, draft.unwrap_or(&data.new_text), mode)
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CommitDiffScope {
+    #[default]
+    AllFiles,
+    SingleFile,
+}
+
+#[derive(Default)]
+struct CommitDiffOpenOptions {
+    scope: CommitDiffScope,
+    focus_diff: bool,
+    land_on_last_hunk: bool,
+    record_navigation: bool,
+    select_log_file: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -167,12 +385,11 @@ pub struct CommitDiffSession {
     pub file: CommitFileEntry,
     pub data: CommitDiffData,
     pub computed: ComputedDiff,
+    pub(crate) scope: CommitDiffScope,
     pub active_side: DiffSide,
     pub old_cursor: EditorPosition,
     pub new_cursor: EditorPosition,
-    pub old_scroll_y: f32,
-    pub new_scroll_y: f32,
-    pub current_hunk: usize,
+    viewport: Option<DiffViewport>,
     pub boundary_hint: Option<i32>,
     pub content_rev: u64,
 }
@@ -242,6 +459,7 @@ pub struct FileRevisionHistory {
     pub(crate) show_affected: bool,
     pub(crate) loading: bool,
     pub(crate) error: Option<String>,
+    head_seen: Option<git::RepositoryHead>,
 }
 
 /// 编辑器 ref 注册表，允许快捷键与工具栏命令精准操控当前活跃的 Editor 实例。
@@ -259,12 +477,15 @@ pub struct EditorRefs {
     pub compare_old: Option<ComponentRef<nsh_base::Editor>>,
     pub compare_new: Option<ComponentRef<nsh_base::Editor>>,
     pub modal_active: Option<ComponentRef<nsh_base::Editor>>,
+    pub(crate) code_find_input: Option<ElementRef>,
+    pub(crate) diff_find_input: Option<ElementRef>,
 }
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Config,
     pub repos: Vec<RepoInfo>,
+    pub(crate) hidden_repo_labels: BTreeMap<String, String>,
     pub statuses: Vec<RepoStatus>,
     pub workspace_files: Vec<WorkspaceFile>,
     pub stashes: Vec<StashEntry>,
@@ -311,22 +532,25 @@ pub struct AppState {
     // 统一编辑区状态
     pub code_tabs: Vec<CodeTab>,
     pub(crate) code_split: Option<EditorSplit>,
-    pub(crate) code_undo: HashMap<String, UndoLog>,
+    pub(crate) code_undo: HashMap<String, DocumentUndo>,
     pub active_code_tab_idx: usize,
     pub working_diff: Option<WorkingDiffSession>,
+    pub(crate) parked_working_diff_undo: Vec<ParkedWorkingDiffUndo>,
     pub commit_diff: Option<CommitDiffSession>,
     pub show_code_options: bool,
 
     // 查找替换条状态
     pub diff_find_open: bool,
-    pub diff_find_query: String,
+    pub(crate) diff_search: EditorSearch,
     pub diff_find_side: DiffSide,
-    pub diff_find_matches: (u32, Option<u32>),
+    pub(crate) diff_find_matches: EditorSearchResult,
+    pub(crate) comparison_find_open: bool,
+    pub(crate) comparison_find_side: DiffSide,
     pub code_find_open: bool,
     pub code_replace_open: bool,
-    pub code_find_query: String,
+    pub(crate) code_search: EditorSearch,
     pub code_replace_text: String,
-    pub code_find_matches: (u32, Option<u32>),
+    pub(crate) code_find_matches: EditorSearchResult,
 
     // 导航历史与返回差异
     pub nav_back: Vec<NavTarget>,
@@ -347,11 +571,140 @@ pub struct AppState {
     // 刷新并发与代次控制
     pub refresh_gen: u64,
     pub is_refreshing: bool,
+    pub(crate) refresh_repo_ids: Option<HashSet<String>>,
     pub command_busy: bool,
     pub pending_refresh: bool,
     pub pending_refresh_repos: HashSet<String>,
     pub last_refresh_ms: u64,
     pub window_focused: bool,
+}
+
+impl AppState {
+    pub(crate) fn active_find_open(&self) -> bool {
+        match self.editor_tab {
+            EditorTabKind::File => self.code_find_open,
+            EditorTabKind::WorkingDiff | EditorTabKind::CommitDiff => self.diff_find_open,
+            EditorTabKind::Comparison => self.comparison_find_open,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn diff_find_side_for(&self, tab: EditorTabKind) -> Option<DiffSide> {
+        match tab {
+            EditorTabKind::Comparison => Some(self.comparison_find_side),
+            _ if self.cfg.diff_single_column => None,
+            _ => Some(self.diff_find_side),
+        }
+    }
+
+    fn close_editor_find(&mut self) -> bool {
+        if !self.active_find_open() {
+            return false;
+        }
+        match self.editor_tab {
+            EditorTabKind::File => {
+                self.code_find_open = false;
+                self.code_replace_open = false;
+            }
+            EditorTabKind::Comparison => self.comparison_find_open = false,
+            _ => self.diff_find_open = false,
+        }
+        true
+    }
+
+    pub(crate) fn apply_working_diff_edit(
+        &mut self,
+        history: &DocumentUndo,
+        text: String,
+    ) -> Option<String> {
+        let diff = self.working_diff.as_mut().filter(|diff| {
+            &diff.undo_history == history && diff.editor_editable() && diff.current_new_text != text
+        })?;
+        let was_dirty = diff.is_dirty();
+        let before = std::mem::replace(&mut diff.current_new_text, text);
+        let refresh = diff.update_draft_comparison(
+            WhitespaceMode::from_config(&self.cfg.diff_whitespace_mode), was_dirty,
+        );
+        for tab in self.code_tabs.iter_mut().filter(|tab| {
+            tab.text == before && same_working_document(tab, &diff.file, &diff.data)
+        }) {
+            self.code_undo.insert(tab.id.clone(), history.clone());
+            tab.text.clone_from(&diff.current_new_text);
+            tab.preview &= !tab.is_dirty();
+            tab.content_rev += 1;
+        }
+        refresh
+    }
+
+    pub(crate) fn mirror_source_edit(&mut self, id: &str, before: &str, history: &DocumentUndo) -> Option<String> {
+        let tab = self.code_tabs.iter().find(|tab| tab.id == id)?;
+        let diff = self.working_diff.as_mut().filter(|diff| {
+            diff.current_new_text == before && same_working_document(tab, &diff.file, &diff.data)
+        })?;
+        let was_dirty = diff.is_dirty();
+        diff.undo_history = history.clone();
+        diff.current_new_text.clone_from(&tab.text);
+        diff.content_rev += 1;
+        diff.update_draft_comparison(WhitespaceMode::from_config(&self.cfg.diff_whitespace_mode), was_dirty)
+    }
+
+    fn working_diff_undo_for(
+        &mut self,
+        file: &ChangedFile,
+        data: &ReviewChangeData,
+        text: &str,
+    ) -> DocumentUndo {
+        const MAX_PARKED_HISTORIES: usize = 8;
+        let source_history = self.code_tabs.iter()
+            .find(|tab| tab.text == text && same_working_document(tab, file, data))
+            .and_then(|tab| self.code_undo.get(&tab.id)).cloned();
+
+        if let Some(active) = &self.working_diff {
+            let same_file = active.file.repo_id == file.repo_id
+                && active.file.repo_path == file.repo_path
+                && active.file.path == file.path;
+            if same_file && active.data.staged_only == data.staged_only {
+                return if active.current_new_text == text
+                    && !refresh::content_changed(&active.data.version, &data.version)
+                {
+                    active.undo_history.clone()
+                } else {
+                    source_history.unwrap_or_default()
+                };
+            }
+            if active.data.editable && !active.data.staged_only && !active.is_dirty() {
+                let parked = &mut self.parked_working_diff_undo;
+                parked.retain(|entry| !entry.matches_file(&active.file));
+                // The editor puts its history in this slot when the viewer unmounts.
+                parked.insert(0, ParkedWorkingDiffUndo {
+                    repo_id: active.file.repo_id.clone(),
+                    repo_path: active.file.repo_path.clone(),
+                    path: active.file.path.clone(),
+                    version: active.data.version.clone(),
+                    history: active.undo_history.clone(),
+                });
+            }
+        }
+
+        let parked = &mut self.parked_working_diff_undo;
+        let restored = if data.staged_only {
+            None
+        } else {
+            parked.iter().position(|entry| entry.matches_file(file))
+                .map(|index| parked.remove(index))
+                .filter(|entry| data.editable && entry.version == data.version)
+        };
+        parked.truncate(MAX_PARKED_HISTORIES);
+        source_history.or_else(|| restored.map(|entry| entry.history)).unwrap_or_default()
+    }
+
+    pub(crate) fn repository_head(&self, repo_path: &str) -> git::RepositoryHead {
+        self.statuses
+            .iter()
+            .find(|status| status.repo.path == repo_path)
+            .map(|status| status.head.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl Default for AppState {
@@ -360,6 +713,7 @@ impl Default for AppState {
         Self {
             cfg,
             repos: Vec::new(),
+            hidden_repo_labels: BTreeMap::new(),
             statuses: Vec::new(),
             workspace_files: Vec::new(),
             stashes: Vec::new(),
@@ -399,17 +753,20 @@ impl Default for AppState {
             code_undo: HashMap::new(),
             active_code_tab_idx: 0,
             working_diff: None,
+            parked_working_diff_undo: Vec::new(),
             commit_diff: None,
             show_code_options: false,
             diff_find_open: false,
-            diff_find_query: String::new(),
+            diff_search: EditorSearch::default(),
             diff_find_side: DiffSide::New,
-            diff_find_matches: (0, None),
+            diff_find_matches: EditorSearchResult::default(),
+            comparison_find_open: false,
+            comparison_find_side: DiffSide::New,
             code_find_open: false,
             code_replace_open: false,
-            code_find_query: String::new(),
+            code_search: EditorSearch::default(),
             code_replace_text: String::new(),
-            code_find_matches: (0, None),
+            code_find_matches: EditorSearchResult::default(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             recent_locations: Vec::new(),
@@ -424,6 +781,7 @@ impl Default for AppState {
             next_toast_id: 1,
             refresh_gen: 0,
             is_refreshing: false,
+            refresh_repo_ids: None,
             command_busy: false,
             pending_refresh: false,
             pending_refresh_repos: HashSet::new(),
@@ -488,24 +846,6 @@ pub fn show_popup_menu_at(
     }
 }
 
-#[derive(Clone, Default)]
-pub struct ShortcutRebindState {
-    pub rev: u64,
-}
-
-/// 独立于 AppState 的快捷键重绑版本信号：每当 Editor 重新获得焦点后触发一次重绑，
-/// 确保应用级 IDEA 快捷键（`⌘L`、`⌘[`、`⌘]`、`⌘D`、`F4`）始终排在 `Editor::bind_keys` 之后生效。
-pub fn shortcut_rebind_signal() -> Signal<ShortcutRebindState> {
-    global::<ShortcutRebindState>()
-}
-
-pub fn request_shortcut_rebind() {
-    shortcut_rebind_signal().update(|s| s.rev = s.rev.wrapping_add(1));
-    set_timeout(Duration::from_millis(0), || {
-        shortcut_rebind_signal().update(|s| s.rev = s.rev.wrapping_add(1));
-    });
-}
-
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct TextInputFocusState {
     pub focused: bool,
@@ -524,53 +864,49 @@ pub fn set_text_input_focused(focused: bool) {
     }
 }
 
-/// 若工作区 Diff 对应的同文件源码标签处于脏态且与 Diff 同源，则将源码脏编辑同步回工作区 Diff，防止双缓冲分裂。
+fn same_working_document(tab: &CodeTab, file: &ChangedFile, data: &ReviewChangeData) -> bool {
+    !data.staged_only && data.editable && tab.revision.is_empty() && tab.editor_editable()
+        && tab.file.repo_id == file.repo_id && tab.file.repo_path == file.repo_path
+        && tab.file.rel_path == file.path && tab.version == data.version
+}
+
+/// Keep a previously opened working comparison aligned when activating it.
 pub fn sync_dirty_code_tab_into_working_diff(s: &mut AppState) {
     let ws_mode = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
     let Some(w) = &mut s.working_diff else {
         return;
     };
-    if !w.data.editable || w.data.staged_only {
+    if !w.editor_editable() {
         return;
     }
-    if let Some(tab) = s.code_tabs.iter().find(|t| {
-        t.revision.is_empty()
-            && t.file.repo_id == w.file.repo_id
-            && t.file.rel_path == w.file.path
-    }) {
+    if let Some(tab) = s.code_tabs.iter().find(|t| same_working_document(t, &w.file, &w.data)) {
         if tab.is_dirty()
-            && tab.version.sha256 == w.data.version.sha256
             && w.current_new_text != tab.text
         {
-            w.current_new_text = tab.text.clone();
-            w.computed = compute_diff(&w.data.old_text, &w.current_new_text, ws_mode);
+            w.undo_history = s.code_undo.entry(tab.id.clone()).or_default().clone();
+            w.current_new_text.clone_from(&tab.text);
+            w.recompute_diff(ws_mode);
             w.content_rev += 1;
+        }
+        if w.current_new_text == tab.text {
+            s.code_undo.insert(tab.id.clone(), w.undo_history.clone());
         }
     }
 }
 
-/// 若工作区 Diff 处于脏态且与目标源码标签同源，则将 Diff 脏编辑同步到源码标签，防止双缓冲分裂。
+/// Join a source tab to the same working document, including its undo history.
 pub fn sync_dirty_working_diff_into_code_tab(s: &mut AppState, tab_idx: usize) {
     let Some(w) = s.working_diff.as_ref() else {
         return;
     };
-    if !w.is_dirty() {
-        return;
-    }
-    let w_repo = w.file.repo_id.clone();
-    let w_path = w.file.path.clone();
-    let w_sha = w.data.version.sha256.clone();
-    let w_text = w.current_new_text.clone();
-    if let Some(tab) = s.code_tabs.get_mut(tab_idx) {
-        if tab.revision.is_empty()
-            && tab.file.repo_id == w_repo
-            && tab.file.rel_path == w_path
-            && tab.version.sha256 == w_sha
-            && tab.text != w_text
-        {
-            s.code_undo.remove(&tab.id);
-            tab.text = w_text;
+    if let Some(tab) = s.code_tabs.get_mut(tab_idx).filter(|tab| same_working_document(tab, &w.file, &w.data)) {
+        if w.is_dirty() && tab.text != w.current_new_text {
+            tab.text.clone_from(&w.current_new_text);
+            tab.preview = false;
             tab.content_rev += 1;
+        }
+        if tab.text == w.current_new_text {
+            s.code_undo.insert(tab.id.clone(), w.undo_history.clone());
         }
     }
 }
@@ -659,7 +995,9 @@ pub fn init_workspace() {
                 });
                 spawn(async move {
                     while let Some(hint) = rx.recv().await {
-                        handle_watch_hint(hint);
+                        if app_signal().with_untracked(|s| s.cfg.workspace_path == ws) {
+                            handle_watch_hint(hint);
+                        }
                     }
                 });
             }
@@ -670,13 +1008,26 @@ pub fn init_workspace() {
     });
 
     // 当 repos 更新时热更新 watcher 内部的仓库列表
+    let repos = computed(|| app_signal().with(|s| s.repos.clone()));
     effect(move || {
-        let repos = app_signal().with(|s| s.repos.clone());
+        let repos = repos.get();
         holder.with(|h| {
             if let Some(w) = &h.watcher {
                 w.update_repos(repos);
             }
         });
+    });
+
+    let pending_history_head = computed(|| app_signal().with(|s| {
+        let history = s.file_history.as_ref().filter(|_| s.show_git_panel)?;
+        file_history_head(s, &history.rev, &history.repo.path).filter(|head| {
+            *head != git::RepositoryHead::Unavailable && history.head_seen.as_ref() != Some(head)
+        })
+    }));
+    effect(move || {
+        if pending_history_head.get().is_some() {
+            load_file_revision_history(true);
+        }
     });
 }
 
@@ -684,17 +1035,8 @@ fn handle_watch_hint(hint: WatchHint) {
     if hint.is_empty() {
         return;
     }
-    let is_busy = app_signal().with_untracked(|s| s.command_busy);
-    if is_busy {
-        app_signal().update(|s| {
-            s.pending_refresh = true;
-            if hint.mani_changed || hint.repo_ids.is_empty() {
-                s.pending_refresh_repos.clear();
-            } else {
-                s.pending_refresh_repos.extend(hint.repo_ids);
-            }
-        });
-        return;
+    if !hint.history_repo_ids.is_empty() {
+        crate::ui::repository_history_changed(&hint.history_repo_ids);
     }
     if hint.mani_changed || hint.repo_ids.is_empty() {
         refresh_workspace_async(None);
@@ -703,35 +1045,104 @@ fn handle_watch_hint(hint: WatchHint) {
     }
 }
 
-/// 同步刷新工作区（主要用于 Headless 测试快速准备或同步调用）。
-pub fn refresh_workspace_sync(only_repos: Option<HashSet<String>>) {
-    let (ws, hidden, include_root, generation, existing_repos) = app_signal().with_untracked(|s| {
-        (
-            s.cfg.workspace_path.clone(),
-            s.cfg.hidden_repos.clone(),
-            s.cfg.extra_bool("include_root_repo",true),
-            s.refresh_gen + 1,
-            s.repos.clone(),
-        )
-    });
-    if ws.trim().is_empty() {
-        return;
+fn queue_workspace_refresh(state: &mut AppState, repo_ids: Option<HashSet<String>>) {
+    let full_already_queued = state.pending_refresh && state.pending_refresh_repos.is_empty();
+    match repo_ids {
+        Some(ids) if !full_already_queued => state.pending_refresh_repos.extend(ids),
+        None => state.pending_refresh_repos.clear(),
+        _ => {}
     }
-    app_signal().update(|s| {
-        s.refresh_gen = generation;
-        s.is_refreshing = true;
-    });
+    state.pending_refresh = true;
+}
 
-    let result = compute_workspace_snapshot(ws, hidden, include_root, only_repos, existing_repos);
-    apply_workspace_snapshot(generation, result);
+fn take_queued_workspace_refresh(
+    state: &mut AppState,
+    mut requested: Option<HashSet<String>>,
+) -> Option<HashSet<String>> {
+    if state.pending_refresh && state.pending_refresh_repos.is_empty() {
+        requested = None;
+    }
+    state.pending_refresh = false;
+    let queued = std::mem::take(&mut state.pending_refresh_repos);
+    if let Some(ids) = &mut requested {
+        ids.extend(queued);
+    }
+    requested
+}
+
+fn workspace_refresh_scope(
+    state: &AppState,
+    requested: Option<HashSet<String>>,
+) -> Option<HashSet<String>> {
+    let mut requested = requested.filter(|ids| !ids.is_empty() && !state.repos.is_empty())?;
+    if state.is_refreshing {
+        // A newer request replaces the in-flight snapshot, so it must also
+        // cover its scope. A full refresh includes repository discovery.
+        requested.extend(state.refresh_repo_ids.as_ref()?.iter().cloned());
+    }
+    Some(requested)
+}
+
+#[cfg(test)]
+mod workspace_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_refresh_keeps_the_scope_of_an_older_in_flight_refresh() {
+        let repo = RepoInfo {
+            id: "first".into(),
+            name: "first".into(),
+            display_name: None,
+            path: "first".into(),
+            rel_path: "first".into(),
+            desc: String::new(),
+            monogram: "FI".into(),
+            color_idx: 0,
+            is_root: false,
+        };
+        let mut state = AppState { repos: vec![repo], ..AppState::default() };
+        let second = HashSet::from(["second".to_owned()]);
+        assert_eq!(workspace_refresh_scope(&state, Some(second.clone())), Some(second.clone()));
+
+        state.is_refreshing = true;
+        assert_eq!(workspace_refresh_scope(&state, Some(second.clone())), None);
+
+        state.refresh_repo_ids = Some(HashSet::from(["first".to_owned()]));
+        assert_eq!(
+            workspace_refresh_scope(&state, Some(second)),
+            Some(HashSet::from(["first".to_owned(), "second".to_owned()])),
+        );
+        assert_eq!(workspace_refresh_scope(&state, None), None);
+        assert_eq!(workspace_refresh_scope(&state, Some(HashSet::new())), None);
+    }
+
+    #[test]
+    fn a_scoped_git_write_preserves_queued_repository_and_workspace_refreshes() {
+        let mut state = AppState::default();
+        let first = HashSet::from(["first".to_owned()]);
+        let second = HashSet::from(["second".to_owned()]);
+        queue_workspace_refresh(&mut state, Some(second.clone()));
+        assert_eq!(
+            take_queued_workspace_refresh(&mut state, Some(first.clone())),
+            Some(HashSet::from(["first".to_owned(), "second".to_owned()])),
+        );
+        queue_workspace_refresh(&mut state, None);
+        queue_workspace_refresh(&mut state, Some(second));
+        assert_eq!(take_queued_workspace_refresh(&mut state, Some(first)), None);
+        assert!(!state.pending_refresh);
+        assert!(state.pending_refresh_repos.is_empty());
+    }
 }
 
 struct RefreshSnapshot {
     repos: Vec<RepoInfo>,
+    hidden_repo_labels: Option<BTreeMap<String, String>>,
+    repository_id_bindings: Option<BTreeMap<String, String>>,
     statuses: Vec<RepoStatus>,
     partial_repo_ids: Option<HashSet<String>>,
     workspace_files: Vec<WorkspaceFile>,
     stashes: Vec<StashEntry>,
+    review: ReviewReads,
     elapsed_ms: u64,
 }
 
@@ -741,14 +1152,23 @@ fn compute_workspace_snapshot(
     include_root: bool,
     only_repos: Option<HashSet<String>>,
     existing_repos: Vec<RepoInfo>,
+    mut bindings: BTreeMap<String, String>,
+    review: OpenReviewDocuments,
 ) -> RefreshSnapshot {
     let start = Instant::now();
-    let repos = if only_repos.is_some() && !existing_repos.is_empty() {
-        existing_repos
+    let (repos, hidden_repo_labels, repository_id_bindings) = if only_repos.is_some() && !existing_repos.is_empty() {
+        (existing_repos, None, None)
     } else {
-        let mut repos = git::discover_workspace_repos(&ws, &hidden);
-        if !include_root { repos.retain(|repo| !repo.is_root); }
-        repos
+        let previous_bindings = bindings.clone();
+        let mut repos = git::discover_workspace_repository_inventory(&ws, &existing_repos, &mut bindings);
+        let hidden: HashSet<_> = hidden.iter().collect();
+        let hidden_labels = repos.iter()
+            .filter(|repo| hidden.contains(&repo.id))
+            .map(|repo| (repo.id.clone(), repo.label().to_owned()))
+            .collect();
+        repos.retain(|repo| !hidden.contains(&repo.id) && (include_root || !repo.is_root));
+        let updated = (bindings != previous_bindings).then_some(bindings);
+        (repos, Some(hidden_labels), updated)
     };
 
     let target_repos: Vec<&RepoInfo> = match &only_repos {
@@ -760,71 +1180,91 @@ fn compute_workspace_snapshot(
     let workspace_files = git::list_workspace_files(&repos);
 
     let stashes = git::list_stashes(&repos);
+    let review = review.read(&statuses);
 
     RefreshSnapshot {
         repos,
+        hidden_repo_labels,
+        repository_id_bindings,
         statuses,
         partial_repo_ids: only_repos,
         workspace_files,
         stashes,
+        review,
         elapsed_ms: start.elapsed().as_millis() as u64,
     }
 }
 
 /// 异步刷新工作区（后台线程跑 git，代次防过期覆盖，绝不覆盖脏缓冲）。
 pub fn refresh_workspace_async(only_repos: Option<HashSet<String>>) {
-    let (ws, hidden, include_root, generation, existing_repos, busy) = app_signal().with_untracked(|s| {
+    if app_signal().with_untracked(|s| s.command_busy) {
+        app_signal().update(|s| {
+            let scope = workspace_refresh_scope(s, only_repos);
+            queue_workspace_refresh(s, scope);
+        });
+        return;
+    }
+    let (ws, hidden, include_root, generation, existing_repos, bindings, only_repos, review) = app_signal().with_untracked(|s| {
+        let only_repos = workspace_refresh_scope(s, only_repos);
+        let review = OpenReviewDocuments::capture(s, only_repos.as_ref());
         (
             s.cfg.workspace_path.clone(),
             s.cfg.hidden_repos.clone(),
             s.cfg.extra_bool("include_root_repo",true),
             s.refresh_gen + 1,
             s.repos.clone(),
-            s.command_busy,
+            s.cfg.workspace_repository_ids(),
+            only_repos,
+            review,
         )
     });
     if ws.trim().is_empty() {
         return;
     }
-    if busy {
-        app_signal().update(|s| {
-            s.pending_refresh = true;
-            if let Some(ids) = only_repos {
-                s.pending_refresh_repos.extend(ids);
-            }
-        });
-        return;
-    }
-
     app_signal().update(|s| {
         s.refresh_gen = generation;
         s.is_refreshing = true;
+        s.refresh_repo_ids = only_repos.clone();
     });
 
     spawn(async move {
         let res = blocking(move || {
-            compute_workspace_snapshot(ws, hidden, include_root, only_repos, existing_repos)
+            compute_workspace_snapshot(ws, hidden, include_root, only_repos, existing_repos, bindings, review)
         })
         .await;
-        if let Ok(snapshot) = res {
+        if let Ok(mut snapshot) = res {
+            snapshot.review.prepare_diff(generation).await;
             apply_workspace_snapshot(generation, snapshot);
         } else {
-            app_signal().update(|s| s.is_refreshing = false);
+            app_signal().update(|s| {
+                if s.refresh_gen == generation {
+                    s.is_refreshing = false;
+                    s.refresh_repo_ids = None;
+                }
+            });
         }
     });
 }
 
 fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
     // 丢弃过期代次刷新结果
-    let stale = app_signal().with_untracked(|s| generation < s.refresh_gen);
+    let stale = app_signal().with_untracked(|s| generation != s.refresh_gen);
     if stale {
         return;
     }
 
     let complete = snap.partial_repo_ids.is_none();
+    let persist_repository_ids = snap.repository_id_bindings.is_some();
     app_signal().update(|s| {
         s.is_refreshing = false;
+        s.refresh_repo_ids = None;
         s.last_refresh_ms = snap.elapsed_ms;
+        if let Some(labels) = snap.hidden_repo_labels {
+            s.hidden_repo_labels = labels;
+        }
+        if let Some(bindings) = snap.repository_id_bindings {
+            s.cfg.repository_id_bindings.insert(s.cfg.workspace_path.clone(), bindings);
+        }
         for repo in &snap.repos {
             if !s.repos.iter().any(|previous| previous.path == repo.path) {
                 s.expanded_project_repos.insert(repo.id.clone());
@@ -882,68 +1322,20 @@ fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
             }
         }
 
-        // 刷新所有已打开的源码标签（干净标签自动更新，脏标签绝不覆盖但标记 external_changed）
         for tab in &mut s.code_tabs {
-            if !tab.revision.is_empty() {
-                continue;
-            }
-            let wt = git::read_review_worktree(Path::new(&tab.file.abs_path));
-            if wt.version.sha256 != tab.version.sha256 || wt.version.exists != tab.version.exists {
-                if tab.is_dirty() {
-                    tab.external_changed = true;
-                } else {
-                    s.code_undo.remove(&tab.id);
-                    tab.text = wt.text.clone();
-                    tab.saved_text = wt.text;
-                    tab.line_ending = wt.line_ending;
-                    tab.version = wt.version;
-                    tab.editable = wt.editable;
-                    tab.readonly_reason = wt.readonly_reason;
-                    tab.binary = wt.binary;
-                    tab.too_large = wt.too_large;
-                    tab.external_changed = false;
-                    tab.content_rev += 1;
-                }
+            if let Some(repo) = s.repos.iter().find(|repo| {
+                repo.id == tab.file.repo_id && repo.path == tab.file.repo_path
+            }) {
+                tab.file.repo_name = repo.label().to_owned();
+                tab.file.color_idx = repo.color_idx;
             }
         }
-
-        // 刷新当前打开的工作区 Diff（干净则自动重载最新差异，脏则绝不覆盖新侧内容）
-        let ws_mode = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
-        if let Some(wd) = &mut s.working_diff {
-            if let Some(latest_cf) = all_change_map.get(&wd.file.key()) {
-                wd.file = latest_cf.clone();
-            }
-            let fresh = git::read_review_change(&wd.file, wd.data.staged_only);
-            let old_changed = fresh.old_text != wd.data.old_text
-                || fresh.head_snapshot != wd.data.head_snapshot
-                || fresh.index_snapshot != wd.data.index_snapshot;
-            let disk_changed = fresh.version.sha256 != wd.data.version.sha256
-                || fresh.version.exists != wd.data.version.exists
-                || fresh.new_text != wd.data.new_text;
-
-            if wd.is_dirty() {
-                if disk_changed {
-                    wd.external_changed = true;
-                }
-                if old_changed {
-                    wd.data.old_text = fresh.old_text;
-                    wd.data.index_snapshot = fresh.index_snapshot;
-                    wd.data.head_snapshot = fresh.head_snapshot;
-                    wd.computed = compute_diff(&wd.data.old_text, &wd.current_new_text, ws_mode);
-                    wd.content_rev += 1;
-                }
-            } else if old_changed || disk_changed {
-                let new_text = fresh.new_text.clone();
-                wd.computed = compute_diff(&fresh.old_text, &new_text, ws_mode);
-                wd.data = fresh;
-                wd.current_new_text = new_text.clone();
-                wd.saved_new_text = new_text;
-                wd.external_changed = false;
-                wd.content_rev += 1;
-            }
-        }
+        snap.review.apply(s);
     });
     retry_file_navigation();
+    if persist_repository_ids {
+        save_config_quiet();
+    }
     if complete {
         crate::session_runtime::restore_after_refresh();
     }
@@ -1303,6 +1695,7 @@ fn move_change_selection_with_hunk(
     let target = items[next].clone();
     app_signal().update(|s| {
         s.change_selection = Some(target.clone());
+        s.change_selected_dir = None;
     });
     if open_diff_directly {
         open_working_diff_with_hunk(target.file, target.staged, true, land_on_last_hunk);
@@ -1317,70 +1710,41 @@ pub fn open_working_diff(file: ChangedFile, staged_only: bool, focus_diff: bool)
     open_working_diff_with_hunk(file, staged_only, focus_diff, false);
 }
 
-fn open_working_diff_with_hunk(
-    file: ChangedFile,
+fn save_before_switching_working_diff(
+    file_key: &str,
     staged_only: bool,
+    resume: impl FnOnce() + 'static,
+) -> bool {
+    let needs_save = app_signal().with_untracked(|s| {
+        s.working_diff.as_ref().is_some_and(|diff| {
+            diff.is_dirty() && (diff.file.key() != file_key || diff.data.staged_only != staged_only)
+        })
+    });
+    if !needs_save {
+        return true;
+    }
+    if let Some(target) = crate::format_runtime::working_target()
+        && crate::format_runtime::save_if_enabled(vec![target], resume)
+    {
+        return false;
+    }
+    save_working_diff_now()
+}
+
+fn install_working_diff(
+    file: ChangedFile,
+    data: ReviewChangeData,
+    draft: Option<String>,
+    computed: ComputedDiff,
     focus_diff: bool,
     land_on_last_hunk: bool,
 ) {
-    crate::code_split_runtime::capture_views();
-    // 若当前已有脏工作区 Diff 且目标不同，先自动保存
-    let need_autosave = app_signal().with_untracked(|s| {
-        s.working_diff.as_ref().is_some_and(|w| {
-            w.is_dirty() && (w.file.key() != file.key() || w.data.staged_only != staged_only)
-        })
-    });
-    if need_autosave {
-        if let Some(target) = crate::format_runtime::working_target() {
-            let next = file.clone();
-            if crate::format_runtime::save_if_enabled(vec![target], move || {
-                open_working_diff_with_hunk(next, staged_only, focus_diff, land_on_last_hunk);
-            }) {
-                return;
-            }
-        }
-        if !save_working_diff_now() {
-            // 发生外部覆盖冲突弹窗或拒绝保存时，阻止切换保护用户编辑
-            return;
-        }
-    }
-
+    capture_editor_views();
     push_nav_back_current();
 
-    let ws_mode =
-        app_signal().with_untracked(|s| WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode));
-    let data = git::read_review_change(&file, staged_only);
+    let staged_only = data.staged_only;
     let saved_new_text = data.new_text.clone();
-    // 双向同步：若同文件已有未保存的同源 CodeTab（或同文件脏 WorkingDiff），保留未保存缓冲避免分裂与丢失
-    let carried_text = if !staged_only && data.editable {
-        app_signal().with_untracked(|s| {
-            s.code_tabs
-                .iter()
-                .find(|t| {
-                    t.revision.is_empty()
-                        && t.file.repo_id == file.repo_id
-                        && t.file.rel_path == file.path
-                        && t.is_dirty()
-                        && t.version.sha256 == data.version.sha256
-                })
-                .map(|t| t.text.clone())
-                .or_else(|| {
-                    s.working_diff
-                        .as_ref()
-                        .filter(|w| {
-                            !w.data.staged_only
-                                && w.file.key() == file.key()
-                                && w.is_dirty()
-                                && w.data.version.sha256 == data.version.sha256
-                        })
-                        .map(|w| w.current_new_text.clone())
-                })
-        })
-    } else {
-        None
-    };
-    let current_new_text = carried_text.unwrap_or_else(|| saved_new_text.clone());
-    let computed = compute_diff(&data.old_text, &current_new_text, ws_mode);
+    let current_new_text = draft.unwrap_or_else(|| saved_new_text.clone());
     let initial_hunk_idx = if land_on_last_hunk {
         computed.hunks.len().saturating_sub(1)
     } else {
@@ -1404,8 +1768,11 @@ fn open_working_diff_with_hunk(
             staged: staged_only,
         });
         let next_rev = s.working_diff.as_ref().map(|w| w.content_rev + 1).unwrap_or(1);
+        let undo_history = s.working_diff_undo_for(&file, &data, &current_new_text);
         s.working_diff = Some(WorkingDiffSession {
             file: file.clone(),
+            disk_state: ReviewDiskState::for_diff(&data),
+            git_baseline_issue: None,
             data,
             current_new_text,
             saved_new_text,
@@ -1413,12 +1780,10 @@ fn open_working_diff_with_hunk(
             active_side: DiffSide::New,
             old_cursor: EditorPosition::new(initial_old_line, 0),
             new_cursor: EditorPosition::new(initial_hunk_line, 0),
-            old_scroll_y: 0.0,
-            new_scroll_y: 0.0,
-            current_hunk: initial_hunk_idx,
+            viewport: None,
             boundary_hint: None,
-            external_changed: false,
             content_rev: next_rev,
+            undo_history,
         });
         s.editor_tab = EditorTabKind::WorkingDiff;
         if focus_diff {
@@ -1431,7 +1796,7 @@ fn open_working_diff_with_hunk(
         staged: staged_only,
         side: DiffSide::New,
         pos: EditorPosition::new(initial_hunk_line, 0),
-        scroll_y: 0,
+        viewport: None,
     });
 
     if focus_diff {
@@ -1450,73 +1815,18 @@ pub fn switch_working_diff_scope(staged_only: bool) {
     }
 }
 
-/// 打开历史提交的单个只读 Diff。
-pub fn open_commit_diff(commit: CommitEntry, file: CommitFileEntry, focus_diff: bool) {
-    open_commit_diff_with_hunk(commit, file, focus_diff, false);
-}
-
-fn open_commit_diff_with_hunk(
-    commit: CommitEntry,
-    file: CommitFileEntry,
-    focus_diff: bool,
-    land_on_last_hunk: bool,
-) {
-    let ws_mode = app_signal().with_untracked(|s| WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode));
-    match git::read_commit_diff(&commit, &file) {
-        Ok(data) => {
-            let computed = compute_diff(&data.old_text, &data.new_text, ws_mode);
-            install_commit_diff(commit, file, data, computed, focus_diff, land_on_last_hunk);
-        }
-        Err(err) => show_toast("err", format!("读取提交差异失败: {err}")),
-    }
-}
-
-#[derive(Clone, Default)]
-struct CommitPreviewRequest(u64);
-
-pub(crate) fn preview_commit_diff(commit: CommitEntry, file: CommitFileEntry) {
-    let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) else { return };
-    let (workspace, origin, whitespace) = app_signal().with_untracked(|s| {
-        (s.cfg.workspace_path.clone(), s.editor_tab, WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode))
-    });
-    let request = global::<CommitPreviewRequest>().with_untracked(|s| s.0.wrapping_add(1));
-    global::<CommitPreviewRequest>().set(CommitPreviewRequest(request));
-    let (source, item) = (commit.clone(), file.clone());
-    owner.run(|| spawn(async move {
-        let result = blocking(move || -> anyhow::Result<_> {
-            let data = git::read_commit_diff(&source, &item)?;
-            let computed = compute_diff(&data.old_text, &data.new_text, whitespace);
-            Ok((data, computed))
-        }).await;
-        if !global::<CommitPreviewRequest>().with_untracked(|s| s.0 == request)
-            || !app_signal().with_untracked(|s| {
-                s.editor_tab == origin && s.cfg.workspace_path == workspace && s.show_git_panel
-                    && s.cfg.git_log_diff_preview && s.selected_commit_file.as_ref() == Some(&file)
-                    && s.selected_commit.as_ref().is_some_and(|selected|
-                        selected.hash == commit.hash && selected.repo_id == commit.repo_id)
-            })
-        {
-            return;
-        }
-        match result {
-            Ok(Ok((data, computed))) => install_commit_diff(commit, file, data, computed, false, false),
-            Ok(Err(err)) => show_toast("warn", format!("读取差异预览失败：{err}")),
-            Err(err) => show_toast("warn", format!("读取差异预览失败：{err}")),
-        }
-    }));
-}
-
 fn install_commit_diff(
     commit: CommitEntry,
     file: CommitFileEntry,
     data: CommitDiffData,
     computed: ComputedDiff,
-    focus_diff: bool,
-    land_on_last_hunk: bool,
+    options: CommitDiffOpenOptions,
 ) {
-    crate::code_split_runtime::capture_views();
-    push_nav_back_current();
-    let initial_hunk_idx = if land_on_last_hunk {
+    if options.record_navigation {
+        capture_editor_views();
+        push_nav_back_current();
+    }
+    let initial_hunk_idx = if options.land_on_last_hunk {
         computed.hunks.len().saturating_sub(1)
     } else {
         0
@@ -1539,25 +1849,25 @@ fn install_commit_diff(
     };
 
     app_signal().update(|s| {
-        s.selected_commit = Some(commit.clone());
-        s.selected_commit_file = Some(file.clone());
+        if options.select_log_file && crate::ui::git_pane::file_is_visible(s, &commit, &file) {
+            s.selected_commit_file = Some(file.clone());
+        }
         let next_rev = s.commit_diff.as_ref().map(|c| c.content_rev + 1).unwrap_or(1);
         s.commit_diff = Some(CommitDiffSession {
             commit: commit.clone(),
             file: file.clone(),
             data,
             computed,
+            scope: options.scope,
             active_side: default_side,
             old_cursor: EditorPosition::new(initial_old_line, 0),
             new_cursor: EditorPosition::new(initial_line, 0),
-            old_scroll_y: 0.0,
-            new_scroll_y: 0.0,
-            current_hunk: initial_hunk_idx,
+            viewport: None,
             boundary_hint: None,
             content_rev: next_rev,
         });
         s.editor_tab = EditorTabKind::CommitDiff;
-        if focus_diff {
+        if options.focus_diff {
             s.focus_zone = match default_side {
                 DiffSide::Old => FocusZone::CommitDiffOld,
                 DiffSide::New => FocusZone::CommitDiffNew,
@@ -1565,234 +1875,47 @@ fn install_commit_diff(
         }
     });
 
-    record_recent_location(NavTarget::CommitDiff {
-        repo_id: commit.repo_id.clone(),
-        commit_hash: commit.hash.clone(),
-        file_path: file.path.clone(),
-        side: default_side,
-        pos: EditorPosition::new(initial_line, 0),
-        scroll_y: 0,
-    });
+    if options.record_navigation {
+        record_recent_location(NavTarget::CommitDiff {
+            repo_id: commit.repo_id.clone(),
+            commit_hash: commit.hash.clone(),
+            file_path: file.path.clone(),
+            scope: options.scope,
+            side: default_side,
+            pos: EditorPosition::new(initial_line, 0),
+            viewport: None,
+        });
+    }
 
-    if focus_diff {
+    if options.focus_diff {
         focus_active_editor_ref();
     }
-    if has_hunks {
+    if has_hunks && options.record_navigation {
         reveal_opened_diff_hunk(EditorTabKind::CommitDiff, initial_hunk_idx);
     }
-}
-
-/// 在历史提交 Diff 中切换上/下一个文件。
-pub fn move_commit_diff_file(delta: i32) -> bool {
-    move_commit_diff_file_with_hunk(delta, false)
-}
-
-fn move_commit_diff_file_with_hunk(delta: i32, land_on_last_hunk: bool) -> bool {
-    let (commit, files, cur_path) = app_signal().with_untracked(|s| {
-        let cur_path = s
-            .commit_diff
-            .as_ref()
-            .map(|c| c.file.path.clone())
-            .or_else(|| s.selected_commit_file.as_ref().map(|f| f.path.clone()));
-        (
-            s.selected_commit.clone(),
-            s.selected_commit_files.clone(),
-            cur_path,
-        )
-    });
-    let (Some(commit), Some(cur_path)) = (commit, cur_path) else {
-        return false;
-    };
-    if files.is_empty() {
-        return false;
-    }
-    let Some(idx) = files.iter().position(|f| f.path == cur_path) else {
-        return false;
-    };
-    let next = idx as i32 + delta;
-    if next < 0 || next >= files.len() as i32 {
-        return false;
-    }
-    open_commit_diff_with_hunk(commit, files[next as usize].clone(), true, land_on_last_hunk);
-    true
 }
 
 // ============================================================================
 // 源码标签打开、跳转源码、往返与关闭保护
 // ============================================================================
 
-pub fn open_code_file(file: WorkspaceFile, target_pos: Option<EditorPosition>, focus_editor: bool) {
-    open_code_file_mode(file, target_pos, focus_editor, false)
-}
-
-/// 以预览方式打开：未钉住的预览标签为斜体，可被下一次预览复用替换；
-/// 已钉住（或脏）的标签一律保留，不会丢缓冲。
-pub fn open_code_file_preview(file: WorkspaceFile) {
-    open_code_file_mode(file, None, true, true)
-}
-
-fn open_code_file_mode(
-    file: WorkspaceFile,
-    target_pos: Option<EditorPosition>,
-    focus_editor: bool,
-    preview: bool,
-) {
-    crate::code_split_runtime::capture_views();
-    push_nav_back_current();
-    let tab_id = format!("file::{}::{}", file.repo_id, file.rel_path);
-
-    let existing_idx = app_signal().with_untracked(|s| {
-        s.code_tabs
-            .iter()
-            .position(|t| t.id == tab_id && t.revision.is_empty())
-    });
-
-    if let Some(idx) = existing_idx {
-        app_signal().update(|s| {
-            crate::code_split_runtime::select_tab_in_model(s, idx);
-            sync_dirty_working_diff_into_code_tab(s, idx);
-            s.editor_tab = EditorTabKind::File;
-            if !preview {
-                s.code_tabs[idx].preview = false;
-            }
-            if let Some(pos) = target_pos {
-                crate::code_split_runtime::set_active_position(s, pos);
-            }
-            if focus_editor {
-                s.focus_zone = FocusZone::CodeEditor;
-            }
-        });
-    } else {
-        let wt = git::read_review_worktree(Path::new(&file.abs_path));
-        let cursor = target_pos.unwrap_or_else(|| EditorPosition::new(0, 0));
-        let tab = CodeTab {
-            id: tab_id,
-            file: file.clone(),
-            revision: String::new(),
-            text: wt.text.clone(),
-            saved_text: wt.text,
-            line_ending: wt.line_ending,
-            version: wt.version,
-            editable: wt.editable,
-            readonly_reason: wt.readonly_reason,
-            binary: wt.binary,
-            too_large: wt.too_large,
-            cursor,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
-            preview,
-            external_changed: false,
-            content_rev: 1,
-        };
-        app_signal().update(|s| {
-            if preview {
-                s.code_tabs.retain_mut(|tab| {
-                    if tab.is_dirty() {
-                        tab.preview = false;
-                    }
-                    !tab.preview
-                });
-            }
-            s.code_tabs.push(tab);
-            let idx = s.code_tabs.len() - 1;
-            crate::code_split_runtime::select_tab_in_model(s, idx);
-            if preview {
-                crate::code_split_runtime::prune_closed_tabs(s);
-            }
-            sync_dirty_working_diff_into_code_tab(s, idx);
-            s.editor_tab = EditorTabKind::File;
-            if focus_editor {
-                s.focus_zone = FocusZone::CodeEditor;
-            }
-        });
-    }
-
-    let pos = target_pos.unwrap_or_else(|| EditorPosition::new(0, 0));
-    record_recent_location(NavTarget::CodeFile {
-        repo_id: file.repo_id.clone(),
-        rel_path: file.rel_path.clone(),
-        pos,
-        scroll_y: 0,
-    });
-
-    if let Some(p) = target_pos {
-        reveal_in_code_editor(p);
-    }
-    if focus_editor {
-        focus_active_editor_ref();
-    }
-}
-
-/// 打开指定 Git 提交版本的只读源码标签（用于右键「打开仓库版本」）。
-pub fn open_revision_code_file(commit: &CommitEntry, rel_path: &str) {
-    crate::code_split_runtime::capture_views();
-    let spec = format!("{}:{rel_path}", commit.hash);
-    let (text, binary, too_large) =
-        git::read_git_object_text(Path::new(&commit.repo_path), &spec).unwrap_or_default();
-    let abs = Path::new(&commit.repo_path)
-        .join(rel_path)
-        .to_string_lossy()
-        .to_string();
-    let tab_id = format!("rev::{}::{}::{}", commit.repo_id, commit.hash, rel_path);
-
-    app_signal().update(|s| {
-        if let Some(idx) = s.code_tabs.iter().position(|t| t.id == tab_id) {
-            crate::code_split_runtime::select_tab_in_model(s, idx);
-            s.editor_tab = EditorTabKind::File;
-            s.focus_zone = FocusZone::CodeEditor;
-            return;
-        }
-        s.code_tabs.push(CodeTab {
-            id: tab_id,
-            file: WorkspaceFile {
-                repo_id: commit.repo_id.clone(),
-                repo_name: commit.repo_name.clone(),
-                repo_path: commit.repo_path.clone(),
-                rel_path: rel_path.to_string(),
-                abs_path: abs,
-                color_idx: 0,
-            },
-            revision: commit.hash.clone(),
-            text: text.clone(),
-            saved_text: text,
-            line_ending: LineEnding::Lf,
-            version: ReviewVersion::default(),
-            editable: false,
-            readonly_reason: Some(format!("仓库版本 {} 为只读视图", commit.short_hash)),
-            binary,
-            too_large,
-            cursor: EditorPosition::new(0, 0),
-            scroll_y: 0.0,
-            scroll_x: 0.0,
-            preview: false,
-            external_changed: false,
-            content_rev: 1,
-        });
-        crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
-        s.editor_tab = EditorTabKind::File;
-        s.focus_zone = FocusZone::CodeEditor;
-    });
-    focus_active_editor_ref();
-}
-
 /// 从当前 Diff（工作区或历史提交）按 `F4` / `Cmd+Down` 跳转到源码页并定位对应行。
 /// 若工作区 Diff 存在未保存轻改，将脏缓冲内容无缝同步到目标源码标签，避免编辑丢失或双缓冲分裂。
 pub fn jump_from_diff_to_source() {
-    struct DirtyCarry {
-        current_text: String,
-        saved_text: String,
-        version: ReviewVersion,
-        line_ending: LineEnding,
-    }
+    jump_to_diff_source(None);
+}
 
+pub(crate) fn jump_from_diff_line(tab: EditorTabKind, side: DiffSide, position: EditorPosition) {
+    jump_to_diff_source(Some((tab, side, position)));
+}
+
+fn jump_to_diff_source(clicked: Option<(EditorTabKind, DiffSide, EditorPosition)>) {
+    let position = |side, cursor| clicked.map_or((side, cursor), |(_, side, cursor)| (side, cursor));
     let target = app_signal().with_untracked(|s| match s.editor_tab {
+        tab if clicked.is_some_and(|(expected, _, _)| expected != tab) => None,
         EditorTabKind::WorkingDiff => s.working_diff.as_ref().map(|w| {
-            let mapped = source_position(
-                &w.current_new_text,
-                &w.computed.hunks,
-                w.active_side,
-                w.active_cursor(),
-            );
+            let (side, caret) = position(w.active_side, w.active_cursor());
+            let mapped = source_position(&w.current_new_text, &w.computed.hunks, side, caret);
             let wf = WorkspaceFile {
                 repo_id: w.file.repo_id.clone(),
                 repo_name: w.file.repo_name.clone(),
@@ -1806,26 +1929,11 @@ pub fn jump_from_diff_to_source() {
                     .map(|r| r.color_idx)
                     .unwrap_or(0),
             };
-            let carry = if w.is_dirty() {
-                Some(DirtyCarry {
-                    current_text: w.current_new_text.clone(),
-                    saved_text: w.saved_new_text.clone(),
-                    version: w.data.version.clone(),
-                    line_ending: w.data.line_ending,
-                })
-            } else {
-                None
-            };
-            let missing = !Path::new(&wf.abs_path).exists();
-            (wf, mapped, missing, carry)
+            (wf, mapped, true)
         }),
         EditorTabKind::CommitDiff => s.commit_diff.as_ref().map(|c| {
-            let mapped = source_position(
-                &c.data.new_text,
-                &c.computed.hunks,
-                c.active_side,
-                c.active_cursor(),
-            );
+            let (side, caret) = position(c.active_side, c.active_cursor());
+            let mapped = source_position(&c.data.new_text, &c.computed.hunks, side, caret);
             let abs = Path::new(&c.commit.repo_path)
                 .join(&c.data.new_path)
                 .to_string_lossy()
@@ -1835,7 +1943,7 @@ pub fn jump_from_diff_to_source() {
                 repo_name: c.commit.repo_name.clone(),
                 repo_path: c.commit.repo_path.clone(),
                 rel_path: c.data.new_path.clone(),
-                abs_path: abs.clone(),
+                abs_path: abs,
                 color_idx: s
                     .repos
                     .iter()
@@ -1843,69 +1951,31 @@ pub fn jump_from_diff_to_source() {
                     .map(|r| r.color_idx)
                     .unwrap_or(0),
             };
-            (wf, mapped, !Path::new(&abs).exists(), None)
+            (wf, mapped, false)
         }),
         _ => None,
     });
 
-    let Some((wf, pos, missing, carry)) = target else {
-        return;
-    };
-    if missing {
-        show_toast("warn", "工作区中该文件已删除，无法打开源码");
-        return;
-    }
-    open_code_file(wf.clone(), Some(pos), true);
-    if let Some(dirty) = carry {
-        let tab_id = format!("file::{}::{}", wf.repo_id, wf.rel_path);
-        app_signal().update(|s| {
-            if let Some(t) = s
-                .code_tabs
-                .iter_mut()
-                .find(|t| t.id == tab_id && t.revision.is_empty())
-            {
-                if t.text != dirty.current_text {
-                    s.code_undo.remove(&t.id);
-                }
-                t.text = dirty.current_text;
-                t.saved_text = dirty.saved_text;
-                t.version = dirty.version;
-                t.line_ending = dirty.line_ending;
-                t.content_rev += 1;
-            }
-        });
-        reveal_in_code_editor(pos);
+    if let Some((file, pos, from_working_diff)) = target {
+        if from_working_diff {
+            source_open::open_from_working_diff(file, pos);
+        } else {
+            open_code_file(file, Some(pos), true);
+        }
     }
 }
 
 pub fn navigate_back() {
-    let target = app_signal().with_untracked(|s| s.nav_back.last().cloned());
-    let Some(nav) = target else {
-        return;
-    };
-    let cur = current_nav_target();
-    app_signal().update(|s| {
-        s.nav_back.pop();
-        if let Some(c) = cur {
-            s.nav_forward.push(c);
-        }
-    });
-    restore_nav_target(nav);
+    navigate_history(false);
 }
 
 pub fn navigate_forward() {
-    let target = app_signal().with_untracked(|s| s.nav_forward.last().cloned());
-    let Some(nav) = target else {
-        return;
-    };
-    let cur = current_nav_target();
-    app_signal().update(|s| {
-        s.nav_forward.pop();
-        if let Some(c) = cur {
-            s.nav_back.push(c);
-        }
-    });
-    restore_nav_target(nav);
+    navigate_history(true);
+}
+
+pub(crate) fn capture_editor_views() {
+    crate::code_split_runtime::capture_views();
+    diff_viewport::capture_diff_view();
 }
 
 fn current_nav_target() -> Option<NavTarget> {
@@ -1914,6 +1984,7 @@ fn current_nav_target() -> Option<NavTarget> {
             NavTarget::CodeFile {
                 repo_id: t.file.repo_id.clone(),
                 rel_path: t.file.rel_path.clone(),
+                revision: t.revision.clone(),
                 pos: t.cursor,
                 scroll_y: t.scroll_y.round() as i32,
             }
@@ -1923,21 +1994,16 @@ fn current_nav_target() -> Option<NavTarget> {
             staged: w.data.staged_only,
             side: w.active_side,
             pos: w.active_cursor(),
-            scroll_y: match w.active_side {
-                DiffSide::Old => w.old_scroll_y.round() as i32,
-                DiffSide::New => w.new_scroll_y.round() as i32,
-            },
+            viewport: w.viewport,
         }),
         EditorTabKind::CommitDiff => s.commit_diff.as_ref().map(|c| NavTarget::CommitDiff {
             repo_id: c.commit.repo_id.clone(),
             commit_hash: c.commit.hash.clone(),
             file_path: c.file.path.clone(),
+            scope: c.scope,
             side: c.active_side,
             pos: c.active_cursor(),
-            scroll_y: match c.active_side {
-                DiffSide::Old => c.old_scroll_y.round() as i32,
-                DiffSide::New => c.new_scroll_y.round() as i32,
-            },
+            viewport: c.viewport,
         }),
         EditorTabKind::Welcome | EditorTabKind::Comparison => None,
     })
@@ -1945,15 +2011,25 @@ fn current_nav_target() -> Option<NavTarget> {
 
 fn push_nav_back_current() {
     if let Some(cur) = current_nav_target() {
-        app_signal().update(|s| {
-            if s.nav_back.last() != Some(&cur) {
-                s.nav_back.push(cur);
-                if s.nav_back.len() > 64 {
-                    s.nav_back.remove(0);
-                }
-            }
-            s.nav_forward.clear();
-        });
+        app_signal().update(|s| push_nav_back(s, cur));
+    }
+}
+
+fn push_nav_back(s: &mut AppState, target: NavTarget) {
+    if s.nav_back.last() != Some(&target) {
+        s.nav_back.push(target);
+        if s.nav_back.len() > 64 {
+            s.nav_back.remove(0);
+        }
+    }
+    s.nav_forward.clear();
+}
+
+pub(crate) fn code_tab_id(repo_id: &str, rel_path: &str, revision: &str) -> String {
+    if revision.is_empty() {
+        format!("file::{repo_id}::{rel_path}")
+    } else {
+        format!("rev::{repo_id}::{revision}::{rel_path}")
     }
 }
 
@@ -1965,205 +2041,6 @@ fn record_recent_location(loc: NavTarget) {
             s.recent_locations.truncate(32);
         }
     });
-}
-
-pub fn restore_nav_target(nav: NavTarget) {
-    crate::code_split_runtime::capture_views();
-    match nav {
-        NavTarget::CodeFile {
-            repo_id,
-            rel_path,
-            pos,
-            ..
-        } => {
-            let wf = app_signal().with_untracked(|s| {
-                s.workspace_files
-                    .iter()
-                    .find(|f| f.repo_id == repo_id && f.rel_path == rel_path)
-                    .cloned()
-                    .or_else(|| {
-                        s.repos.iter().find(|r| r.id == repo_id).map(|r| WorkspaceFile {
-                            repo_id: r.id.clone(),
-                            repo_name: r.name.clone(),
-                            repo_path: r.path.clone(),
-                            rel_path: rel_path.clone(),
-                            abs_path: Path::new(&r.path)
-                                .join(&rel_path)
-                                .to_string_lossy()
-                                .to_string(),
-                            color_idx: r.color_idx,
-                        })
-                    })
-            });
-            if let Some(f) = wf {
-                // 不重复 push nav_back
-                let tab_id = format!("file::{}::{}", f.repo_id, f.rel_path);
-                let existing = app_signal()
-                    .with_untracked(|s| s.code_tabs.iter().position(|t| t.id == tab_id));
-                if let Some(idx) = existing {
-                    app_signal().update(|s| {
-                        crate::code_split_runtime::select_tab_in_model(s, idx);
-                        crate::code_split_runtime::set_active_position(s, pos);
-                        s.editor_tab = EditorTabKind::File;
-                        s.focus_zone = FocusZone::CodeEditor;
-                    });
-                } else {
-                    let wt = git::read_review_worktree(Path::new(&f.abs_path));
-                    app_signal().update(|s| {
-                        s.code_tabs.push(CodeTab {
-                            id: tab_id,
-                            file: f,
-                            revision: String::new(),
-                            text: wt.text.clone(),
-                            saved_text: wt.text,
-                            line_ending: wt.line_ending,
-                            version: wt.version,
-                            editable: wt.editable,
-                            readonly_reason: wt.readonly_reason,
-                            binary: wt.binary,
-                            too_large: wt.too_large,
-                            cursor: pos,
-                            scroll_y: 0.0,
-                            scroll_x: 0.0,
-                            preview: false,
-                            external_changed: false,
-                            content_rev: 1,
-                        });
-                        crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
-                        s.editor_tab = EditorTabKind::File;
-                        s.focus_zone = FocusZone::CodeEditor;
-                    });
-                }
-                reveal_in_code_editor(pos);
-                focus_active_editor_ref();
-            }
-        }
-        NavTarget::WorkingDiff {
-            file_key,
-            staged,
-            side,
-            pos,
-            scroll_y,
-        } => {
-            let need_reopen = app_signal().with_untracked(|s| {
-                s.working_diff
-                    .as_ref()
-                    .map(|w| w.file.key() != file_key || w.data.staged_only != staged)
-                    .unwrap_or(true)
-            });
-            if need_reopen {
-                let cf = app_signal().with_untracked(|s| {
-                    s.statuses
-                        .iter()
-                        .flat_map(|st| st.files.iter())
-                        .find(|f| f.key() == file_key)
-                        .cloned()
-                });
-                if let Some(cf) = cf {
-                    let ws_mode = app_signal()
-                        .with_untracked(|s| WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode));
-                    let data = git::read_review_change(&cf, staged);
-                    let computed = compute_diff(&data.old_text, &data.new_text, ws_mode);
-                    let new_text = data.new_text.clone();
-                    app_signal().update(|s| {
-                        let rev = s.working_diff.as_ref().map(|w| w.content_rev + 1).unwrap_or(1);
-                        s.working_diff = Some(WorkingDiffSession {
-                            file: cf,
-                            data,
-                            current_new_text: new_text.clone(),
-                            saved_new_text: new_text,
-                            computed,
-                            active_side: side,
-                            old_cursor: if side == DiffSide::Old {
-                                pos
-                            } else {
-                                EditorPosition::new(0, 0)
-                            },
-                            new_cursor: if side == DiffSide::New {
-                                pos
-                            } else {
-                                EditorPosition::new(0, 0)
-                            },
-                            old_scroll_y: if side == DiffSide::Old {
-                                scroll_y as f32
-                            } else {
-                                0.0
-                            },
-                            new_scroll_y: if side == DiffSide::New {
-                                scroll_y as f32
-                            } else {
-                                0.0
-                            },
-                            current_hunk: 0,
-                            boundary_hint: None,
-                            external_changed: false,
-                            content_rev: rev,
-                        });
-                    });
-                }
-            }
-            app_signal().update(|s| {
-                sync_dirty_code_tab_into_working_diff(s);
-                if let Some(w) = &mut s.working_diff {
-                    w.active_side = side;
-                    match side {
-                        DiffSide::Old => {
-                            w.old_cursor = pos;
-                            w.old_scroll_y = scroll_y as f32;
-                        }
-                        DiffSide::New => {
-                            w.new_cursor = pos;
-                            w.new_scroll_y = scroll_y as f32;
-                        }
-                    }
-                }
-                s.editor_tab = EditorTabKind::WorkingDiff;
-                s.focus_zone = match side {
-                    DiffSide::Old => FocusZone::WorkingDiffOld,
-                    DiffSide::New => FocusZone::WorkingDiffNew,
-                };
-            });
-            set_text_input_focused(false);
-            reveal_in_active_diff(side, pos, Some(scroll_y as f32));
-            focus_active_editor_ref();
-        }
-        NavTarget::CommitDiff {
-            repo_id,
-            commit_hash,
-            file_path,
-            side,
-            pos,
-            scroll_y,
-        } => {
-            app_signal().update(|s| {
-                if let Some(c) = &mut s.commit_diff {
-                    if c.commit.repo_id == repo_id
-                        && c.commit.hash == commit_hash
-                        && c.file.path == file_path
-                    {
-                        c.active_side = side;
-                        match side {
-                            DiffSide::Old => {
-                                c.old_cursor = pos;
-                                c.old_scroll_y = scroll_y as f32;
-                            }
-                            DiffSide::New => {
-                                c.new_cursor = pos;
-                                c.new_scroll_y = scroll_y as f32;
-                            }
-                        }
-                        s.editor_tab = EditorTabKind::CommitDiff;
-                        s.focus_zone = match side {
-                            DiffSide::Old => FocusZone::CommitDiffOld,
-                            DiffSide::New => FocusZone::CommitDiffNew,
-                        };
-                    }
-                }
-            });
-            reveal_in_active_diff(side, pos, Some(scroll_y as f32));
-            focus_active_editor_ref();
-        }
-    }
 }
 
 // ============================================================================
@@ -2188,6 +2065,45 @@ pub fn save_working_diff_with_format() -> bool {
     save_working_diff_now()
 }
 
+pub(crate) fn edit_working_diff_text(file_key: &str, text: &str) {
+    let Some((history, before, caret, right_visible)) = app_signal().with_untracked(|s| {
+        let diff = s.working_diff.as_ref().filter(|diff| {
+            diff.file.key() == file_key && diff.editor_editable() && diff.current_new_text != text
+        })?;
+        Some((
+            diff.undo_history.clone(),
+            diff.current_new_text.clone(),
+            diff.new_cursor,
+            s.editor_tab == EditorTabKind::WorkingDiff,
+        ))
+    }) else {
+        return;
+    };
+
+    let editor = right_visible
+        .then(|| active_editor_api(FocusZone::WorkingDiffNew))
+        .flatten()
+        .filter(|api| api.source_value() == before);
+    if let Some(editor) = editor {
+        editor.set_source_value(text.to_owned());
+    } else {
+        history.record_replacement(&before, text, caret);
+    }
+
+    let mut refresh = None;
+    app_signal().update(|s| {
+        refresh = s.apply_working_diff_edit(&history, text.to_owned());
+        if let Some(diff) = &mut s.working_diff
+            && diff.undo_history == history
+        {
+            diff.content_rev += 1;
+        }
+    });
+    if let Some(repo) = refresh {
+        refresh_workspace_async(Some(HashSet::from([repo])));
+    }
+}
+
 pub fn save_working_diff_now() -> bool {
     let req = app_signal().with_untracked(|s| {
         s.working_diff.as_ref().map(|w| {
@@ -2200,7 +2116,7 @@ pub fn save_working_diff_now() -> bool {
                 w.data.version.clone(),
                 w.data.line_ending,
                 w.current_new_text.clone(),
-                w.data.editable && !w.data.staged_only,
+                w.editor_editable(),
             )
         })
     });
@@ -2231,7 +2147,7 @@ pub fn save_working_diff_now() -> bool {
                         w.data.version = version.clone();
                         w.data.new_text = text.clone();
                         w.saved_new_text = text.clone();
-                        w.external_changed = false;
+                        w.disk_state = ReviewDiskState::Current;
                     }
                 }
                 // 同步打开中的同文件非修订版源码标签（干净、内容一致或基于同一保存前基线版本）
@@ -2249,7 +2165,7 @@ pub fn save_working_diff_now() -> bool {
                         t.text = text.clone();
                         t.saved_text = text.clone();
                         t.version = version.clone();
-                        t.external_changed = false;
+                        t.disk_state = ReviewDiskState::Current;
                         t.content_rev += 1;
                     }
                 }
@@ -2315,7 +2231,7 @@ pub fn save_code_tab_by_id(tab_id: &str) -> bool {
                 t.version.clone(),
                 t.line_ending,
                 t.text.clone(),
-                t.editable && t.revision.is_empty(),
+                t.editor_editable() && t.revision.is_empty(),
             )
         })
     });
@@ -2344,7 +2260,7 @@ pub fn save_code_tab_by_id(tab_id: &str) -> bool {
                 if let Some(t) = s.code_tabs.iter_mut().find(|t| t.id == id) {
                     t.version = version.clone();
                     t.saved_text = text.clone();
-                    t.external_changed = false;
+                    t.disk_state = ReviewDiskState::Current;
                 }
                 if let Some(w) = &mut s.working_diff {
                     if w.file.repo_id == repo_id
@@ -2356,10 +2272,10 @@ pub fn save_code_tab_by_id(tab_id: &str) -> bool {
                         let ws_mode = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
                         w.data.version = version;
                         w.data.new_text = text.clone();
-                        w.current_new_text = text.clone();
+                        w.replace_external_text(text.clone());
                         w.saved_new_text = text;
-                        w.computed = compute_diff(&w.data.old_text, &w.current_new_text, ws_mode);
-                        w.external_changed = false;
+                        w.recompute_diff(ws_mode);
+                        w.disk_state = ReviewDiskState::Current;
                         w.content_rev += 1;
                     }
                 }
@@ -2402,16 +2318,28 @@ pub fn accept_disk_version_in_conflict() {
     let Some(modal) = app_signal().with_untracked(|s| s.save_conflict.clone()) else {
         return;
     };
-    let latest = git::read_review_worktree(Path::new(&modal.abs_path));
-    let latest_deleted = !latest.version.exists;
+    let latest = match git::read_worktree_source(Path::new(&modal.abs_path)) {
+        Ok(latest) => latest,
+        Err(err) => {
+            app_signal().update(|s| {
+                if let Some(conflict) = &mut s.save_conflict {
+                    conflict.warning_message = Some(format!("无法核对磁盘版本：{err:#}"));
+                }
+            });
+            return;
+        }
+    };
+    let latest_deleted = latest.is_none();
     let changed_again = latest_deleted != modal.disk_deleted
-        || (!latest_deleted && latest.version.sha256 != modal.disk_version.sha256);
+        || latest.as_ref().is_some_and(|disk| disk.version.sha256 != modal.disk_version.sha256);
 
     if changed_again {
         app_signal().update(|s| {
             if let Some(m) = &mut s.save_conflict {
-                m.disk_text = latest.text;
-                m.disk_version = latest.version;
+                (m.disk_text, m.disk_version) = latest.map_or_else(
+                    || (String::new(), ReviewVersion::default()),
+                    |disk| (disk.text, disk.version),
+                );
                 m.disk_deleted = latest_deleted;
                 m.warning_message = Some("磁盘内容再次变化，请核对最新版本".to_string());
             }
@@ -2428,76 +2356,60 @@ pub fn accept_disk_version_in_conflict() {
         modal.edited_text.as_bytes(),
     );
 
-    if modal.disk_deleted {
-        // 磁盘已删：放弃编辑并关闭对应文件或清空工作区 Diff
-        app_signal().update(|s| {
-            s.save_conflict = None;
-            match &modal.target {
-                ConflictTarget::CodeTab { tab_id } => {
-                    s.code_tabs.retain(|t| &t.id != tab_id);
-                    crate::code_split_runtime::prune_closed_tabs(s);
-                    if s.active_code_tab_idx >= s.code_tabs.len() && !s.code_tabs.is_empty() {
-                        crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
-                    }
-                    if s.code_tabs.is_empty() && s.editor_tab == EditorTabKind::File {
-                        s.editor_tab = if s.working_diff.is_some() {
-                            EditorTabKind::WorkingDiff
-                        } else {
-                            EditorTabKind::Welcome
-                        };
-                    }
-                }
-                ConflictTarget::WorkingDiff { .. } => {
-                    s.working_diff = None;
-                    if s.editor_tab == EditorTabKind::WorkingDiff {
-                        s.editor_tab = if !s.code_tabs.is_empty() {
-                            EditorTabKind::File
-                        } else {
-                            EditorTabKind::Welcome
-                        };
-                    }
-                }
-            }
-        });
+    let Some(latest) = latest else {
+        app_signal().update(|s| s.save_conflict = None);
+        match &modal.target {
+            ConflictTarget::CodeTab { tab_id } => force_close_code_tabs(|tab| &tab.id == tab_id),
+            ConflictTarget::WorkingDiff { .. } => close_working_diff_now(),
+        }
+        app_signal().update(|s| s.focus_zone = editor_focus_zone(s));
+        focus_active_editor_ref();
         show_toast("info", "已放弃编辑并关闭已删除文件");
         return;
-    }
+    };
 
+    let mut refresh_diff = false;
     app_signal().update(|s| {
         s.save_conflict = None;
-        match &modal.target {
-            ConflictTarget::CodeTab { tab_id } => {
-                if let Some(t) = s.code_tabs.iter_mut().find(|t| &t.id == tab_id) {
-                    s.code_undo.remove(&t.id);
-                    t.text = latest.text.clone();
-                    t.saved_text = latest.text;
-                    t.line_ending = latest.line_ending;
-                    t.version = latest.version;
-                    t.editable = latest.editable;
-                    t.readonly_reason = latest.readonly_reason;
-                    t.external_changed = false;
-                    t.content_rev += 1;
-                }
-                s.focus_zone = FocusZone::CodeEditor;
+        let (source_id, diff_key, history) = match &modal.target {
+            ConflictTarget::CodeTab { tab_id } => (Some(tab_id), None, s.code_undo.get(tab_id).cloned()),
+            ConflictTarget::WorkingDiff { file_key } => {
+                let history = s.working_diff.as_ref().filter(|diff| diff.file.key() == *file_key)
+                    .map(|diff| diff.undo_history.clone());
+                (None, Some(file_key), history)
             }
-            ConflictTarget::WorkingDiff { .. } => {
-                let ws_mode = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
-                if let Some(w) = &mut s.working_diff {
-                    w.data.new_text = latest.text.clone();
-                    w.current_new_text = latest.text.clone();
-                    w.saved_new_text = latest.text;
-                    w.data.line_ending = latest.line_ending;
-                    w.data.version = latest.version;
-                    w.data.editable = latest.editable;
-                    w.computed = compute_diff(&w.data.old_text, &w.current_new_text, ws_mode);
-                    w.external_changed = false;
-                    w.content_rev += 1;
-                }
-                s.focus_zone = FocusZone::WorkingDiffNew;
+        };
+        for tab in &mut s.code_tabs {
+            let shared = history.as_ref().is_some_and(|history| s.code_undo.get(&tab.id) == Some(history));
+            if source_id == Some(&tab.id) || shared {
+                refresh::adopt_source_version(tab, latest.clone());
+                s.code_undo.remove(&tab.id);
             }
         }
+        if let Some(diff) = s.working_diff.as_mut().filter(|diff| {
+            diff_key.is_some_and(|file_key| diff.file.key() == *file_key)
+                || history.as_ref() == Some(&diff.undo_history)
+        }) {
+            diff.undo_history = DocumentUndo::default();
+            diff.current_new_text.clone_from(&latest.text);
+            diff.saved_new_text.clone_from(&latest.text);
+            diff.data.new_text = latest.text;
+            diff.data.line_ending = latest.line_ending;
+            diff.data.version = latest.version;
+            diff.data.editable = latest.editable && diff.data.old_text_block.is_none();
+            diff.data.readonly_reason = latest.readonly_reason;
+            diff.data.new_text_block = git::ReviewTextBlock::from_flags(latest.binary, latest.too_large);
+            diff.disk_state = ReviewDiskState::for_diff(&diff.data);
+            diff.content_rev += 1;
+            let _ = diff.update_draft_comparison(WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode), true);
+            refresh_diff = true;
+        }
+        s.focus_zone = if source_id.is_some() { FocusZone::CodeEditor } else { FocusZone::WorkingDiffNew };
     });
     show_toast("ok", "已加载磁盘最新版本");
+    if refresh_diff {
+        refresh_workspace_async(Some(HashSet::from([modal.repo_id])));
+    }
 }
 
 // ============================================================================
@@ -2505,6 +2417,7 @@ pub fn accept_disk_version_in_conflict() {
 // ============================================================================
 
 pub fn close_active_tab() {
+    cancel_diff_read();
     let tab = app_signal().with_untracked(|s| s.editor_tab);
     match tab {
         EditorTabKind::WorkingDiff => request_close_working_diff(),
@@ -2547,8 +2460,21 @@ pub fn request_close_working_diff() {
 }
 
 pub fn close_working_diff_now() {
+    let mut refresh_repo = None;
     app_signal().update(|s| {
-        s.working_diff = None;
+        if let Some(diff) = s.working_diff.take().filter(WorkingDiffSession::is_dirty) {
+            for tab in s.code_tabs.iter_mut().filter(|tab| {
+                same_working_document(tab, &diff.file, &diff.data)
+                    && tab.text == diff.current_new_text
+                    && s.code_undo.get(&tab.id) == Some(&diff.undo_history)
+            }) {
+                tab.text.clone_from(&tab.saved_text);
+                tab.content_rev += 1;
+                refresh_repo = Some(tab.file.repo_id.clone());
+            }
+            s.code_undo.retain(|_, history| history != &diff.undo_history);
+        }
+        s.parked_working_diff_undo.clear();
         s.diff_find_open = false;
         if s.editor_tab == EditorTabKind::WorkingDiff {
             s.editor_tab = if !s.code_tabs.is_empty() {
@@ -2562,9 +2488,13 @@ pub fn close_working_diff_now() {
         // 关闭 Diff 后保留原选中行并恢复 Commit 树焦点
         s.focus_zone = FocusZone::CommitTree;
     });
+    if let Some(repo) = refresh_repo {
+        refresh_workspace_async(Some(HashSet::from([repo])));
+    }
 }
 
 pub fn close_commit_diff_now() {
+    cancel_diff_read();
     app_signal().update(|s| {
         s.commit_diff = None;
         s.diff_find_open = false;
@@ -2725,7 +2655,22 @@ pub fn resolve_dirty_close(save_first: bool) {
 }
 
 fn force_close_code_tabs(should_close: impl Fn(&CodeTab) -> bool) {
+    let mut refresh_repo = None;
     app_signal().update(|s| {
+        if let Some(diff) = s.working_diff.as_mut().filter(|diff| diff.is_dirty())
+            && s.code_tabs.iter().any(|tab| {
+                should_close(tab) && tab.is_dirty()
+                    && same_working_document(tab, &diff.file, &diff.data)
+                    && tab.text == diff.current_new_text
+                    && s.code_undo.get(&tab.id) == Some(&diff.undo_history)
+            })
+        {
+            diff.undo_history = DocumentUndo::default();
+            diff.current_new_text.clone_from(&diff.saved_new_text);
+            let _ = diff.update_draft_comparison(WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode), true);
+            diff.content_rev += 1;
+            refresh_repo = Some(diff.file.repo_id.clone());
+        }
         s.code_tabs.retain(|t| !should_close(t));
         crate::code_split_runtime::prune_closed_tabs(s);
         if s.code_tabs.is_empty() {
@@ -2743,6 +2688,9 @@ fn force_close_code_tabs(should_close: impl Fn(&CodeTab) -> bool) {
             crate::code_split_runtime::select_tab_in_model(s, s.code_tabs.len() - 1);
         }
     });
+    if let Some(repo) = refresh_repo {
+        refresh_workspace_async(Some(HashSet::from([repo])));
+    }
 }
 
 // ============================================================================
@@ -2763,16 +2711,7 @@ pub fn copy_for_current_focus() {
         | FocusZone::CommitDiffOld
         | FocusZone::CommitDiffNew
         | FocusZone::ComparisonOld
-        | FocusZone::ComparisonNew => {
-            if let Some(ed) = active_editor_api(focus) {
-                let selected = ed.selected_text();
-                if !selected.is_empty() {
-                    set_clipboard(selected);
-                } else {
-                    ed.run(nsh_base::EditorCommand::Copy);
-                }
-            }
-        }
+        | FocusZone::ComparisonNew => copy_editor_selection(focus),
         FocusZone::CommitTree => {
             let text = app_signal().with_untracked(|s| {
                 if let Some(sel) = &s.change_selection {
@@ -2825,6 +2764,17 @@ pub fn copy_for_current_focus() {
                     api.run(nsh_base::EditorCommand::Copy);
                 }
             }
+        }
+    }
+}
+
+fn copy_editor_selection(focus: FocusZone) {
+    if let Some(editor) = active_editor_api(focus) {
+        let selected = editor.selected_text();
+        if selected.is_empty() {
+            editor.run(nsh_base::EditorCommand::Copy);
+        } else {
+            set_clipboard(selected);
         }
     }
 }
@@ -2979,7 +2929,10 @@ pub(crate) fn setup_project_follow() {
     }));
     effect(move || {
         if let Some((repo_id, path)) = target.get() {
-            app_signal().update(|s| select_project_file_in_tree(s, &repo_id, &path));
+            app_signal().update(|s| {
+                select_project_file_in_tree(s, &repo_id, &path);
+                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
+            });
         }
     });
 }
@@ -3055,280 +3008,17 @@ pub fn open_with_default_app(abs_path: &str) {
 // Diff 导航（F7 / Shift+F7 居中与文件边界二次确认）、折叠、空白选项与查找
 // ============================================================================
 
-fn reveal_opened_diff_hunk(tab: EditorTabKind, idx: usize) {
-    let revision = move |s: &AppState| match tab {
-        EditorTabKind::WorkingDiff => s
-            .working_diff
-            .as_ref()
-            .filter(|diff| diff.current_hunk == idx)
-            .map(|diff| diff.content_rev),
-        EditorTabKind::CommitDiff => s
-            .commit_diff
-            .as_ref()
-            .filter(|diff| diff.current_hunk == idx)
-            .map(|diff| diff.content_rev),
-        _ => None,
-    };
-    let current = app_signal().with_untracked(revision);
-    let reveal = move || {
-        if app_signal().with_untracked(|s| s.editor_tab == tab && revision(s) == current) {
-            scroll_to_diff_hunk(tab, idx);
-        }
-    };
-    // The new document and its folds must reach the mounted editor before revealing a line.
-    if let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) {
-        owner.run(|| after_answer(reveal));
-    } else {
-        after_answer(reveal);
-    }
-}
-
-fn scroll_to_diff_hunk(tab: EditorTabKind, idx: usize) {
-    match tab {
-        EditorTabKind::WorkingDiff => scroll_to_working_hunk(idx),
-        EditorTabKind::CommitDiff => scroll_to_commit_hunk(idx),
-        _ => {}
-    }
-}
-
-fn diff_hunk_is_offscreen(tab: EditorTabKind, idx: usize) -> bool {
-    let target = app_signal().with_untracked(|s| {
-        let (old, new, hunks, side, old_zone, new_zone) = match tab {
-            EditorTabKind::WorkingDiff => {
-                let diff = s.working_diff.as_ref()?;
-                (
-                    diff.data.old_text.as_str(),
-                    diff.current_new_text.as_str(),
-                    &diff.computed.hunks,
-                    diff.active_side,
-                    FocusZone::WorkingDiffOld,
-                    FocusZone::WorkingDiffNew,
-                )
-            }
-            EditorTabKind::CommitDiff => {
-                let diff = s.commit_diff.as_ref()?;
-                (
-                    diff.data.old_text.as_str(),
-                    diff.data.new_text.as_str(),
-                    &diff.computed.hunks,
-                    diff.active_side,
-                    FocusZone::CommitDiffOld,
-                    FocusZone::CommitDiffNew,
-                )
-            }
-            _ => return None,
-        };
-        let hunk = hunks.get(idx)?;
-        if s.cfg.diff_single_column {
-            let (_, starts, _) = compute_unified_layout(old, new, hunks);
-            Some((new_zone, *starts.get(idx)? as u32))
-        } else {
-            let (zone, line) = match side {
-                DiffSide::Old => (old_zone, hunk.old_start),
-                DiffSide::New => (new_zone, hunk.new_start),
-            };
-            Some((zone, line as u32))
-        }
-    });
-    target.is_some_and(|(zone, line)| {
-        active_editor_api(zone).is_some_and(|api| {
-            let range = api.visible_range();
-            !(range.start.line..=range.end.line).contains(&line)
-        })
-    })
-}
-
-pub fn jump_diff_hunk(delta: i32) {
-    let sign = delta.signum();
-    if sign == 0 {
-        return;
-    }
-    let info = app_signal().with_untracked(|s| {
-        let tab = s.editor_tab;
-        let (current, count, boundary) = match tab {
-            EditorTabKind::WorkingDiff => {
-                let diff = s.working_diff.as_ref()?;
-                (diff.current_hunk, diff.computed.hunks.len(), diff.boundary_hint)
-            }
-            EditorTabKind::CommitDiff => {
-                let diff = s.commit_diff.as_ref()?;
-                (diff.current_hunk, diff.computed.hunks.len(), diff.boundary_hint)
-            }
-            _ => return None,
-        };
-        Some((tab, current, count, boundary))
-    });
-    let Some((tab, current, count, boundary)) = info else {
-        return;
-    };
-    let next = current as i32 + delta;
-    if next >= 0 && (next as usize) < count {
-        scroll_to_diff_hunk(tab, next as usize);
-        return;
-    }
-
-    // Before confirming a file boundary, show the selected hunk if it is offscreen.
-    if current < count && diff_hunk_is_offscreen(tab, current) {
-        scroll_to_diff_hunk(tab, current);
-        return;
-    }
-
-    if boundary == Some(sign) {
-        let moved = if tab == EditorTabKind::WorkingDiff {
-            move_change_selection_with_hunk(sign, true, sign < 0)
-        } else {
-            move_commit_diff_file_with_hunk(sign, sign < 0)
-        };
-        if !moved {
-            let message = match (tab, sign) {
-                (EditorTabKind::WorkingDiff, -1) => "已是第一个变更文件",
-                (EditorTabKind::WorkingDiff, _) => "已是最后一个变更文件",
-                (_, -1) => "已是本提交第一个文件",
-                _ => "已是本提交最后一个文件",
-            };
-            show_toast("info", message);
-        }
-        return;
-    }
-
-    app_signal().update(|s| {
-        if tab == EditorTabKind::WorkingDiff {
-            if let Some(diff) = &mut s.working_diff {
-                diff.boundary_hint = Some(sign);
-            }
-        } else if let Some(diff) = &mut s.commit_diff {
-            diff.boundary_hint = Some(sign);
-        }
-    });
-}
-
-pub fn scroll_to_working_hunk(idx: usize) {
-    let info = app_signal().with_untracked(|s| {
-        let w = s.working_diff.as_ref()?;
-        let h = w.computed.hunks.get(idx)?;
-        let single = s.cfg.diff_single_column;
-        let unified_target = if single {
-            let (line_map, hunk_starts, _) =
-                compute_unified_layout(&w.data.old_text, &w.current_new_text, &w.computed.hunks);
-            let u_line = hunk_starts.get(idx).copied().unwrap_or(0);
-            let mapped = line_map.get(u_line).copied();
-            Some((u_line as u32, mapped))
-        } else {
-            None
-        };
-        Some((h.old_start as u32, h.new_start as u32, single, unified_target))
-    });
-    let Some((old_l, new_l, single, unified_target)) = info else {
-        return;
-    };
-    app_signal().update(|s| {
-        if let Some(w) = &mut s.working_diff {
-            w.current_hunk = idx;
-            w.boundary_hint = None;
-            w.old_cursor = EditorPosition::new(old_l, 0);
-            w.new_cursor = EditorPosition::new(new_l, 0);
-            if let Some((_, Some(m))) = unified_target {
-                w.active_side = m.side;
-                match m.side {
-                    DiffSide::Old => w.old_cursor = EditorPosition::new(m.orig_line as u32, 0),
-                    DiffSide::New => w.new_cursor = EditorPosition::new(m.orig_line as u32, 0),
-                }
-            }
-        }
-    });
-    let refs = editor_refs_signal().get_untracked();
-    if single {
-        if let Some((u_line, _)) = unified_target {
-            if let Some(api) = refs.work_unified.and_then(|r| r.api::<EditorApi>()) {
-                let pos = EditorPosition::new(u_line, 2);
-                api.set_selections(vec![EditorSelection::caret(pos)]);
-                api.reveal_position(pos, true);
-            }
-        }
-    } else {
-        if let Some(r) = refs.work_old {
-            if let Some(api) = r.api::<EditorApi>() {
-                api.reveal_position(EditorPosition::new(old_l, 0), true);
-            }
-        }
-        if let Some(r) = refs.work_new {
-            if let Some(api) = r.api::<EditorApi>() {
-                api.set_selections(vec![EditorSelection::caret(EditorPosition::new(new_l, 0))]);
-                api.reveal_position(EditorPosition::new(new_l, 0), true);
-            }
-        }
-    }
-}
-
-pub fn scroll_to_commit_hunk(idx: usize) {
-    let info = app_signal().with_untracked(|s| {
-        let c = s.commit_diff.as_ref()?;
-        let h = c.computed.hunks.get(idx)?;
-        let single = s.cfg.diff_single_column;
-        let unified_target = if single {
-            let (line_map, hunk_starts, _) =
-                compute_unified_layout(&c.data.old_text, &c.data.new_text, &c.computed.hunks);
-            let u_line = hunk_starts.get(idx).copied().unwrap_or(0);
-            let mapped = line_map.get(u_line).copied();
-            Some((u_line as u32, mapped))
-        } else {
-            None
-        };
-        Some((h.old_start as u32, h.new_start as u32, single, unified_target))
-    });
-    let Some((old_l, new_l, single, unified_target)) = info else {
-        return;
-    };
-    app_signal().update(|s| {
-        if let Some(c) = &mut s.commit_diff {
-            c.current_hunk = idx;
-            c.boundary_hint = None;
-            c.old_cursor = EditorPosition::new(old_l, 0);
-            c.new_cursor = EditorPosition::new(new_l, 0);
-            if let Some((_, Some(m))) = unified_target {
-                c.active_side = m.side;
-                match m.side {
-                    DiffSide::Old => c.old_cursor = EditorPosition::new(m.orig_line as u32, 0),
-                    DiffSide::New => c.new_cursor = EditorPosition::new(m.orig_line as u32, 0),
-                }
-            }
-        }
-    });
-    let refs = editor_refs_signal().get_untracked();
-    if single {
-        if let Some((u_line, _)) = unified_target {
-            if let Some(api) = refs.commit_unified.and_then(|r| r.api::<EditorApi>()) {
-                let pos = EditorPosition::new(u_line, 2);
-                api.set_selections(vec![EditorSelection::caret(pos)]);
-                api.reveal_position(pos, true);
-            }
-        }
-    } else {
-        if let Some(r) = refs.commit_old {
-            if let Some(api) = r.api::<EditorApi>() {
-                api.reveal_position(EditorPosition::new(old_l, 0), true);
-            }
-        }
-        if let Some(r) = refs.commit_new {
-            if let Some(api) = r.api::<EditorApi>() {
-                api.set_selections(vec![EditorSelection::caret(EditorPosition::new(new_l, 0))]);
-                api.reveal_position(EditorPosition::new(new_l, 0), true);
-            }
-        }
-    }
-}
-
 pub fn set_whitespace_mode(mode: WhitespaceMode) {
     app_signal().update(|s| {
         s.cfg.diff_whitespace_mode = mode.as_config().to_string();
         if let Some(w) = &mut s.working_diff {
-            w.computed = compute_diff(&w.data.old_text, &w.current_new_text, mode);
-            w.current_hunk = 0;
+            w.recompute_diff(mode);
+            w.boundary_hint = None;
             w.content_rev += 1;
         }
         if let Some(c) = &mut s.commit_diff {
             c.computed = compute_diff(&c.data.old_text, &c.data.new_text, mode);
-            c.current_hunk = 0;
+            c.boundary_hint = None;
             c.content_rev += 1;
         }
     });
@@ -3344,6 +3034,15 @@ pub fn set_inline_mode(mode: InlineHighlightMode) {
 
 pub fn open_find_bar(with_replace: bool) {
     let (tab, focus) = app_signal().with_untracked(|s| (s.editor_tab, s.focus_zone));
+    if tab == EditorTabKind::Welcome {
+        return;
+    }
+    let selected = if text_input_focus_signal().with_untracked(|s| s.focused) {
+        None
+    } else {
+        active_editor_api(focus).map(|editor| editor.selected_text())
+            .filter(|text| !text.is_empty() && !text.contains(['\n', '\r']))
+    };
     match tab {
         EditorTabKind::File => {
             app_signal().update(|s| {
@@ -3379,7 +3078,48 @@ pub fn open_find_bar(with_replace: bool) {
                 s.diff_find_side = side;
             });
         }
-        EditorTabKind::Welcome | EditorTabKind::Comparison => {}
+        EditorTabKind::Comparison => {
+            app_signal().update(|s| {
+                s.comparison_find_open = true;
+                s.comparison_find_side = if focus == FocusZone::ComparisonOld {
+                    DiffSide::Old
+                } else {
+                    DiffSide::New
+                };
+            });
+        }
+        EditorTabKind::Welcome => {}
+    }
+    if let Some(selected) = selected {
+        app_signal().update(|s| {
+            let search = if tab == EditorTabKind::File { &mut s.code_search } else { &mut s.diff_search };
+            search.query = if search.regex { regex::escape(&selected) } else { selected }.into();
+        });
+    }
+    after_answer(move || {
+        let end = app_signal().with_untracked(|s| {
+            if s.editor_tab != tab || !s.active_find_open() {
+                return None;
+            }
+            let search = if tab == EditorTabKind::File { &s.code_search } else { &s.diff_search };
+            Some(search.query.encode_utf16().count() as u32)
+        });
+        let input = editor_refs_signal().with_untracked(|refs| {
+            if tab == EditorTabKind::File { refs.code_find_input } else { refs.diff_find_input }
+        });
+        if let (Some(end), Some(input)) = (end, input) {
+            input.focus();
+            input.set_selection(0, end);
+        }
+    });
+}
+
+pub(crate) fn close_find_bar() {
+    let mut closed = false;
+    app_signal().update(|s| closed = s.close_editor_find());
+    if closed {
+        set_text_input_focused(false);
+        focus_active_editor_ref();
     }
 }
 
@@ -3430,7 +3170,8 @@ pub fn restore_focus_after_modal(s: &mut AppState) {
 
 /// 统一关闭最顶层弹窗（或查找条），并恢复焦点与原生编辑器焦点。
 pub fn close_active_modal() {
-    if crate::ui::content_search::intercept_close() || crate::history_runtime::intercept_close()
+    if crate::ui::github_panel::submitting() || crate::ui::content_search::intercept_close()
+        || crate::history_runtime::intercept_close()
         || crate::ui::index_review::intercept_close()
         || crate::ui::conflict_workbench::intercept_close() {
         return;
@@ -3476,13 +3217,8 @@ pub fn close_active_modal() {
         } else if s.stash_modal_open {
             s.stash_modal_open = false;
             closed_modal = true;
-        } else if s.diff_find_open {
-            s.diff_find_open = false;
-            restored_editor = true;
-        } else if s.code_find_open {
-            s.code_find_open = false;
-            s.code_replace_open = false;
-            restored_editor = true;
+        } else {
+            restored_editor = s.close_editor_find();
         }
         if closed_modal {
             restore_focus_after_modal(s);
@@ -3501,42 +3237,25 @@ pub fn close_active_modal() {
     }
 }
 
-/// 在当前编辑器（源码、双栏 Diff 聚焦侧或单栏 Diff）中跳转到下一/上一查找匹配（`⌘G` / `⇧⌘G`）。
+/// 在当前查找范围内跳到下一处或上一处匹配（`⌘G` / `⇧⌘G`）。
 pub fn run_active_find_nav(next: bool) {
-    let (tab, side, single) =
-        app_signal().with_untracked(|s| (s.editor_tab, s.diff_find_side, s.cfg.diff_single_column));
-    if tab == EditorTabKind::File {
-        if let Some(editor) = active_editor_api(FocusZone::CodeEditor) {
-            editor.run(if next { nsh_base::EditorCommand::FindNext } else { nsh_base::EditorCommand::FindPrevious });
+    let target = app_signal().with_untracked(|s| {
+        if !s.active_find_open() {
+            return None;
         }
-        return;
-    }
-    let refs = editor_refs_signal().get_untracked();
-    let target = match tab {
-        EditorTabKind::File => None,
-        EditorTabKind::WorkingDiff => {
-            if single {
-                refs.work_unified
-            } else {
-                match side {
-                    DiffSide::Old => refs.work_old,
-                    DiffSide::New => refs.work_new,
-                }
-            }
-        }
-        EditorTabKind::CommitDiff => {
-            if single {
-                refs.commit_unified
-            } else {
-                match side {
-                    DiffSide::Old => refs.commit_old,
-                    DiffSide::New => refs.commit_new,
-                }
-            }
-        }
-        EditorTabKind::Welcome | EditorTabKind::Comparison => None,
-    };
-    if let Some(api) = target.and_then(|r| r.api::<EditorApi>()) {
+        let left = s.diff_find_side_for(s.editor_tab) == Some(DiffSide::Old);
+        Some(match (s.editor_tab, left) {
+            (EditorTabKind::File, _) => FocusZone::CodeEditor,
+            (EditorTabKind::WorkingDiff, true) => FocusZone::WorkingDiffOld,
+            (EditorTabKind::WorkingDiff, false) => FocusZone::WorkingDiffNew,
+            (EditorTabKind::CommitDiff, true) => FocusZone::CommitDiffOld,
+            (EditorTabKind::CommitDiff, false) => FocusZone::CommitDiffNew,
+            (EditorTabKind::Comparison, true) => FocusZone::ComparisonOld,
+            (EditorTabKind::Comparison, false) => FocusZone::ComparisonNew,
+            (EditorTabKind::Welcome, _) => return None,
+        })
+    });
+    if let Some(api) = target.and_then(active_editor_api) {
         api.run(if next {
             nsh_base::EditorCommand::FindNext
         } else {
@@ -3661,6 +3380,7 @@ pub fn move_project_selection(delta: i32) {
                 s.project_selected_file = None;
                 s.project_compare_keys.clear();
                 s.focus_zone = FocusZone::ProjectTree;
+                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
             });
         }
         ProjNode::File { wf, key } => {
@@ -3671,6 +3391,7 @@ pub fn move_project_selection(delta: i32) {
                 s.project_selected_dir = None;
                 s.project_compare_keys = vec![k];
                 s.focus_zone = FocusZone::ProjectTree;
+                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
             });
         }
     }
@@ -3727,6 +3448,7 @@ pub fn submit_goto_line() {
             }
             EditorTabKind::WorkingDiff => {
                 if let Some(w) = &mut s.working_diff {
+                    w.boundary_hint = None;
                     match w.active_side {
                         DiffSide::Old => w.old_cursor = pos,
                         DiffSide::New => w.new_cursor = pos,
@@ -3739,6 +3461,7 @@ pub fn submit_goto_line() {
             }
             EditorTabKind::CommitDiff => {
                 if let Some(c) = &mut s.commit_diff {
+                    c.boundary_hint = None;
                     match c.active_side {
                         DiffSide::Old => c.old_cursor = pos,
                         DiffSide::New => c.new_cursor = pos,
@@ -3756,8 +3479,8 @@ pub fn submit_goto_line() {
 
     match tab {
         EditorTabKind::File => reveal_in_code_editor(pos),
-        EditorTabKind::WorkingDiff => reveal_in_active_diff(w_side, pos, None),
-        EditorTabKind::CommitDiff => reveal_in_active_diff(c_side, pos, None),
+        EditorTabKind::WorkingDiff => reveal_in_active_diff(w_side, pos),
+        EditorTabKind::CommitDiff => reveal_in_active_diff(c_side, pos),
         EditorTabKind::Comparison => {
             let focus = app_signal().with_untracked(|s| s.focus_zone);
             if let Some(api) = active_editor_api(focus) {
@@ -3814,7 +3537,7 @@ pub fn open_from_file_picker_input(raw_input: &str) {
                 if let Ok(rel) = canon.strip_prefix(&rc) {
                     return Some(WorkspaceFile {
                         repo_id: repo.id.clone(),
-                        repo_name: repo.name.clone(),
+                        repo_name: repo.label().to_owned(),
                         repo_path: repo.path.clone(),
                         rel_path: paths::normalize_slashes(&rel.to_string_lossy()),
                         abs_path: canon.to_string_lossy().to_string(),
@@ -3871,6 +3594,14 @@ pub(crate) fn run_git_action<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     complete: impl FnOnce(T) + 'static,
 ) -> bool {
+    run_git_action_with_refresh(work, complete, None)
+}
+
+fn run_git_action_with_refresh<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    complete: impl FnOnce(T) + 'static,
+    mut refresh_scope: Option<HashSet<String>>,
+) -> bool {
     if app_signal().with_untracked(|s| s.command_busy) {
         show_toast("warn", "其他 Git 操作正在运行");
         return false;
@@ -3880,14 +3611,13 @@ pub(crate) fn run_git_action<T: Send + 'static>(
         let result = blocking(work).await;
         app_signal().update(|s| {
             s.command_busy = false;
-            s.pending_refresh = false;
-            s.pending_refresh_repos.clear();
+            refresh_scope = take_queued_workspace_refresh(s, refresh_scope.take());
         });
         match result {
             Ok(value) => complete(value),
             Err(err) => show_toast("err", format!("任务失败：{err}")),
         }
-        refresh_workspace_async(None);
+        refresh_workspace_async(refresh_scope);
     };
     spawn_from_root(task);
     true
@@ -3898,14 +3628,24 @@ pub fn stage_files_action(files: Vec<ChangedFile>, stage: bool) {
     if files.is_empty() {
         return;
     }
+    let success = match (stage, files.as_slice()) {
+        (true, [file]) => format!("已暂存 {}", file.path),
+        (false, [file]) => format!("已取消暂存 {}", file.path),
+        (true, _) => "已暂存选中文件".into(),
+        (false, _) => "已取消暂存选中文件".into(),
+    };
+    let mut repo_ids = HashSet::new();
     let mut by_repo: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for f in &files {
-        by_repo
-            .entry(f.repo_path.clone())
-            .or_default()
-            .push(f.path.clone());
+    for file in files {
+        repo_ids.insert(file.repo_id);
+        let paths = by_repo.entry(file.repo_path).or_default();
+        let scope_status = if stage { file.worktree_status } else { file.index_status };
+        if scope_status == 'R' && !file.orig_path.is_empty() {
+            paths.push(file.orig_path);
+        }
+        paths.push(file.path);
     }
-    run_git_action(
+    run_git_action_with_refresh(
         move || {
             for (repo_path, paths) in by_repo {
                 git::stage_or_unstage_files(&repo_path, &paths, stage)?;
@@ -3913,46 +3653,25 @@ pub fn stage_files_action(files: Vec<ChangedFile>, stage: bool) {
             anyhow::Ok(())
         },
         move |res| match res {
-            Ok(()) => show_toast("ok", if stage { "已暂存选中文件" } else { "已取消暂存" }),
-            Err(err) => show_toast("err", format!("暂存操作失败：{err}")),
+            Ok(()) => show_toast("ok", success),
+            Err(err) => {
+                let action = if stage { "暂存操作失败" } else { "取消暂存失败" };
+                show_toast("err", format!("{action}：{err}"));
+            }
         },
+        Some(repo_ids),
     );
 }
 
-/// 同步版暂存（便于测试或直接按键即时反馈）。
-pub fn stage_selected_change_sync(stage: bool) {
-    if app_signal().with_untracked(|s| s.command_busy) {
-        show_toast("warn", "其他 Git 操作正在运行");
-        return;
-    }
+/// Apply the keyboard command to the selected Commit row.
+pub fn stage_selected_change(stage: bool) {
     let file = app_signal().with_untracked(|s| {
         s.change_selection
             .as_ref()
             .map(|sel| sel.file.clone())
-            .or_else(|| s.working_diff.as_ref().map(|w| w.file.clone()))
     });
-    let Some(cf) = file else {
-        return;
-    };
-    app_signal().update(|s| s.command_busy = true);
-    let res = git::stage_or_unstage_files(&cf.repo_path, &[cf.path.clone()], stage);
-    app_signal().update(|s| {
-        s.command_busy = false;
-        s.pending_refresh = false;
-    });
-    match res {
-        Ok(()) => {
-            show_toast(
-                "ok",
-                if stage {
-                    format!("已暂存 {}", cf.path)
-                } else {
-                    format!("已取消暂存 {}", cf.path)
-                },
-            );
-            refresh_workspace_sync(Some(HashSet::from([cf.repo_id])));
-        }
-        Err(err) => show_toast("err", format!("暂存操作失败: {err}")),
+    if let Some(file) = file {
+        stage_files_action(vec![file], stage);
     }
 }
 
@@ -3961,23 +3680,19 @@ pub fn open_local_history_for_active() {
 }
 
 pub fn open_file_revision_history(repo: RepoInfo, rev: String, rel_path: String) {
-    let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) else {
-        return;
-    };
-    let workspace = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
-    let request_id = global::<FileHistoryRequest>().with_untracked(|request| request.0.wrapping_add(1));
-    global::<FileHistoryRequest>().set(FileHistoryRequest(request_id));
     app_signal().update(|s| {
+        let head_seen = file_history_head(s, &rev, &repo.path);
         s.show_git_panel = true;
         s.file_history = Some(FileRevisionHistory {
-            repo: repo.clone(),
-            rel_path: rel_path.clone(),
-            rev: rev.clone(),
+            repo,
+            rel_path,
+            rev,
             commits: Vec::new(),
             paths: HashMap::new(),
             show_affected: false,
             loading: true,
             error: None,
+            head_seen,
         });
         s.selected_commit = None;
         s.selected_commit_file = None;
@@ -3986,32 +3701,82 @@ pub fn open_file_revision_history(repo: RepoInfo, rev: String, rel_path: String)
 
     crate::ui::content_search::hide_find_panel();
     crate::ui::git_pane::focus_history();
+    load_file_revision_history(false);
+}
 
-    owner.run(|| spawn(async move {
+fn file_history_head(s: &AppState, rev: &str, repo_path: &str) -> Option<git::RepositoryHead> {
+    matches!(rev, "" | "HEAD").then(|| s.repository_head(repo_path))
+}
+
+fn load_file_revision_history(background: bool) {
+    let Some((workspace, repo, rev, rel_path, head)) = app_signal().with_untracked(|s| {
+        let history = s.file_history.as_ref()?;
+        Some((
+            s.cfg.workspace_path.clone(),
+            history.repo.clone(),
+            history.rev.clone(),
+            history.rel_path.clone(),
+            file_history_head(s, &history.rev, &history.repo.path),
+        ))
+    }) else {
+        return;
+    };
+    let request_id =
+        global::<FileHistoryRequest>().with_untracked(|request| request.0.wrapping_add(1));
+    global::<FileHistoryRequest>().set(FileHistoryRequest(request_id));
+    app_signal().update(|s| {
+        if let Some(history) = s.file_history.as_mut() {
+            history.head_seen = head.clone();
+            history.loading = !background || history.commits.is_empty();
+            history.error = None;
+        }
+    });
+
+    spawn_from_root(async move {
         let repo_id = repo.id.clone();
+        let repo_path = repo.path.clone();
         let expected_rev = rev.clone();
         let expected_path = rel_path.clone();
         let outcome = blocking(move || -> anyhow::Result<_> {
+            let rev = match head {
+                Some(git::RepositoryHead::Commit(hash)) => hash,
+                Some(git::RepositoryHead::Unborn) => return Ok((Vec::new(), HashMap::new())),
+                _ => rev,
+            };
             let commits = git::file_history_at_revision(&repo, &rev, &rel_path, 60)?;
             let paths = crate::file_revisions::list(Path::new(&repo.path), &rev, &rel_path, 60)?
                 .into_iter()
                 .map(|revision| (revision.hash, revision.path))
                 .collect();
             Ok((commits, paths))
-        }).await;
+        })
+        .await;
         if !global::<FileHistoryRequest>().with_untracked(|request| request.0 == request_id) {
             return;
         }
-        let mut first = None;
+        let mut next_selection = None;
         app_signal().update(|s| {
-            let Some(history) = s.file_history.as_mut().filter(|history|
-                s.cfg.workspace_path == workspace && history.repo.id == repo_id
-                    && history.rel_path == expected_path && history.rev == expected_rev
-            ) else { return };
+            let Some(history) = s.file_history.as_mut().filter(|history| {
+                s.cfg.workspace_path == workspace
+                    && history.repo.id == repo_id
+                    && history.repo.path == repo_path
+                    && history.rel_path == expected_path
+                    && history.rev == expected_rev
+            }) else {
+                return;
+            };
             history.loading = false;
             match outcome {
                 Ok(Ok((commits, paths))) => {
-                    first = commits.first().cloned();
+                    if let Some(selected) = &s.selected_commit
+                        && let Some(entry) = commits.iter().find(|entry| {
+                            entry.repo_id == selected.repo_id && entry.hash == selected.hash
+                        })
+                    {
+                        s.selected_commit = Some(entry.clone());
+                    } else {
+                        next_selection = Some(commits.first().cloned());
+                    }
                     history.commits = commits;
                     history.paths = paths;
                 }
@@ -4019,10 +3784,12 @@ pub fn open_file_revision_history(repo: RepoInfo, rev: String, rel_path: String)
                 Err(err) => history.error = Some(err.to_string()),
             }
         });
-        if let Some(first) = first {
-            crate::ui::git_pane::select_commit(first);
+        match next_selection {
+            Some(Some(commit)) => crate::ui::git_pane::load_commit_selection(commit, !background),
+            Some(None) => crate::ui::git_pane::clear_commit_selection(),
+            None => {}
         }
-    }));
+    });
 }
 
 #[derive(Clone, Default)]
@@ -4082,7 +3849,6 @@ pub fn focus_active_editor_ref() {
     let zone = app_signal().with_untracked(|s| s.focus_zone);
     if let Some(api) = active_editor_api(zone) {
         api.focus();
-        request_shortcut_rebind();
     } else if matches!(
         zone,
         FocusZone::CodeEditor
@@ -4097,7 +3863,6 @@ pub fn focus_active_editor_ref() {
             if still_same {
                 if let Some(api) = active_editor_api(zone) {
                     api.focus();
-                    request_shortcut_rebind();
                 }
             }
         });
@@ -4112,18 +3877,19 @@ pub fn reveal_in_code_editor(pos: EditorPosition) {
     }
 }
 
-pub fn reveal_in_active_diff(side: DiffSide, pos: EditorPosition, scroll_y: Option<f32>) {
+fn reveal_in_active_diff(side: DiffSide, pos: EditorPosition) {
     let (tab, effective_pos) = app_signal().with_untracked(|s| {
         let single = s.cfg.diff_single_column;
         let mapped_pos = if single {
             let u_line = match s.editor_tab {
                 EditorTabKind::WorkingDiff => s.working_diff.as_ref().map(|w| {
-                    map_side_line_to_unified(
+                    map_editable_side_line_to_unified(
                         &w.data.old_text,
                         &w.current_new_text,
                         &w.computed.hunks,
                         side,
                         pos.line as usize,
+                        w.editor_editable(),
                     )
                 }),
                 EditorTabKind::CommitDiff => s.commit_diff.as_ref().map(|c| {
@@ -4155,14 +3921,6 @@ pub fn reveal_in_active_diff(side: DiffSide, pos: EditorPosition, scroll_y: Opti
     };
     if let Some(api) = active_editor_api(zone) {
         api.set_selections(vec![EditorSelection::caret(effective_pos)]);
-        if let Some(y) = scroll_y {
-            if y > 0.0 {
-                api.set_scroll_offset(point(px(0.0), px(y)));
-            } else {
-                api.reveal_position(effective_pos, true);
-            }
-        } else {
-            api.reveal_position(effective_pos, true);
-        }
+        api.reveal_position(effective_pos, true);
     }
 }

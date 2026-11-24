@@ -3,10 +3,10 @@ use std::path::Path;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
-use crate::git::{self, CommitEntry, WorkspaceFile};
+use crate::git::{self, CommitEntry, CommitFileEntry, WorkspaceFile};
 use crate::paths::basename;
 use crate::state::{
-    FocusZone, RootOwnerHolder, app_signal, current_palette, open_code_file, open_commit_diff,
+    AppState, FocusZone, RootOwnerHolder, app_signal, current_palette, open_code_file, open_commit_diff,
     open_file_revision_history, open_revision_code_file,
 };
 use crate::theme::status_text_color;
@@ -14,6 +14,16 @@ use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
 use super::git_forest;
+
+pub(super) fn local_author_date(date: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(date)
+        .map(|date| {
+            date.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| date.to_owned())
+}
 
 #[derive(Clone, Default)]
 struct Selection {
@@ -28,7 +38,39 @@ fn selection() -> Signal<Selection> {
     global::<Selection>()
 }
 
+pub(crate) fn clear_commit_selection() {
+    selection().update(|s| {
+        s.generation = s.generation.wrapping_add(1);
+        s.loading = false;
+        s.error = None;
+        s.files_focused = false;
+    });
+    app_signal().update(|s| {
+        s.selected_commit = None;
+        s.selected_commit_files.clear();
+        s.selected_commit_file = None;
+    });
+}
+
 pub(crate) fn select_commit(commit: CommitEntry) {
+    let loaded = selection().with_untracked(|s| !s.loading && s.error.is_none());
+    if loaded {
+        let current_file = app_signal().with_untracked(|s| {
+            s.selected_commit.as_ref()
+                .filter(|selected| git_forest::same_commit(selected, &commit))
+                .map(|_| s.selected_commit_file.clone())
+        });
+        if let Some(file) = current_file {
+            if let Some(file) = file {
+                crate::state::preview_commit_diff(commit, file);
+            }
+            return;
+        }
+    }
+    load_commit_selection(commit, true);
+}
+
+pub(crate) fn load_commit_selection(commit: CommitEntry, preview: bool) {
     let Some(owner) = global::<RootOwnerHolder>().with_untracked(|root| root.owner) else {
         return;
     };
@@ -103,7 +145,7 @@ pub(crate) fn select_commit(commit: CommitEntry) {
                 s.selected_commit_files = files;
                 s.selected_commit_file = target.clone();
             });
-            if app_signal().with_untracked(|s| s.show_git_panel && s.cfg.git_log_diff_preview)
+            if preview && app_signal().with_untracked(|s| s.show_git_panel && s.cfg.git_log_diff_preview)
                 && let Some(file) = target
             {
                 crate::state::preview_commit_diff(commit, file);
@@ -124,14 +166,7 @@ pub(super) fn move_selection(delta: isize) {
     if selection().with_untracked(|s| s.files_focused) {
         let next = app_signal().with_untracked(|s| {
             let commit = s.selected_commit.clone()?;
-            let mut files = s.selected_commit_files.clone();
-            if let Some(history) = s
-                .file_history
-                .as_ref()
-                .filter(|history| !history.show_affected)
-            {
-                files.retain(|file| history.paths.get(&commit.hash) == Some(&file.path));
-            }
+            let files = visible_files(s, &commit);
             let index = next_index(
                 &files,
                 s.selected_commit_file.as_ref(),
@@ -169,6 +204,34 @@ pub(super) fn move_selection(delta: isize) {
     }
 }
 
+pub(crate) fn visible_files(s: &AppState, commit: &CommitEntry) -> Vec<CommitFileEntry> {
+    let mut files = s.selected_commit_files.clone();
+    files.retain(|file| in_file_history_scope(s, commit, file));
+    order_files(&mut files, s.cfg.git_log_group_files);
+    files
+}
+
+pub(crate) fn file_is_visible(s: &AppState, commit: &CommitEntry, file: &CommitFileEntry) -> bool {
+    s.selected_commit.as_ref().is_some_and(|selected| git_forest::same_commit(selected, commit))
+        && in_file_history_scope(s, commit, file)
+        && s.selected_commit_files.contains(file)
+}
+
+fn in_file_history_scope(s: &AppState, commit: &CommitEntry, file: &CommitFileEntry) -> bool {
+    s.file_history.as_ref().filter(|history| !history.show_affected)
+        .is_none_or(|history| history.paths.get(&commit.hash) == Some(&file.path))
+}
+
+pub(crate) fn order_files(files: &mut [CommitFileEntry], group_by_directory: bool) {
+    if group_by_directory {
+        files.sort_by(|a, b| directory(&a.path).cmp(directory(&b.path)).then(a.path.cmp(&b.path)));
+    }
+}
+
+fn directory(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
 fn next_index<T>(
     items: &[T],
     selected: Option<&T>,
@@ -186,35 +249,70 @@ fn next_index<T>(
 }
 
 fn toggle_preview() {
-    let mut preview = None;
-    app_signal().update(|s| {
-        s.cfg.git_log_diff_preview = !s.cfg.git_log_diff_preview;
-        if s.cfg.git_log_diff_preview {
-            preview = s.selected_commit.clone().zip(s.selected_commit_file.clone());
-        }
-    });
-    crate::state::save_config_quiet();
-    if let Some((commit, file)) = preview {
-        crate::state::preview_commit_diff(commit, file);
-    }
+    let enabled = app_signal().with_untracked(|s| !s.cfg.git_log_diff_preview);
+    crate::state::set_commit_diff_preview(enabled);
 }
 
-pub(super) fn show_panel_options() {
-    let (preview, affected) = app_signal().with_untracked(|s| {
-        (s.cfg.git_log_diff_preview, s.file_history.as_ref().map(|h| h.show_affected))
+pub(super) fn show_log_options() {
+    use crate::config::GitLogColumns;
+    let columns = app_signal().with_untracked(|s| s.cfg.git_log_columns);
+    let toggle = |label, checked, field: fn(&mut GitLogColumns) -> &mut bool| {
+        MenuItem::new(label).checked(checked).on_select(move || {
+            app_signal().update(|s| {
+                let visible = field(&mut s.cfg.git_log_columns);
+                *visible = !*visible;
+            });
+            crate::state::save_config_quiet();
+        })
+    };
+    crate::state::show_popup_menu(vec![
+        MenuItem::submenu("列", vec![
+            toggle("作者", columns.author, |c| &mut c.author),
+            toggle("日期", columns.date, |c| &mut c.date),
+            toggle("提交哈希", columns.hash, |c| &mut c.hash),
+        ]),
+        toggle("显示分支和标签", columns.refs, |c| &mut c.refs),
+    ]);
+}
+
+fn show_file_options() {
+    let (preview, grouped, details, affected) = app_signal().with_untracked(|s| {
+        (s.cfg.git_log_diff_preview, s.cfg.git_log_group_files, s.cfg.git_log_show_details,
+            s.file_history.as_ref().map(|h| h.show_affected))
     });
-    let mut items = vec![MenuItem::new("差异预览").checked(preview).on_select(toggle_preview)];
+    let mut items = vec![
+        MenuItem::new("差异预览").checked(preview).on_select(toggle_preview),
+        MenuItem::new("按目录分组").checked(grouped).on_select(|| {
+            app_signal().update(|s| s.cfg.git_log_group_files = !s.cfg.git_log_group_files);
+            crate::state::save_config_quiet();
+        }),
+        MenuItem::new("显示提交详情").checked(details).on_select(|| {
+            app_signal().update(|s| s.cfg.git_log_show_details = !s.cfg.git_log_show_details);
+            crate::state::save_config_quiet();
+        }),
+    ];
     if let Some(affected) = affected {
         items.push(MenuItem::new("显示所有受影响的文件").checked(affected).on_select(|| {
+            let mut preview = None;
             app_signal().update(|s| {
                 if let Some(history) = s.file_history.as_mut() {
                     history.show_affected = !history.show_affected;
                 }
+                if let Some(commit) = &s.selected_commit {
+                    let visible = visible_files(s, commit);
+                    if s.selected_commit_file.as_ref().is_none_or(|file| !visible.contains(file)) {
+                        s.selected_commit_file = visible.into_iter().next();
+                        if s.cfg.git_log_diff_preview {
+                            preview = Some(commit.clone()).zip(s.selected_commit_file.clone());
+                        }
+                    }
+                }
             });
+            if let Some((commit, file)) = preview {
+                crate::state::preview_commit_diff(commit, file);
+            }
         }));
     }
-    items.push(MenuItem::separator());
-    items.push(MenuItem::new("GitHub PR / CI").on_select(super::github_panel::open));
     crate::state::show_popup_menu(items);
 }
 
@@ -259,6 +357,34 @@ fn history_items(commit: CommitEntry, path: Option<String>) -> Vec<MenuItem> {
 
 pub fn git_pane() -> impl IntoElement {
     let is_history = computed(|| app_signal().with(|s| s.file_history.is_some()));
+    let selected_commit_row = element_ref();
+    let selected_file_row = element_ref();
+    let selected_commit = computed(|| app_signal().with(|s| {
+        s.selected_commit.as_ref().map(|commit| (commit.repo_id.clone(), commit.hash.clone()))
+    }));
+    let selected_file = computed(move || {
+        Some((selected_commit.get()?, app_signal().with(|s| s.selected_commit_file.clone())?))
+    });
+    let file_options = computed(|| app_signal().with(|s| {
+        (s.cfg.git_log_group_files, s.cfg.git_log_show_details, s.file_history.as_ref().map(|h| h.show_affected))
+    }));
+    let file_list = computed(|| app_signal().with(|s| {
+        s.selected_commit.as_ref().map(|commit| {
+            (commit.clone(), s.selected_commit_file.clone(), visible_files(s, commit))
+        })
+    }));
+    let file_status = computed(|| selection().with(|s| (s.loading, s.error.clone())));
+    effect(move || {
+        if selected_commit.get().is_some() {
+            super::reveal_selected_row(selected_commit_row);
+        }
+    });
+    effect(move || {
+        file_options.get();
+        if selected_file.get().is_some() {
+            super::reveal_selected_row(selected_file_row);
+        }
+    });
     view()
         .test_id("git-bottom-pane")
         .h(move || px(app_signal().with(|s| s.cfg.git_panel_height)))
@@ -313,21 +439,6 @@ pub fn git_pane() -> impl IntoElement {
                         .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted))
                 }))
                 .child(view().flex_1())
-                .child(file_history.is_some().then(|| {
-                    view()
-                        .test_id("git-panel-options")
-                        .w(px(24.0))
-                        .h(px(24.0))
-                        .rounded(px(4.0))
-                        .items_center()
-                        .justify_center()
-                        .cursor(Cursor::Pointer)
-                        .hover(move |s| s.bg(p.surface_hover))
-                        .label("Git 面板选项")
-                        .tooltip(super::tooltip_label("Git 面板选项".into(), p))
-                        .on_press(show_panel_options)
-                        .child(icons::icon(ICO_MORE, 13.0, p.text_muted))
-                }))
                 .child(
                     view()
                         .w(px(22.0))
@@ -359,10 +470,11 @@ pub fn git_pane() -> impl IntoElement {
                         .border_r_1()
                         .border_color(move || current_palette().border)
                         .child(when(move || !is_history.get(), || dynamic(git_forest::controls)))
-                        .child(scroll().flex_1().child(dynamic(move || {
+                        .child(scroll().test_id("git-commit-list-scroll").flex_1().child(dynamic(move || {
                             let p = current_palette();
-                            let (selected, history) = app_signal()
-                                .with(|s| (s.selected_commit.clone(), s.file_history.clone()));
+                            let (selected, history, columns) = app_signal().with(|s| {
+                                (s.selected_commit.clone(), s.file_history.clone(), s.cfg.git_log_columns)
+                            });
                             let results = git_forest::rows();
                             let is_history = history.is_some();
                             let mut filtered = history.as_ref().map_or_else(
@@ -418,8 +530,9 @@ pub fn git_pane() -> impl IntoElement {
                                 && results.grouping == git_forest::Grouping::Graph)
                                 .then(|| super::git_graph::layout(&filtered));
                             for (index, c) in filtered.into_iter().enumerate() {
+                                let date = local_author_date(&c.date);
                                 if !is_history {
-                                    let group = results.grouping.key(&c);
+                                    let group = results.grouping.key(&c, &date);
                                     if group != label.as_deref() {
                                         label = group.map(str::to_owned);
                                         if let Some(label) = &label {
@@ -445,16 +558,13 @@ pub fn git_pane() -> impl IntoElement {
                                     history.as_ref().and_then(|h| h.paths.get(&c.hash).cloned());
                                 let history_commit = c.clone();
                                 let c_click = c.clone();
-                                let date = match (c.date.get(..10), c.date.get(11..16)) {
-                                    (Some(day), Some(time)) => format!("{day} {time}"),
-                                    _ => c.date.clone(),
-                                };
-                                let refs = (!is_history && !c.refs.is_empty())
+                                let refs = (columns.refs && !is_history && !c.refs.is_empty())
                                     .then(|| c.refs.replace(" -> ", " → ").replace(", ", " · "));
-                                let revision = format!("{} · {}", c.repo_name, c.short_hash);
+                                let subject_hint = format!("{}\n{} · {}", c.subject, c.repo_name, c.short_hash);
                                 rows.push(
                                     view()
                                         .test_id(&format!("git-commit-row-{}", c.short_hash))
+                                        .when(is_sel, |row| row.element_ref(&selected_commit_row))
                                         .h(px(26.0))
                                         .px(px(10.0))
                                         .flex_row()
@@ -489,35 +599,50 @@ pub fn git_pane() -> impl IntoElement {
                                                 );
                                             }
                                         })
-                                        .child(
+                                        .child(columns.author.then(|| {
                                             text(c.author)
+                                                .test_id("git-commit-author")
                                                 .w(px(100.0))
-                                                .flex_none()
+                                                .min_w(px(48.0))
                                                 .text_size(px(11.0))
                                                 .text_color(p.text_primary)
-                                                .number_of_lines(1u32),
-                                        )
-                                        .child(
+                                                .number_of_lines(1u32)
+                                        }))
+                                        .child(columns.date.then(|| {
                                             text(date)
+                                                .test_id("git-commit-date")
                                                 .w(px(105.0))
+                                                .min_w(px(76.0))
+                                                .text_size(px(10.5))
+                                                .text_color(p.text_muted)
+                                                .number_of_lines(1u32)
+                                        }))
+                                        .child(graph.as_ref().map(|graph| graph.row(index, p)))
+                                        .child(columns.hash.then(|| {
+                                            text(c.short_hash)
+                                                .test_id("git-commit-hash")
                                                 .flex_none()
                                                 .text_size(px(10.5))
                                                 .text_color(p.text_muted)
-                                                .number_of_lines(1u32),
-                                        )
-                                        .child(graph.as_ref().map(|graph| graph.row(index, p)))
+                                        }))
                                         .child(
-                                            view().flex_1().min_w(px(0.0)).overflow_hidden().child(
-                                                text(c.subject)
-                                                    .tooltip(super::tooltip_label(revision, p))
-                                                    .text_size(px(11.5))
-                                                    .text_color(p.text_primary)
-                                                    .number_of_lines(1u32),
-                                            ),
+                                            view()
+                                                .test_id("git-commit-subject")
+                                                .flex_1()
+                                                .min_w(px(64.0))
+                                                .overflow_hidden()
+                                                .tooltip(super::tooltip_label(subject_hint, p).max_w(px(360.0)))
+                                                .child(
+                                                    text(c.subject)
+                                                        .text_size(px(11.5))
+                                                        .text_color(p.text_primary)
+                                                        .number_of_lines(1u32),
+                                                ),
                                         )
                                         .child(refs.map(|refs| {
                                             text(refs.clone())
                                                 .test_id("git-commit-refs")
+                                                .min_w(px(0.0))
                                                 .max_w(relative(0.28))
                                                 .tooltip(super::tooltip_label(refs, p))
                                                 .text_size(px(10.5))
@@ -543,11 +668,12 @@ pub fn git_pane() -> impl IntoElement {
                 .child(
                     // 选中提交的文件列表
                     view()
-                        .w(px(360.0))
+                        .w(relative(0.30))
+                        .max_w(px(360.0))
                         .flex_none()
                         .flex_col()
                         .overflow_hidden()
-                        .child(when(move || !is_history.get(), || {
+                        .child(
                             view()
                                 .h(px(30.0))
                                 .px(px(5.0))
@@ -555,30 +681,27 @@ pub fn git_pane() -> impl IntoElement {
                                 .items_center()
                                 .border_b_1()
                                 .border_color(move || current_palette().border)
-                                .child(dynamic(|| {
-                                    let selected = app_signal().with(|s| {
-                                        s.selected_commit.clone().zip(s.selected_commit_file.clone())
-                                    });
+                                .child(dynamic(move || {
                                     git_forest::icon_action(
-                                        "git-show-diff", "查看差异", ICO_COLUMNS, false, selected.is_some(),
-                                        move || {
-                                            if let Some((commit, file)) = &selected {
-                                                open_commit_diff(commit.clone(), file.clone(), true);
+                                        "git-show-diff", "查看差异", ICO_COLUMNS, false, selected_file.get().is_some(),
+                                        || {
+                                            let selected = app_signal().with_untracked(|s| {
+                                                s.selected_commit.clone().zip(s.selected_commit_file.clone())
+                                            });
+                                            if let Some((commit, file)) = selected {
+                                                open_commit_diff(commit, file, true);
                                             }
                                         },
                                     )
                                 }))
-                        }))
+                                .child(git_forest::icon_action(
+                                    "git-file-view-options", "变更文件视图选项", ICO_EYE, false, true, show_file_options,
+                                )),
+                        )
                         .child(dynamic(move || {
                             let p = current_palette();
-                            let (commit, files, sel_file) = app_signal().with(|s| {
-                                (
-                                    s.selected_commit.clone(),
-                                    s.selected_commit_files.clone(),
-                                    s.selected_commit_file.clone(),
-                                )
-                            });
-                            let Some(commit) = commit else {
+                            let (grouped, show_details, _) = file_options.get();
+                            let Some((commit, sel_file, files)) = file_list.get() else {
                                 return view()
                                     .p(px(12.0))
                                     .child(
@@ -589,35 +712,21 @@ pub fn git_pane() -> impl IntoElement {
                                     .into_element();
                             };
 
-                            let detail = selection().with(|s| (s.loading, s.error.clone()));
-                            if detail.0 || detail.1.is_some() {
+                            let (loading, error) = file_status.get();
+                            if loading || error.is_some() {
                                 return view()
                                     .p(px(12.0))
                                     .child(
                                         text(
-                                            detail.1.unwrap_or_else(|| "正在读取变更文件…".into()),
+                                            error.unwrap_or_else(|| "正在读取变更文件…".into()),
                                         )
                                         .text_size(px(11.5))
                                         .text_color(p.text_muted),
                                     )
                                     .into_element();
                             }
-                            let files = app_signal().with(|s| {
-                                let path = s
-                                    .file_history
-                                    .as_ref()
-                                    .filter(|history| !history.show_affected)
-                                    .map(|history| history.paths.get(&commit.hash));
-                                match path {
-                                    Some(Some(path)) => files
-                                        .into_iter()
-                                        .filter(|file| &file.path == path)
-                                        .collect(),
-                                    Some(None) => Vec::new(),
-                                    None => files,
-                                }
-                            });
-                            let details = view()
+                            let details = show_details.then(|| view()
+                                .test_id("git-commit-details")
                                 .px(px(10.0))
                                 .py(px(6.0))
                                 .border_b_1()
@@ -641,14 +750,30 @@ pub fn git_pane() -> impl IntoElement {
                                     .text_size(px(10.5))
                                     .text_color(p.text_muted)
                                     .number_of_lines(1u32),
-                                );
+                                ));
 
                             let mut rows = Vec::with_capacity(files.len());
+                            let mut last_directory = None;
                             for cf in files {
                                 let is_sel = sel_file.as_ref().is_some_and(|s| s.path == cf.path);
                                 let col = status_text_color(&cf.status, p);
                                 let (directory, name) =
                                     cf.path.rsplit_once('/').unwrap_or(("", cf.path.as_str()));
+                                if grouped && last_directory.as_deref() != Some(directory) {
+                                    last_directory = Some(directory.to_owned());
+                                    rows.push(view()
+                                        .test_id(&format!("git-file-directory-{directory}"))
+                                        .h(px(24.0))
+                                        .px(px(8.0))
+                                        .gap(px(5.0))
+                                        .flex_row()
+                                        .items_center()
+                                        .child(icons::icon(ICO_FOLDER, 12.0, p.text_muted))
+                                        .child(text(if directory.is_empty() { "仓库根目录" } else { directory }.to_owned())
+                                            .text_size(px(10.5))
+                                            .text_color(p.text_muted))
+                                        .into_element());
+                                }
                                 let original_name = cf.orig_path.rsplit('/').next().unwrap_or_default();
                                 let name = if !original_name.is_empty() && original_name != name {
                                     format!("{original_name} → {name}")
@@ -668,9 +793,10 @@ pub fn git_pane() -> impl IntoElement {
                                 rows.push(
                                     view()
                                         .test_id(&format!("git-commit-file-{}", cf.path))
+                                        .when(is_sel, |row| row.element_ref(&selected_file_row))
                                         .h(px(24.0))
                                         .flex_none()
-                                        .px(px(10.0))
+                                        .px(px(if grouped { 24.0 } else { 10.0 }))
                                         .flex_row()
                                         .items_center()
                                         .gap(px(6.0))
@@ -732,7 +858,7 @@ pub fn git_pane() -> impl IntoElement {
                                                             )
                                                         }
                                                     }),
-                                                MenuItem::new("打开仓库版本").on_select({
+                                                MenuItem::new("打开仓库版本").disabled(file_c.status == "D").on_select({
                                                     let c1 = commit_c.clone();
                                                     let p1 = file_c.path.clone();
                                                     move || open_revision_code_file(&c1, &p1)
@@ -804,7 +930,7 @@ pub fn git_pane() -> impl IntoElement {
                                                 .text_color(col)
                                                 .number_of_lines(1u32),
                                         )
-                                        .child((!directory.is_empty()).then(|| {
+                                        .child((!grouped && !directory.is_empty()).then(|| {
                                             text(directory.to_owned())
                                                 .flex_none()
                                                 .text_size(px(10.0))
@@ -827,7 +953,7 @@ pub fn git_pane() -> impl IntoElement {
                                         .test_id("git-commit-files-scroll")
                                         .flex_1()
                                         .child(
-                                            scroll().flex_none().h_full().min_w(relative(1.0))
+                                            scroll().test_id("git-commit-file-list-scroll").flex_none().h_full().min_w(relative(1.0))
                                                 .child(view().flex_col().children(rows)),
                                         ),
                                 )

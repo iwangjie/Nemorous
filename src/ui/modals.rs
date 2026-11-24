@@ -497,8 +497,13 @@ pub fn modals_layer() -> impl IntoElement {
                     PickerKind::RecentLocations => {
                         for nav in recents.into_iter().take(24) {
                             let label = match &nav {
-                                NavTarget::CodeFile { rel_path, pos, .. } => {
-                                    format!("源码 · {}:{}", rel_path, pos.line + 1)
+                                NavTarget::CodeFile { rel_path, revision, pos, .. } => {
+                                    if revision.is_empty() {
+                                        format!("源码 · {}:{}", rel_path, pos.line + 1)
+                                    } else {
+                                        let short = revision.get(..8).unwrap_or(revision);
+                                        format!("仓库版本 · {}:{} ({})", rel_path, pos.line + 1, short)
+                                    }
                                 }
                                 NavTarget::WorkingDiff { file_key, pos, .. } => {
                                     format!("差异 · {}:{}", basename(file_key), pos.line + 1)

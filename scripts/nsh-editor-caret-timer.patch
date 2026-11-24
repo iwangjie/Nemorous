@@ -1,0 +1,58 @@
+--- a/crates/nsh-base/src/editor/controller.rs
++++ b/crates/nsh-base/src/editor/controller.rs
+@@ -109,6 +109,7 @@
+     pub(crate) vscroll: ElementRef,
+     pub(crate) hscroll: ElementRef,
+     pub(crate) input: ElementRef,
++    blink_owner: Owner,
+     blink_task: Rc<RefCell<Option<Spawned<()>>>>,
+     /// Linux: stops the blinking ten seconds after the last edit, caret
+     /// move or focus change.
+@@ -184,6 +185,7 @@
+             vscroll: element_ref(),
+             hscroll: element_ref(),
+             input: element_ref(),
++            blink_owner: Owner::current(),
+             blink_task: Rc::default(),
+             blink_stop: Rc::default(),
+             hooks: super::hooks::Hooks::new(),
+@@ -1232,21 +1234,25 @@
+         if !self.focused.get_untracked() {
+             return;
+         }
+-        let blink = self.blink;
+-        let task = set_interval(Duration::from_millis(530), move || {
+-            blink.update(|b| *b = !*b);
+-        });
+-        *self.blink_task.borrow_mut() = Some(task);
+-        if os() == Os::Linux {
+-            let blinking = self.blink_task.clone();
+-            let stop = set_timeout(BLINK_TIMEOUT, move || {
+-                if let Some(task) = blinking.borrow_mut().take() {
+-                    task.cancel();
+-                }
+-                blink.set(true);
++        // EditorApi commands can run under the caller's owner. Both timers
++        // must end when this editor and its blink signal are disposed.
++        self.blink_owner.run(|| {
++            let blink = self.blink;
++            let task = set_interval(Duration::from_millis(530), move || {
++                blink.update(|b| *b = !*b);
+             });
+-            *self.blink_stop.borrow_mut() = Some(stop);
+-        }
++            *self.blink_task.borrow_mut() = Some(task);
++            if os() == Os::Linux {
++                let blinking = self.blink_task.clone();
++                let stop = set_timeout(BLINK_TIMEOUT, move || {
++                    if let Some(task) = blinking.borrow_mut().take() {
++                        task.cancel();
++                    }
++                    blink.set(true);
++                });
++                *self.blink_stop.borrow_mut() = Some(stop);
++            }
++        });
+     }
+
+     // The ref's other methods.

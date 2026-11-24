@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -224,7 +224,7 @@ pub(crate) fn test_ssh(host: &str) -> Result<String> {
 }
 
 fn ssh_command(program: &str, args: &[&str]) -> Result<(std::process::ExitStatus, String)> {
-    let mut command = Command::new(program);
+    let mut command = crate::tool_command::command(program);
     command
         .args(args)
         .stdin(Stdio::null())

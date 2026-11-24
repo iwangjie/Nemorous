@@ -134,8 +134,7 @@ pub fn create(repo: &Path, path: &Path, branch: &str) -> Result<()> {
         Err(err) => return Err(err.into()),
     }
     let display = path.to_str().context("工作树路径必须是 UTF-8")?;
-    run_git_string(repo, &["worktree", "add", "--", display, short])
-        .with_context(|| format!("创建工作树 {}", path.display()))?;
+    run_git_string(repo, &["worktree", "add", "--", display, short])?;
     Ok(())
 }
 
@@ -175,8 +174,7 @@ pub fn remove(repo: &Path, path: &Path, force: bool) -> Result<()> {
     let path_str = path.to_string_lossy().to_string();
     args.extend(["--", &path_str]);
 
-    run_git_string(repo, &args)
-        .with_context(|| format!("git worktree remove {}", path.display()))?;
+    run_git_string(repo, &args)?;
 
     Ok(())
 }

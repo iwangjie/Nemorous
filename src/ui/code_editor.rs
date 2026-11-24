@@ -1,5 +1,5 @@
 use nsh_base::{
-    Editor, EditorApi, EditorCommand, EditorContextMenuEvent, EditorSearch, EditorSearchResult,
+    Editor, EditorApi, EditorCommand, EditorContextMenuEvent, EditorSearchResult,
     EditorSelection, editor, input,
 };
 use nsh_core::element::desktop::MenuItem;
@@ -12,13 +12,70 @@ use crate::state::{
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
+pub(super) fn show_context_menu(ev: &EditorContextMenuEvent) {
+    let info = app_signal().with_untracked(|s| {
+        s.code_tabs
+            .get(s.active_code_tab_idx)
+            .map(|tab| (tab.file.clone(), tab.id.clone()))
+    });
+    if let Some((f, tab_id)) = info {
+        let mut items = vec![
+            MenuItem::new("复制").on_select(state::copy_for_current_focus),
+            MenuItem::new("文件结构…").on_select(crate::ui::editor_tools::open_structure),
+            MenuItem::new("书签…").on_select(crate::ui::bookmarks::open_modal),
+            MenuItem::new("重新格式化代码").on_select(crate::format_runtime::format_active),
+            MenuItem::new("与剪贴板比较").on_select(super::comparison::open_clipboard),
+            MenuItem::new("回滚选中块").on_select(super::git_review::rollback_code),
+            MenuItem::new("保存时自动格式化")
+                .checked(app_signal().with_untracked(|s| s.cfg.format_on_save))
+                .on_select(|| {
+                    app_signal().update(|s| s.cfg.format_on_save = !s.cfg.format_on_save);
+                    state::save_config_quiet();
+                }),
+            MenuItem::separator(),
+        ];
+        let history = f.clone();
+        let revision = f.clone();
+        items.push(MenuItem::submenu(
+            "Git",
+            [
+                MenuItem::new("查看文件历史")
+                    .on_select(move || super::revision_picker::show_history(history.clone())),
+                MenuItem::new("与修订版本比较…")
+                    .on_select(move || super::revision_picker::open(revision.clone())),
+            ],
+        ));
+        items.extend(super::blame_view::menu_items(ev.position.line + 1));
+        let breakpoint_file = f.clone();
+        let line = ev.position.line + 1;
+        items.push(MenuItem::new("切换断点").on_select(move || {
+            super::debug_panel::toggle_breakpoint(&breakpoint_file, line);
+        }));
+        items.push(super::language_tools::menu(tab_id, ev.position));
+        items.push(MenuItem::separator());
+        items.extend(build_location_menu_items(
+            f.repo_id,
+            f.repo_path,
+            f.rel_path,
+            f.abs_path,
+            ev.position.line + 1,
+            false,
+        ));
+        crate::state::show_popup_menu_at(items, point(ev.x, ev.y));
+    }
+}
+
 pub fn code_editor_pane() -> impl IntoElement {
     let ed_ref = component_ref::<Editor>();
+    let find_input = element_ref();
     let split = computed(|| app_signal().with(|s| s.code_split.is_some()));
     let editor_options = computed(|| app_signal().with(|s| {
         (s.cfg.editor_soft_wrap, s.cfg.editor_font_size, s.cfg.format_on_save)
     }));
-    editor_refs_signal().update(|r| r.code = Some(ed_ref));
+    editor_refs_signal().update(|r| {
+        r.code = Some(ed_ref);
+        r.code_find_input = Some(find_input);
+    });
 
     // 仅在活动标签 ID 或外部内容版本变化时同步 Editor，避免光标/打字抖动
     let tab_sync_memo = computed(|| {
@@ -165,7 +222,16 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         .text_color(p.amber),
                                 )
                         }))
-                        .child((!tab.editable).then(|| {
+                        .child(tab.disk_state.notice().map(|notice| {
+                            view()
+                                .test_id("code-disk-state")
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded(px(4.0))
+                                .bg(p.amber_soft)
+                                .child(text(notice).text_size(px(10.0)).text_color(p.amber))
+                        }))
+                        .child((!tab.editable && tab.disk_state.notice().is_none()).then(|| {
                             view()
                                 .px(px(6.0))
                                 .py(px(2.0))
@@ -393,7 +459,10 @@ pub fn code_editor_pane() -> impl IntoElement {
                             .child(
                                 input()
                                     .test_id("code-find-input")
-                                    .w(px(220.0))
+                                    .element_ref(&find_input)
+                                    .flex_1()
+                                    .min_w(px(80.0))
+                                    .max_w(px(220.0))
                                     .h(px(24.0))
                                     .px(px(8.0))
                                     .rounded(px(4.0))
@@ -403,11 +472,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     .text_size(px(11.5))
                                     .text_color(move || current_palette().text_primary)
                                     .placeholder("查找…")
-                                    .value(move || app_signal().with(|s| s.code_find_query.clone()))
+                                    .value(move || app_signal().with(|s| s.code_search.query.to_string()))
                                     .on_focus(|| state::set_text_input_focused(true))
                                     .on_blur(|| state::set_text_input_focused(false))
+                                    .on_key_press(super::editor_find::handle_input_key)
                                     .on_change(|v: &str| {
-                                        app_signal().update(|s| s.code_find_query = v.to_string());
+                                        app_signal().update(|s| s.code_search.query = v.to_owned().into());
                                     })
                                     .on_submit(move |_: &str| {
                                         if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
@@ -415,17 +485,10 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         }
                                     }),
                             )
+                            .child(super::editor_find::FindBar::Source.options())
                             .child(
-                                text(move || {
-                                    let matches = app_signal().with(|s| s.code_find_matches);
-                                    if matches.0 == 0 {
-                                        "0 个结果".to_string()
-                                    } else if let Some(cur) = matches.1 {
-                                        format!("{}/{}", cur + 1, matches.0)
-                                    } else {
-                                        format!("{} 个结果", matches.0)
-                                    }
-                                })
+                                text(move || app_signal().with(|s| super::editor_find::result_text(&s.code_find_matches)))
+                                    .test_id("code-find-matches")
                                 .text_size(px(11.0))
                                 .text_color(move || current_palette().text_muted),
                             )
@@ -504,13 +567,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     .items_center()
                                     .justify_center()
                                     .cursor(Cursor::Pointer)
-                                    .on_press(|| {
-                                        state::set_text_input_focused(false);
-                                        app_signal().update(|s| {
-                                            s.code_find_open = false;
-                                            s.code_replace_open = false;
-                                        });
-                                    })
+                                    .on_press(state::close_find_bar)
                                     .child(icons::icon(ICO_CLOSE, 10.0, current_palette().text_muted)),
                             ),
                     )
@@ -537,6 +594,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         .value(move || app_signal().with(|s| s.code_replace_text.clone()))
                                         .on_focus(|| state::set_text_input_focused(true))
                                         .on_blur(|| state::set_text_input_focused(false))
+                                        .on_key_press(super::editor_find::handle_input_key)
                                         .on_change(|v: &str| {
                                             app_signal().update(|s| s.code_replace_text = v.to_string());
                                         }),
@@ -632,7 +690,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                     app_signal().with(|s| {
                         s.code_tabs
                             .get(s.active_code_tab_idx)
-                            .map(|t| !t.editable)
+                            .map(|t| !t.editor_editable())
                             .unwrap_or(true)
                     })
                 })
@@ -640,18 +698,13 @@ pub fn code_editor_pane() -> impl IntoElement {
                 .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
                 .search(move || {
                     app_signal().with(|s| {
-                        if s.code_find_open && !s.code_find_query.is_empty() {
-                            Some(EditorSearch::new(s.code_find_query.clone()))
-                        } else {
-                            None
-                        }
+                        (s.code_find_open && !s.code_search.query.is_empty()).then(|| s.code_search.clone())
                     })
                 })
                 .decorations(move || crate::ui::bookmarks::editor_decorations())
                 .on_focus(|| {
                     state::set_text_input_focused(false);
                     app_signal().update(|s| s.focus_zone = FocusZone::CodeEditor);
-                    state::request_shortcut_rebind();
                 })
                 .on_change(|value: &SharedString| {
                     let id = app_signal().with_untracked(|s| s.code_tabs.get(s.active_code_tab_idx)
@@ -671,55 +724,17 @@ pub fn code_editor_pane() -> impl IntoElement {
                     }
                 })
                 .on_search_change(|res: &EditorSearchResult| {
-                    let next = (res.count, res.current);
-                    if app_signal().with_untracked(|s| s.code_find_matches != next) {
-                        app_signal().update(|s| s.code_find_matches = next);
+                    if app_signal().with_untracked(|s| {
+                        s.editor_tab == state::EditorTabKind::File
+                            && s.code_split.is_none()
+                            && s.code_find_open
+                            && s.code_find_matches != *res
+                    }) {
+                        app_signal().update(|s| s.code_find_matches = res.clone());
                     }
                 })
                 .on_text_press(|_: &nsh_base::EditorTextPressEvent| super::blame_view::note_text_press())
-                .on_context_menu(move |ev: &EditorContextMenuEvent| {
-                    let info = app_signal().with_untracked(|s| {
-                        s.code_tabs.get(s.active_code_tab_idx).map(|t| t.file.clone())
-                    });
-                    if let Some(f) = info {
-                        let mut items = vec![
-                            MenuItem::new("复制").on_select(state::copy_for_current_focus),
-                            MenuItem::new("文件结构…").on_select(crate::ui::editor_tools::open_structure),
-                            MenuItem::new("书签…").on_select(crate::ui::bookmarks::open_modal),
-                            MenuItem::new("重新格式化代码").on_select(crate::format_runtime::format_active),
-                            MenuItem::new("与剪贴板比较").on_select(super::comparison::open_clipboard),
-                            MenuItem::new("回滚选中块").on_select(super::git_review::rollback_code),
-                            MenuItem::new("保存时自动格式化")
-                                .checked(app_signal().with_untracked(|s| s.cfg.format_on_save))
-                                .on_select(|| {
-                                    app_signal().update(|s| s.cfg.format_on_save = !s.cfg.format_on_save);
-                                    state::save_config_quiet();
-                                }),
-                            MenuItem::separator(),
-                        ];
-                        let history = f.clone();
-                        let revision = f.clone();
-                        items.push(MenuItem::submenu("Git", [
-                            MenuItem::new("查看文件历史").on_select(move || super::revision_picker::show_history(history.clone())),
-                            MenuItem::new("与修订版本比较…").on_select(move || super::revision_picker::open(revision.clone())),
-                        ]));
-                        items.extend(super::blame_view::menu_items(ev.position.line + 1));
-                        let breakpoint_file = f.clone();
-                        let line = ev.position.line + 1;
-                        items.push(MenuItem::new("切换断点").on_select(move || super::debug_panel::toggle_breakpoint(&breakpoint_file,line)));
-                        items.push(super::language_tools::menu());
-                        items.push(MenuItem::separator());
-                        items.extend(build_location_menu_items(
-                            f.repo_id,
-                            f.repo_path,
-                            f.rel_path,
-                            f.abs_path,
-                            ev.position.line + 1,
-                            false,
-                        ));
-                        crate::state::show_popup_menu_at(items, point(ev.x, ev.y));
-                    }
-                })
+                .on_context_menu(show_context_menu)
                 .into_element(), ed_ref, None).into_element()
         }))
 }

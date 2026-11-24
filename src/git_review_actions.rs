@@ -24,7 +24,7 @@ pub(crate) fn read_selection_versions(
         !file.conflict && file.old_path_or_current() == file.path,
         "此文件无法按块操作"
     );
-    ensure!(!view.binary && !view.too_large, "此文件无法按块操作");
+    ensure!(view.can_compare_text(), "此文件无法按块操作");
     git_index::literal_file(&file.path)?;
     let repo = Path::new(&file.repo_path);
     let expected = view

@@ -37,7 +37,7 @@ pub(crate) fn clone_repo(workspace: &Path, source: &str, name: &str) -> Result<P
     ensure!(!source.trim().is_empty(), "请输入仓库 URL 或本地路径");
     let (workspace, path) = target(workspace, name)?;
     // The Git client can echo URL userinfo on failure; surface a status without the URL.
-    let outcome = Command::new("git")
+    let outcome = crate::tool_command::command("git")
         .args(["-c", "protocol.ext.allow=never", "clone", "--", source])
         .arg(&path)
         .current_dir(&workspace)
@@ -96,7 +96,7 @@ pub(crate) fn import_repo(workspace: &Path, repo: &Path) -> Result<PathBuf> {
         .and_then(|part| part.to_str())
         .context("无效仓库名")?;
     ensure!(
-        !existing.iter().any(|item| item.id == name),
+        !existing.iter().any(|item| item.name == name),
         "已有同名项目，请改用其他目录名"
     );
     let valid_scalar =

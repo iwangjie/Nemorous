@@ -168,6 +168,7 @@ fn run() {
 
 pub(super) fn body() -> impl IntoElement {
     let p = current_palette();
+    let debug_visible = computed(super::debug_panel::visible);
     view()
         .flex_1()
         .min_h(px(0.0))
@@ -205,8 +206,8 @@ pub(super) fn body() -> impl IntoElement {
                     super::debug_panel::stop();
                 })),
         )
-        .child(dynamic(|| {
-            if super::debug_panel::visible() {
+        .child(dynamic(move || {
+            if debug_visible.get() {
                 super::debug_panel::body().into_element()
             } else {
                 workbench::output().into_element()

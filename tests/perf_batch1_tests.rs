@@ -173,10 +173,10 @@ fn perf_large_diff_and_50_file_switches() {
         .find(|f| f.path == "big.txt")
         .expect("big.txt modified");
     let t_git_big = Instant::now();
-    let big_diff = git::read_review_change(big_cf, false);
+    let big_diff = git::read_review_change(big_cf, false).unwrap();
     let big_computed = compute_diff(&big_diff.old_text, &big_diff.new_text, WhitespaceMode::None);
     let git_near_2mib_diff_ms = t_git_big.elapsed().as_secs_f64() * 1000.0;
-    assert!(!big_diff.too_large && !big_diff.old_text.is_empty());
+    assert!(big_diff.can_compare_text() && !big_diff.old_text.is_empty());
     assert_eq!(big_computed.hunks.len(), 1);
 
     // 实测受检原子保存延迟

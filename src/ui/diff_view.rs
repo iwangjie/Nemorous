@@ -1,18 +1,20 @@
-use std::path::Path;
+use std::{cell::RefCell, collections::HashSet, path::Path, rc::Rc};
 
 use nsh_base::{
-    Editor, EditorApi, EditorCommand, EditorContextMenuEvent, EditorSearch, EditorSearchResult,
-    EditorSelection, editor, input,
+    Editor, EditorApi, EditorContextMenuEvent, EditorHoverEvent, EditorPosition, EditorSearch,
+    EditorSearchResult, EditorSelection, editor, input,
 };
+use nsh_base::editor::EditorProjection;
 use nsh_core::element::desktop::MenuItem;
+use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
 use crate::diff_model::{
-    DiffSide, InlineHighlightMode, WhitespaceMode, build_side_by_side_decorations,
-    build_unified_diff, compute_diff, compute_unchanged_fold_ranges, compute_unified_layout,
+    DiffHunk, DiffSide, InlineHighlightMode, UnifiedDiffDoc, UnifiedLineRef, WhitespaceMode, build_side_by_side_decorations,
+    build_unified_diff, compute_unchanged_fold_ranges, compute_unified_layout, unified_source_eof,
 };
 use crate::state::{
-    self, FocusZone, app_signal, current_palette, editor_refs_signal, jump_diff_hunk,
+    self, AppState, EditorTabKind, FocusZone, DocumentUndo, app_signal, current_palette, editor_refs_signal, jump_diff_hunk,
     jump_from_diff_to_source, move_change_selection, move_commit_diff_file, open_find_bar,
     save_working_diff_with_format, set_inline_mode, set_whitespace_mode, switch_working_diff_scope,
 };
@@ -20,24 +22,45 @@ use crate::theme::Palette;
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
+pub(super) fn reveal_comparison_hunk(hunk: &DiffHunk, old: ComponentRef<Editor>, new: ComponentRef<Editor>) {
+    for (reference, line) in [(old, hunk.old_start), (new, hunk.new_start)] {
+        if let Some(api) = reference.api::<EditorApi>() {
+            let position = EditorPosition::new(line as u32, 0);
+            api.set_selections(vec![EditorSelection::caret(position)]);
+            api.reveal_position(position, true);
+        }
+    }
+}
+
+pub(super) fn bind_comparison_hunk_keys(
+    enabled: impl Fn() -> bool + 'static,
+    navigate: impl Fn(i32) + Copy + 'static,
+) {
+    let keymap = super::keymap_memo();
+    effect(move || {
+        if enabled() {
+            let keys = keymap.get();
+            let options = KeyOptions { when: When::Always, ..Default::default() };
+            super::bind_action(&keys, "previousDifference", options, move |_| navigate(-1));
+            super::bind_action(&keys, "nextDifference", options, move |_| navigate(1));
+        }
+    });
+}
+
 fn toolbar_icon_btn(
-    label: impl Into<String>,
+    label: impl IntoReactive<SharedString>,
     svg_src: &'static str,
-    active: bool,
-    enabled: bool,
-    p: Palette,
+    active: impl IntoReactive<bool>,
+    enabled: impl IntoReactive<bool>,
     tid: &'static str,
     on_click: impl Fn() + 'static,
 ) -> impl IntoElement {
-    let label = label.into();
-    let fg = if !enabled {
-        p.text_muted.opacity(0.45)
-    } else if active {
-        p.accent_soft_text
-    } else {
-        p.text_control
-    };
-    let bg = if active { p.accent_soft } else { transparent_black() };
+    let label = label.into_reactive();
+    let tip = label.clone();
+    let active = active.into_reactive();
+    let background = active.clone();
+    let enabled = enabled.into_reactive();
+    let disabled = enabled.clone().map(|enabled| !enabled);
     view()
         .test_id(tid)
         .h(px(24.0))
@@ -47,28 +70,42 @@ fn toolbar_icon_btn(
         .items_center()
         .justify_center()
         .rounded(px(4.0))
-        .bg(bg)
-        .cursor(if enabled { Cursor::Pointer } else { Cursor::Default })
-        .hover(move |s| if enabled { s.bg(p.surface_hover) } else { s })
-        .label(label.clone())
-        .tooltip(super::tooltip_label(label, p))
-        .on_press(move || {
-            if enabled {
-                on_click();
+        .bg(move || {
+            if background.get() {
+                current_palette().accent_soft
+            } else {
+                transparent_black()
             }
         })
-        .child(icons::icon(svg_src, 12.0, fg))
+        .cursor(Cursor::Pointer)
+        .style_when(disabled.clone(), |s| s.cursor(Cursor::Default))
+        .disabled(disabled)
+        .hover(|s| s.bg(move || current_palette().surface_hover))
+        .label(label)
+        .tooltip(dynamic(move || {
+            super::tooltip_label(tip.get().to_string(), current_palette())
+        }))
+        .on_press(on_click)
+        .child(icons::icon(svg_src, 12.0, move || {
+            let p = current_palette();
+            if !enabled.get() {
+                p.text_muted.opacity(0.45)
+            } else if active.get() {
+                p.accent_soft_text
+            } else {
+                p.text_control
+            }
+        }))
 }
 
 fn toolbar_text_btn(
     label: String,
-    active: bool,
-    p: Palette,
+    active: impl IntoReactive<bool>,
     tid: &'static str,
     on_click: impl Fn() + 'static,
 ) -> impl IntoElement {
-    let bg = if active { p.accent_soft } else { p.surface2 };
-    let fg = if active { p.accent_soft_text } else { p.text_control };
+    let active = active.into_reactive();
+    let background = active.clone();
     view()
         .test_id(tid)
         .h(px(24.0))
@@ -77,21 +114,65 @@ fn toolbar_text_btn(
         .items_center()
         .justify_center()
         .rounded(px(4.0))
-        .bg(bg)
+        .bg(move || {
+            let p = current_palette();
+            if background.get() {
+                p.accent_soft
+            } else {
+                p.surface2
+            }
+        })
         .cursor(Cursor::Pointer)
-        .hover(move |s| s.bg(p.surface_hover))
+        .hover(|s| s.bg(move || current_palette().surface_hover))
         .label(label.clone())
         .on_press(on_click)
-        .child(text(label).text_size(px(11.0)).text_color(fg).number_of_lines(1u32))
+        .child(
+            text(label)
+                .text_size(px(11.0))
+                .text_color(move || {
+                    let p = current_palette();
+                    if active.get() {
+                        p.accent_soft_text
+                    } else {
+                        p.text_control
+                    }
+                })
+                .number_of_lines(1u32),
+        )
+}
+
+fn toolbar_shortcut_hint(keys: Memo<crate::keymap::Keymap>, label: &str, action: &str) -> String {
+    keys.with(|keys| {
+        keys.keys(action)
+            .first()
+            .and_then(|key| nsh_core::keymap::Keystroke::parse_with(key, apple_keys()).ok())
+            .map_or_else(
+                || label.to_owned(),
+                |key| format!("{label} ({})", key.label(os(), apple_keys())),
+            )
+    })
+}
+
+pub(super) fn diff_find_button(id: &'static str, keys: Memo<crate::keymap::Keymap>) -> impl IntoElement {
+    toolbar_icon_btn(
+        move || toolbar_shortcut_hint(keys, "查找", "find"),
+        ICO_SEARCH,
+        move || app_signal().with(|s| s.active_find_open()),
+        true,
+        id,
+        || open_find_bar(false),
+    )
 }
 
 fn show_diff_display_menu() {
-    let (whitespace, inline, wrap, show_whitespace) = app_signal().with_untracked(|s| {
+    let (whitespace, inline, wrap, show_whitespace, single, sync_scroll) = app_signal().with_untracked(|s| {
         (
             WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode),
             InlineHighlightMode::from_config(&s.cfg.diff_inline_mode),
             s.cfg.editor_soft_wrap,
             s.cfg.diff_show_whitespaces,
+            s.cfg.diff_single_column,
+            s.cfg.diff_sync_scroll,
         )
     });
     let whitespace_options: Vec<_> = [
@@ -109,7 +190,7 @@ fn show_diff_display_menu() {
         .map(|mode| MenuItem::new(mode.label()).checked(mode == inline)
             .on_select(move || set_inline_mode(mode)))
         .collect();
-    state::show_popup_menu(vec![
+    let mut items = vec![
         MenuItem::submenu("空白比较", whitespace_options),
         MenuItem::submenu("行内高亮", inline_options),
         MenuItem::separator(),
@@ -121,7 +202,453 @@ fn show_diff_display_menu() {
             app_signal().update(|s| s.cfg.diff_show_whitespaces = !s.cfg.diff_show_whitespaces);
             state::save_config_quiet();
         }),
-    ]);
+    ];
+    if !single {
+        items.push(MenuItem::new("同步滚动").checked(sync_scroll).on_select(|| {
+            app_signal().update(|s| s.cfg.diff_sync_scroll = !s.cfg.diff_sync_scroll);
+            state::save_config_quiet();
+        }));
+    }
+    state::show_popup_menu(items);
+}
+
+#[derive(Clone, Default, PartialEq)]
+struct DiffControls {
+    visible: bool,
+    repo: String,
+    path: String,
+    revisions: String,
+    added: usize,
+    deleted: usize,
+    hunks: usize,
+    hunk: usize,
+    dirty: bool,
+    staged: bool,
+    editable: bool,
+    can_open_source: bool,
+    can_switch_files: bool,
+    conflict: bool,
+    notice: Option<&'static str>,
+    comparable: bool,
+    single: bool,
+    collapse: bool,
+    boundary: Option<i32>,
+}
+
+fn diff_controls(
+    is_commit: bool,
+    toggle_layout: impl Fn() + Copy + 'static,
+) -> impl IntoElement {
+    let controls = computed(move || {
+        app_signal().with(|s| {
+            let path_label = |old: &str, new: &str| {
+                if old == new {
+                    new.to_owned()
+                } else {
+                    format!("{old} → {new}")
+                }
+            };
+            let (single, collapse) = (s.cfg.diff_single_column, s.cfg.diff_collapse_unchanged);
+            if is_commit {
+                let Some(diff) = &s.commit_diff else {
+                    return DiffControls::default();
+                };
+                let split_text = (!single).then_some(match diff.active_side {
+                    DiffSide::Old => diff.data.old_text.as_str(),
+                    DiffSide::New => diff.data.new_text.as_str(),
+                });
+                DiffControls {
+                    visible: true,
+                    repo: diff.commit.repo_name.clone(),
+                    path: path_label(&diff.data.old_path, &diff.data.new_path),
+                    revisions: format!("{} → {}", diff.data.old_title, diff.data.new_title),
+                    added: diff.computed.added_lines,
+                    deleted: diff.computed.deleted_lines,
+                    hunks: diff.computed.hunks.len(),
+                    hunk: diff.computed.hunk_navigation(diff.active_side, diff.active_cursor(), split_text).counter_index(),
+                    can_open_source: diff.data.status != "D",
+                    can_switch_files: diff.scope == state::CommitDiffScope::AllFiles,
+                    comparable: !diff.data.binary && !diff.data.too_large,
+                    single,
+                    collapse,
+                    boundary: diff.boundary_hint,
+                    ..DiffControls::default()
+                }
+            } else {
+                let Some(diff) = &s.working_diff else {
+                    return DiffControls::default();
+                };
+                let split_text = (!single).then_some(diff.active_text());
+                DiffControls {
+                    visible: true,
+                    repo: diff.file.repo_name.clone(),
+                    path: path_label(&diff.data.old_path, &diff.data.new_path),
+                    revisions: format!("{} → {}", diff.data.old_title, diff.data.new_title),
+                    added: diff.computed.added_lines,
+                    deleted: diff.computed.deleted_lines,
+                    hunks: diff.computed.hunks.len(),
+                    hunk: diff.computed.hunk_navigation(diff.active_side, diff.active_cursor(), split_text).counter_index(),
+                    dirty: diff.is_dirty(),
+                    staged: diff.data.staged_only,
+                    editable: diff.editor_editable(),
+                    can_open_source: Path::new(&diff.file.abs_path()).is_file(),
+                    can_switch_files: true,
+                    conflict: diff.file.conflict,
+                    notice: diff
+                        .read_failure_notice()
+                        .or_else(|| diff.disk_state.notice()),
+                    comparable: diff.can_compare_text(),
+                    single,
+                    collapse,
+                    boundary: diff.boundary_hint,
+                }
+            }
+        })
+    });
+    // Keep the button elements mounted when a new comparison arrives. AppKit
+    // must deliver mouse up to the same control that handled mouse down.
+    when(
+        move || controls.with(|d| d.visible),
+        move || {
+            view()
+                .flex_col()
+                .w_full()
+                .bg(move || current_palette().rail_bg)
+                .border_b_1()
+                .border_color(move || current_palette().border)
+                .child(diff_header(controls, is_commit))
+                .child(diff_toolbar(controls, is_commit, toggle_layout))
+        },
+    )
+}
+
+fn diff_header(controls: Memo<DiffControls>, is_commit: bool) -> impl IntoElement {
+    let dirty = move || controls.with(|d| d.dirty);
+    let staged = move || controls.with(|d| d.staged);
+    let comparable = move || controls.with(|d| d.comparable);
+    view()
+        .h(px(36.0))
+        .px(px(12.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .border_b_1()
+        .border_color(move || current_palette().border)
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .child(
+                    view()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .bg(move || current_palette().accent_soft)
+                        .child(
+                            text(move || controls.with(|d| d.repo.clone()))
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(move || current_palette().accent_soft_text),
+                        ),
+                )
+                .child(
+                    text(move || controls.with(|d| d.path.clone()))
+                        .test_id("diff-header-path")
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(move || current_palette().text_primary)
+                        .number_of_lines(1u32),
+                )
+                .child(when(
+                    move || controls.with(|d| d.single),
+                    move || {
+                        text(move || controls.with(|d| d.revisions.clone()))
+                            .text_size(px(10.5))
+                            .text_color(move || current_palette().text_muted)
+                            .number_of_lines(1u32)
+                    },
+                ))
+                .child(when(comparable, move || {
+                    text(move || controls.with(|d| format!("+{}", d.added)))
+                        .test_id("diff-stat-added")
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(move || current_palette().green)
+                }))
+                .child(when(comparable, move || {
+                    text(move || controls.with(|d| format!("-{}", d.deleted)))
+                        .test_id("diff-stat-deleted")
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(move || current_palette().danger)
+                }))
+                .child(when(
+                    move || controls.with(|d| d.conflict),
+                    || {
+                        toolbar_text_btn(
+                            "解决冲突".to_owned(),
+                            true,
+                            "diff-open-conflicts",
+                            || {
+                                let file = app_signal().with_untracked(|s| {
+                                    s.working_diff
+                                        .as_ref()
+                                        .filter(|diff| diff.file.conflict)
+                                        .map(|diff| {
+                                            (diff.file.repo_path.clone(), diff.file.path.clone())
+                                        })
+                                });
+                                if let Some((repo, path)) = file {
+                                    super::conflict_workbench::open_file(repo.into(), path);
+                                }
+                            },
+                        )
+                    },
+                ))
+                .child(when(dirty, || {
+                    view()
+                        .test_id("diff-dirty-badge")
+                        .px(px(6.0))
+                        .py(px(1.5))
+                        .rounded(px(4.0))
+                        .bg(move || current_palette().amber_soft)
+                        .child(
+                            text("未保存")
+                                .text_size(px(10.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(move || current_palette().amber),
+                        )
+                }))
+                .child(when(
+                    move || controls.with(|d| d.notice.is_some()),
+                    move || {
+                        view().test_id("diff-disk-state").child(
+                            text(move || controls.with(|d| d.notice.unwrap_or_default()))
+                                .text_size(px(10.5))
+                                .text_color(move || current_palette().amber),
+                        )
+                    },
+                ))
+                .child(when(
+                    move || controls.with(|d| d.single && !d.editable),
+                    || {
+                        view()
+                            .px(px(5.0))
+                            .py(px(1.5))
+                            .rounded(px(4.0))
+                            .bg(move || current_palette().surface2)
+                            .child(
+                                text("只读")
+                                    .text_size(px(10.0))
+                                    .text_color(move || current_palette().text_muted),
+                            )
+                    },
+                )),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child((!is_commit).then(|| {
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(3.0))
+                        .child(toolbar_text_btn(
+                            "未暂存".to_owned(),
+                            move || !staged(),
+                            "diff-scope-unstaged",
+                            || switch_working_diff_scope(false),
+                        ))
+                        .child(toolbar_text_btn(
+                            "暂存区".to_owned(),
+                            staged,
+                            "diff-scope-staged",
+                            || switch_working_diff_scope(true),
+                        ))
+                }))
+                .child(when(dirty, || {
+                    view()
+                        .test_id("diff-save-btn")
+                        .h(px(24.0))
+                        .px(px(10.0))
+                        .rounded(px(5.0))
+                        .bg(move || current_palette().accent)
+                        .items_center()
+                        .justify_center()
+                        .cursor(Cursor::Pointer)
+                        .hover(|style| style.bg(move || current_palette().accent_hover))
+                        .on_press(|| {
+                            save_working_diff_with_format();
+                        })
+                        .child(
+                            text("保存")
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(move || current_palette().accent_text),
+                        )
+                })),
+        )
+}
+
+fn diff_toolbar(
+    controls: Memo<DiffControls>,
+    is_commit: bool,
+    toggle_layout: impl Fn() + 'static,
+) -> impl IntoElement {
+    let comparable = move || controls.with(|d| d.comparable);
+    let previous_file = move || controls.with(|d| d.boundary == Some(-1));
+    let next_file = move || controls.with(|d| d.boundary == Some(1));
+    let collapse = move || controls.with(|d| d.collapse);
+    let single = move || controls.with(|d| d.single);
+    let move_file = move |delta| {
+        if is_commit {
+            move_commit_diff_file(delta);
+        } else {
+            move_change_selection(delta, true);
+        }
+    };
+    let keys = super::keymap_memo();
+    let shortcut_hint = move |label: &str, action| toolbar_shortcut_hint(keys, label, action);
+    view()
+        .test_id("diff-toolbar")
+        .h(px(32.0))
+        .px(px(10.0))
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .child(toolbar_icon_btn(
+            move || {
+                shortcut_hint(
+                    if previous_file() {
+                        "切到上一个文件"
+                    } else {
+                        "上一处差异"
+                    },
+                    "previousDifference",
+                )
+            },
+            ICO_CHEVRON_UP,
+            previous_file,
+            comparable,
+            "diff-prev-hunk",
+            || jump_diff_hunk(-1),
+        ))
+        .child(when(comparable, move || {
+            text(move || {
+                controls.with(|d| {
+                    if d.hunks == 0 {
+                        "0 处差异".to_owned()
+                    } else {
+                        format!("{}/{}", (d.hunk + 1).min(d.hunks), d.hunks)
+                    }
+                })
+            })
+            .test_id("diff-hunk-counter")
+            .text_size(px(11.0))
+            .text_color(move || current_palette().text_secondary)
+        }))
+        .child(toolbar_icon_btn(
+            move || {
+                shortcut_hint(
+                    if next_file() {
+                        "切到下一个文件"
+                    } else {
+                        "下一处差异"
+                    },
+                    "nextDifference",
+                )
+            },
+            ICO_CHEVRON_DOWN,
+            next_file,
+            comparable,
+            "diff-next-hunk",
+            || jump_diff_hunk(1),
+        ))
+        .child(when(
+            move || controls.with(|d| d.can_open_source),
+            move || {
+                toolbar_icon_btn(
+                    move || shortcut_hint("跳转到源码", "jumpToSource"),
+                    ICO_EDIT,
+                    false,
+                    true,
+                    "diff-jump-source-btn",
+                    jump_from_diff_to_source,
+                )
+            },
+        ))
+        .child(toolbar_icon_btn(
+            move || {
+                if collapse() {
+                    "展开未改动"
+                } else {
+                    "折叠未改动"
+                }
+            },
+            ICO_COLLAPSE,
+            collapse,
+            true,
+            "diff-collapse-btn",
+            || {
+                app_signal()
+                    .update(|s| s.cfg.diff_collapse_unchanged = !s.cfg.diff_collapse_unchanged);
+                state::save_config_quiet();
+            },
+        ))
+        .child(diff_find_button("diff-find-btn", keys))
+        .child(toolbar_icon_btn(
+            move || {
+                if single() {
+                    "切换为双栏"
+                } else {
+                    "切换为单栏"
+                }
+            },
+            ICO_COLUMNS,
+            single,
+            true,
+            "diff-layout-toggle",
+            toggle_layout,
+        ))
+        .child((!is_commit).then(|| {
+            toolbar_icon_btn(
+                "HEAD、暂存区与工作区对比",
+                ICO_BRANCH,
+                false,
+                true,
+                "diff-index-review",
+                super::index_review::open_active,
+            )
+        }))
+        .child(toolbar_icon_btn(
+            "差异显示选项",
+            ICO_SETTINGS,
+            false,
+            true,
+            "diff-options-btn",
+            show_diff_display_menu,
+        ))
+        .child(view().flex_1())
+        .child(toolbar_icon_btn(
+            move || shortcut_hint("上一个文件", "previousDiffFile"),
+            ICO_ARROW_LEFT,
+            false,
+            move || controls.with(|d| d.can_switch_files),
+            "diff-prev-file",
+            move || move_file(-1),
+        ))
+        .child(toolbar_icon_btn(
+            move || shortcut_hint("下一个文件", "nextDiffFile"),
+            ICO_ARROW_RIGHT,
+            false,
+            move || controls.with(|d| d.can_switch_files),
+            "diff-next-file",
+            move || move_file(1),
+        ))
 }
 
 /// 统一渲染工作区 Diff（`is_commit = false`）或历史提交 Diff（`is_commit = true`）。
@@ -129,18 +656,6 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
     let old_ref = component_ref::<Editor>();
     let new_ref = component_ref::<Editor>();
     let unified_ref = component_ref::<Editor>();
-    let keys = super::keymap_memo();
-    let shortcut_hint = move |label: &str, action| {
-        keys.with(|keys| {
-            keys.keys(action)
-                .first()
-                .and_then(|key| nsh_core::keymap::Keystroke::parse_with(key, apple_keys()).ok())
-                .map_or_else(
-                    || label.to_owned(),
-                    |key| format!("{label} ({})", key.label(os(), apple_keys())),
-                )
-        })
-    };
     editor_refs_signal().update(|r| {
         if is_commit {
             r.commit_old = Some(old_ref);
@@ -152,6 +667,8 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
             r.work_unified = Some(unified_ref);
         }
     });
+    let tab = if is_commit { state::EditorTabKind::CommitDiff } else { state::EditorTabKind::WorkingDiff };
+    state::restore_diff_view_after_render(tab, false);
 
     // 同步文本与折叠状态到双栏 Editor（按 content_rev 避免打字递归覆盖）
     let sync_memo = computed(move || {
@@ -171,6 +688,10 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
             }
         })
     });
+    let scrolled_side = stored(None);
+    let remember_scroll = move |side: Option<DiffSide>| {
+        scrolled_side.replace(side.map(|side| (sync_memo.with_untracked(|s| s.0), side)));
+    };
     let last_rev = stored(0u64);
     let last_collapse = stored(false);
     effect(move || {
@@ -215,10 +736,16 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                 }
                 if let Some(api) = new_ref.api::<EditorApi>() {
                     if api.value() != new_text {
-                        api.set_value(new_text.clone());
+                        if is_commit {
+                            api.set_value(new_text.clone());
+                        } else {
+                            api.reload_value(new_text.clone());
+                        }
                     }
                 }
-                if !state::text_input_focus_signal().with_untracked(|f| f.focused) {
+                if !crate::history_runtime::is_open()
+                    && !state::text_input_focus_signal().with_untracked(|f| f.focused)
+                {
                     let zone = app_signal().with_untracked(|s| s.focus_zone);
                     match (is_commit, zone) {
                         (true, FocusZone::CommitDiffOld) | (false, FocusZone::WorkingDiffOld) => {
@@ -273,7 +800,7 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
     let body_mode_memo = computed(move || {
         app_signal().with(|s| {
             let single = s.cfg.diff_single_column;
-            let (msg, rev_for_single) = if is_commit {
+            let (msg, rev_for_single, undo_history) = if is_commit {
                 s.commit_diff
                     .as_ref()
                     .map(|c| {
@@ -284,25 +811,19 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
                         } else {
                             None
                         };
-                        (m, if single { c.content_rev } else { 0 })
+                        (m, if single { c.content_rev } else { 0 }, None)
                     })
-                    .unwrap_or((None, 0))
+                    .unwrap_or((None, 0, None))
             } else {
                 s.working_diff
                     .as_ref()
                     .map(|w| {
-                        let m = if w.data.too_large {
-                            Some("文件超过 2 MiB 审阅上限，已只读拦截，避免界面卡顿")
-                        } else if w.data.binary {
-                            Some("二进制或非 UTF-8 文件，无法以文本对比")
-                        } else {
-                            None
-                        };
-                        (m, if single { w.content_rev } else { 0 })
+                        let m = w.data.text_block().map(crate::git::ReviewTextBlock::comparison_notice);
+                        (m, if single { w.content_rev } else { 0 }, Some(w.undo_history.clone()))
                     })
-                    .unwrap_or((None, 0))
+                    .unwrap_or((None, 0, None))
             };
-            (single, msg, rev_for_single)
+            (single, msg, rev_for_single, undo_history)
         })
     });
 
@@ -312,498 +833,12 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
         .flex_col()
         .overflow_hidden()
         .bg(move || current_palette().surface)
-        // 顶栏 + 工具栏
-        .child(dynamic(move || {
-            let p = current_palette();
-            let snap = app_signal().with(|s| {
-                let single = s.cfg.diff_single_column;
-                let collapse = s.cfg.diff_collapse_unchanged;
-                if is_commit {
-                    s.commit_diff.as_ref().map(|c| {
-                        let path_label = if c.data.old_path != c.data.new_path {
-                            format!("{} → {}", c.data.old_path, c.data.new_path)
-                        } else {
-                            c.data.new_path.clone()
-                        };
-                        (
-                            c.commit.repo_name.clone(),
-                            path_label,
-                            format!("{} → {}", c.data.old_title, c.data.new_title),
-                            c.computed.added_lines,
-                            c.computed.deleted_lines,
-                            c.computed.hunks.len(),
-                            c.current_hunk,
-                            false, // dirty
-                            false, // staged_only
-                            false, // editable
-                            c.data.status != "D",
-                            single,
-                            collapse,
-                            c.boundary_hint,
-                        )
-                    })
-                } else {
-                    s.working_diff.as_ref().map(|w| {
-                        let path_label = if w.data.old_path != w.data.new_path {
-                            format!("{} → {}", w.data.old_path, w.data.new_path)
-                        } else {
-                            w.data.new_path.clone()
-                        };
-                        (
-                            w.file.repo_name.clone(),
-                            path_label,
-                            format!("{} → {}", w.data.old_title, w.data.new_title),
-                            w.computed.added_lines,
-                            w.computed.deleted_lines,
-                            w.computed.hunks.len(),
-                            w.current_hunk,
-                            w.is_dirty(),
-                            w.data.staged_only,
-                            w.data.editable && !w.data.staged_only,
-                            Path::new(&w.file.abs_path()).exists(),
-                            single,
-                            collapse,
-                            w.boundary_hint,
-                        )
-                    })
-                }
-            });
-
-            let Some((
-                repo_name,
-                path_label,
-                rev_label,
-                added,
-                deleted,
-                hunk_count,
-                cur_hunk,
-                is_dirty,
-                staged_only,
-                editable,
-                can_open_source,
-                single,
-                collapse,
-                boundary_hint,
-            )) = snap
-            else {
-                return view().h(px(0.0)).into_element();
-            };
-
-            let hunk_counter = if hunk_count == 0 {
-                "0 处差异".to_string()
-            } else {
-                format!("{}/{}", (cur_hunk + 1).min(hunk_count), hunk_count)
-            };
-
-            view()
-                .flex_col()
-                .w_full()
-                .bg(p.rail_bg)
-                .border_b_1()
-                .border_color(p.border)
-                // 行 1：仓库、路径、状态、Scope 切换
-                .child(
-                    view()
-                        .h(px(36.0))
-                        .px(px(12.0))
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .border_b_1()
-                        .border_color(p.border)
-                        .child(
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .overflow_hidden()
-                                .child(
-                                    view()
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded(px(4.0))
-                                        .bg(p.accent_soft)
-                                        .child(
-                                            text(repo_name)
-                                                .text_size(px(10.5))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(p.accent_soft_text),
-                                        ),
-                                )
-                                .child(
-                                    text(path_label)
-                                        .test_id("diff-header-path")
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(p.text_primary)
-                                        .number_of_lines(1u32),
-                                )
-                                .child(single.then(|| {
-                                    text(rev_label)
-                                        .text_size(px(10.5))
-                                        .text_color(p.text_muted)
-                                        .number_of_lines(1u32)
-                                }))
-                                .child(
-                                    text(format!("+{added}"))
-                                        .test_id("diff-stat-added")
-                                        .text_size(px(10.5))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(p.green),
-                                )
-                                .child(
-                                    text(format!("-{deleted}"))
-                                        .test_id("diff-stat-deleted")
-                                        .text_size(px(10.5))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(p.danger),
-                                )
-
-                                .child((!is_commit).then(|| dynamic(move || {
-                                    let repo = app_signal().with(|s| {
-                                        s.working_diff.as_ref().filter(|w| w.file.conflict).map(|w| w.file.repo_path.clone())
-                                    });
-                                    repo.map(|repo| toolbar_text_btn(
-                                        "解决冲突".to_owned(), true, p, "diff-open-conflicts",
-                                        move || super::conflict_workbench::open(super::conflict_workbench::Source::Repo(repo.clone().into())),
-                                    ).into_element()).unwrap_or_else(|| view().into_element())
-                                })))
-                                .child(is_dirty.then(|| {
-                                    view()
-                                        .test_id("diff-dirty-badge")
-                                        .px(px(6.0))
-                                        .py(px(2.0))
-                                        .rounded(px(4.0))
-                                        .bg(p.amber_soft)
-                                        .child(
-                                            text("未保存")
-                                                .text_size(px(10.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(p.amber),
-                                        )
-                                }))
-                                .child((single && !editable).then(|| {
-                                    view()
-                                        .px(px(5.0))
-                                        .py(px(1.5))
-                                        .rounded(px(4.0))
-                                        .bg(p.surface2)
-                                        .child(text("只读").text_size(px(10.0)).text_color(p.text_muted))
-                                })),
-                        )
-                        .child(
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.0))
-                                .child((!is_commit).then(|| {
-                                    view()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(3.0))
-                                        .child(toolbar_text_btn(
-                                            "未暂存".to_string(),
-                                            !staged_only,
-                                            p,
-                                            "diff-scope-unstaged",
-                                            || switch_working_diff_scope(false),
-                                        ))
-                                        .child(toolbar_text_btn(
-                                            "暂存区".to_string(),
-                                            staged_only,
-                                            p,
-                                            "diff-scope-staged",
-                                            || switch_working_diff_scope(true),
-                                        ))
-                                }))
-                                .child(is_dirty.then(|| {
-                                    view()
-                                        .test_id("diff-save-btn")
-                                        .h(px(24.0))
-                                        .px(px(10.0))
-                                        .rounded(px(5.0))
-                                        .bg(p.accent)
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor(Cursor::Pointer)
-                                        .hover(move |s| s.bg(p.accent_hover))
-                                        .on_press(|| {
-                                            save_working_diff_with_format();
-                                        })
-                                        .child(
-                                            text("保存")
-                                                .text_size(px(11.0))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(p.accent_text),
-                                        )
-                                })),
-                        ),
-                )
-                // 行 2：Diff 工具栏（上下差异、计数、修改 F4、折叠、查找、忽略空白、上下文件、双栏/单栏、显示选项）
-                .child(
-                    view()
-                        .test_id("diff-toolbar")
-                        .h(px(32.0))
-                        .px(px(10.0))
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .child(toolbar_icon_btn(
-                            shortcut_hint(
-                                if boundary_hint == Some(-1) { "切到上一个文件" } else { "上一处差异" },
-                                "previousDifference",
-                            ),
-                            ICO_CHEVRON_UP,
-                            boundary_hint == Some(-1),
-                            true,
-                            p,
-                            "diff-prev-hunk",
-                            || jump_diff_hunk(-1),
-                        ))
-                        .child(
-                            text(hunk_counter)
-                                .test_id("diff-hunk-counter")
-                                .text_size(px(11.0))
-                                .text_color(p.text_secondary),
-                        )
-                        .child(toolbar_icon_btn(
-                            shortcut_hint(
-                                if boundary_hint == Some(1) { "切到下一个文件" } else { "下一处差异" },
-                                "nextDifference",
-                            ),
-                            ICO_CHEVRON_DOWN,
-                            boundary_hint == Some(1),
-                            true,
-                            p,
-                            "diff-next-hunk",
-                            || jump_diff_hunk(1),
-                        ))
-                        .child(can_open_source.then(|| toolbar_icon_btn(
-                            shortcut_hint("跳转到源码", "jumpToSource"),
-                            ICO_EDIT,
-                            false,
-                            true,
-                            p,
-                            "diff-jump-source-btn",
-                            jump_from_diff_to_source,
-                        )))
-                        .child(toolbar_icon_btn(
-                            if collapse { "展开未改动" } else { "折叠未改动" },
-                            ICO_COLLAPSE,
-                            collapse,
-                            true,
-                            p,
-                            "diff-collapse-btn",
-                            || {
-                                app_signal().update(|s| {
-                                    s.cfg.diff_collapse_unchanged = !s.cfg.diff_collapse_unchanged;
-                                });
-                                state::save_config_quiet();
-                            },
-                        ))
-                        .child(toolbar_icon_btn(
-                            shortcut_hint("查找", "find"),
-                            ICO_SEARCH,
-                            false,
-                            true,
-                            p,
-                            "diff-find-btn",
-                            || open_find_bar(false),
-                        ))
-                        .child(toolbar_icon_btn(
-                            if single { "切换为双栏" } else { "切换为单栏" },
-                            ICO_COLUMNS,
-                            single,
-                            true,
-                            p,
-                            "diff-layout-toggle",
-                            || {
-                                app_signal().update(|s| {
-                                    s.cfg.diff_single_column = !s.cfg.diff_single_column;
-                                });
-                                state::save_config_quiet();
-                            },
-                        ))
-                        .child((!is_commit).then(|| toolbar_icon_btn(
-                            "HEAD、暂存区与工作区对比",
-                            ICO_BRANCH,
-                            false,
-                            true,
-                            p,
-                            "diff-index-review",
-                            super::index_review::open_active,
-                        )))
-                        .child(toolbar_icon_btn(
-                            "差异显示选项",
-                            ICO_SETTINGS,
-                            false,
-                            true,
-                            p,
-                            "diff-options-btn",
-                            show_diff_display_menu,
-                        ))
-                        .child(view().flex_1())
-                        .child(toolbar_icon_btn(
-                            shortcut_hint("上一个文件", "previousDiffFile"),
-                            ICO_ARROW_LEFT,
-                            false,
-                            true,
-                            p,
-                            "diff-prev-file",
-                            move || {
-                                if is_commit {
-                                    move_commit_diff_file(-1);
-                                } else {
-                                    move_change_selection(-1, true);
-                                }
-                            },
-                        ))
-                        .child(toolbar_icon_btn(
-                            shortcut_hint("下一个文件", "nextDiffFile"),
-                            ICO_ARROW_RIGHT,
-                            false,
-                            true,
-                            p,
-                            "diff-next-file",
-                            move || {
-                                if is_commit {
-                                    move_commit_diff_file(1);
-                                } else {
-                                    move_change_selection(1, true);
-                                }
-                            },
-                        )),
-                )
-                .into_element()
-        }))
-        // 按聚焦侧查找条（保持输入框实例稳定，仅响应 side / matches 文字更新！）
-        .child(when(
-            move || app_signal().with(|s| s.diff_find_open),
-            move || {
-                let p = current_palette();
-                let run_find = move |next: bool| {
-                    let (side, single) =
-                        app_signal().with_untracked(|s| (s.diff_find_side, s.cfg.diff_single_column));
-                    let target_ref = if single {
-                        unified_ref
-                    } else {
-                        match side {
-                            DiffSide::Old => old_ref,
-                            DiffSide::New => new_ref,
-                        }
-                    };
-                    if let Some(api) = target_ref.api::<EditorApi>() {
-                        api.run(if next {
-                            EditorCommand::FindNext
-                        } else {
-                            EditorCommand::FindPrevious
-                        });
-                    }
-                };
-                view()
-                    .test_id("diff-find-bar")
-                    .h(px(34.0))
-                    .px(px(12.0))
-                    .gap(px(6.0))
-                    .flex_row()
-                    .items_center()
-                    .bg(move || current_palette().rail_bg)
-                    .border_b_1()
-                    .border_color(move || current_palette().border)
-                    .child(
-                        view()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .bg(move || current_palette().accent_soft)
-                            .child(
-                                text(move || {
-                                    let (single, side) = app_signal()
-                                        .with(|s| (s.cfg.diff_single_column, s.diff_find_side));
-                                    if single {
-                                        "查找单栏"
-                                    } else {
-                                        match side {
-                                            DiffSide::Old => "查找左侧",
-                                            DiffSide::New => "查找右侧",
-                                        }
-                                    }
-                                })
-                                .test_id("diff-find-side-badge")
-                                .text_size(px(10.5))
-                                .text_color(move || current_palette().accent_soft_text),
-                            ),
-                    )
-                    .child(
-                        input()
-                            .test_id("diff-find-input")
-                            .w(px(220.0))
-                            .h(px(24.0))
-                            .px(px(8.0))
-                            .rounded(px(4.0))
-                            .bg(move || current_palette().surface)
-                            .border_1()
-                            .border_color(move || current_palette().border)
-                            .text_size(px(11.5))
-                            .text_color(move || current_palette().text_primary)
-                            .placeholder("在当前聚焦侧查找…")
-                            .value(move || app_signal().with(|s| s.diff_find_query.clone()))
-                            .on_focus(|| state::set_text_input_focused(true))
-                            .on_blur(|| state::set_text_input_focused(false))
-                            .on_change(|v: &str| {
-                                app_signal().update(|s| s.diff_find_query = v.to_string());
-                            })
-                            .on_submit(move |_: &str| run_find(true)),
-                    )
-                    .child(
-                        text(move || {
-                            let matches = app_signal().with(|s| s.diff_find_matches);
-                            if matches.0 == 0 {
-                                "0 个结果".to_string()
-                            } else if let Some(cur) = matches.1 {
-                                format!("{}/{}", cur + 1, matches.0)
-                            } else {
-                                format!("{} 个结果", matches.0)
-                            }
-                        })
-                        .test_id("diff-find-matches")
-                        .text_size(px(11.0))
-                        .text_color(move || current_palette().text_muted),
-                    )
-                    .child(toolbar_text_btn(
-                        "上一个".to_string(),
-                        false,
-                        p,
-                        "diff-find-prev",
-                        move || run_find(false),
-                    ))
-                    .child(toolbar_text_btn(
-                        "下一个".to_string(),
-                        false,
-                        p,
-                        "diff-find-next",
-                        move || run_find(true),
-                    ))
-                    .child(view().flex_1())
-                    .child(
-                        view()
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .items_center()
-                            .justify_center()
-                            .cursor(Cursor::Pointer)
-                            .on_press(|| {
-                                state::set_text_input_focused(false);
-                                app_signal().update(|s| s.diff_find_open = false);
-                            })
-                            .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),
-                    )
-            },
-        ))
+        .child(diff_controls(is_commit, move || state::toggle_diff_layout(scrolled_side.get())))
+        .child(diff_find_bar(tab))
         // 主体内容：仅在双栏/单栏切换或拦截态变化时重建，保持双 Editor 实例稳定不循环重建！
         .child(dynamic(move || {
             let p = current_palette();
-            let (single, blocked_msg, _single_rev) = body_mode_memo.get();
+            let (single, blocked_msg, _single_rev, undo_history) = body_mode_memo.get();
 
             if let Some(msg) = blocked_msg {
                 return view()
@@ -818,9 +853,121 @@ pub fn diff_pane(is_commit: bool) -> impl IntoElement {
             if single {
                 render_single_column_diff(is_commit, unified_ref, p).into_element()
             } else {
-                render_side_by_side_diff(is_commit, old_ref, new_ref, p).into_element()
+                render_side_by_side_diff(is_commit, old_ref, new_ref, p, remember_scroll, undo_history)
+                    .into_element()
             }
         }))
+}
+
+pub(super) fn diff_find_bar(tab: EditorTabKind) -> impl IntoElement {
+    let find_input = element_ref();
+    editor_refs_signal().update(|refs| refs.diff_find_input = Some(find_input));
+    when(
+        move || app_signal().with(|s| s.editor_tab == tab && s.active_find_open()),
+        move || {
+            let p = current_palette();
+            view()
+                .test_id("diff-find-bar")
+                .h(px(34.0))
+                .px(px(12.0))
+                .gap(px(6.0))
+                .flex_row()
+                .items_center()
+                .bg(move || current_palette().rail_bg)
+                .border_b_1()
+                .border_color(move || current_palette().border)
+                .child(
+                    view()
+                        .px(px(6.0))
+                        .py(px(2.0))
+                        .rounded(px(4.0))
+                        .bg(move || current_palette().accent_soft)
+                        .child(
+                            text(move || {
+                                match app_signal().with(|s| s.diff_find_side_for(tab)) {
+                                    None => "查找单栏",
+                                    Some(DiffSide::Old) => "查找左侧",
+                                    Some(DiffSide::New) => "查找右侧",
+                                }
+                            })
+                            .test_id("diff-find-side-badge")
+                            .text_size(px(10.5))
+                            .text_color(move || current_palette().accent_soft_text),
+                        ),
+                )
+                .child(
+                    input()
+                        .test_id("diff-find-input")
+                        .element_ref(&find_input)
+                        .flex_1()
+                        .min_w(px(80.0))
+                        .max_w(px(220.0))
+                        .h(px(24.0))
+                        .px(px(8.0))
+                        .rounded(px(4.0))
+                        .bg(move || current_palette().surface)
+                        .border_1()
+                        .border_color(move || current_palette().border)
+                        .text_size(px(11.5))
+                        .text_color(move || current_palette().text_primary)
+                        .placeholder("在当前聚焦侧查找…")
+                        .value(move || app_signal().with(|s| s.diff_search.query.to_string()))
+                        .on_focus(|| state::set_text_input_focused(true))
+                        .on_blur(|| state::set_text_input_focused(false))
+                        .on_key_press(super::editor_find::handle_input_key)
+                        .on_change(|v: &str| {
+                            app_signal().update(|s| s.diff_search.query = v.to_owned().into());
+                        })
+                        .on_submit(move |_: &str| state::run_active_find_nav(true)),
+                )
+                .child(super::editor_find::FindBar::Diff.options())
+                .child(
+                    text(move || app_signal().with(|s| super::editor_find::result_text(&s.diff_find_matches)))
+                    .test_id("diff-find-matches")
+                    .text_size(px(11.0))
+                    .text_color(move || current_palette().text_muted),
+                )
+                .child(toolbar_text_btn(
+                    "上一个".to_string(),
+                    false,
+                    "diff-find-prev",
+                    || state::run_active_find_nav(false),
+                ))
+                .child(toolbar_text_btn(
+                    "下一个".to_string(),
+                    false,
+                    "diff-find-next",
+                    || state::run_active_find_nav(true),
+                ))
+                .child(view().flex_1())
+                .child(
+                    view()
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .items_center()
+                        .justify_center()
+                        .cursor(Cursor::Pointer)
+                        .on_press(state::close_find_bar)
+                        .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),
+                )
+        },
+    )
+}
+
+fn find_is_on(s: &AppState, tab: EditorTabKind, side: Option<DiffSide>) -> bool {
+    s.editor_tab == tab && s.active_find_open() && s.diff_find_side_for(tab) == side
+}
+
+pub(super) fn diff_search(tab: EditorTabKind, side: Option<DiffSide>) -> Option<EditorSearch> {
+    app_signal().with(|s| {
+        (find_is_on(s, tab, side) && !s.diff_search.query.is_empty()).then(|| s.diff_search.clone())
+    })
+}
+
+pub(super) fn record_diff_search(tab: EditorTabKind, side: Option<DiffSide>, result: &EditorSearchResult) {
+    if app_signal().with_untracked(|s| find_is_on(s, tab, side) && s.diff_find_matches != *result) {
+        app_signal().update(|s| s.diff_find_matches = result.clone());
+    }
 }
 
 fn render_side_by_side_diff(
@@ -828,7 +975,33 @@ fn render_side_by_side_diff(
     old_ref: ComponentRef<Editor>,
     new_ref: ComponentRef<Editor>,
     p: Palette,
+    remember_scroll: impl Fn(Option<DiffSide>) + Copy + 'static,
+    undo_history: Option<DocumentUndo>,
 ) -> impl IntoElement {
+    let tab = if is_commit { EditorTabKind::CommitDiff } else { EditorTabKind::WorkingDiff };
+    if let Some(history) = undo_history.clone() {
+        let mounted = Rc::new(RefCell::new(None));
+        let editor_for_cleanup = mounted.clone();
+        let history_for_cleanup = history.clone();
+        after_answer(move || {
+            if let Some(api) = new_ref.api::<EditorApi>() {
+                history.resume(&api);
+                *mounted.borrow_mut() = Some(api);
+            }
+        });
+        cleanup(move || {
+            if let Some(api) = editor_for_cleanup.borrow_mut().take() {
+                history_for_cleanup.park(&api);
+            }
+        });
+    }
+    let old_hover = super::diff_blame::Hover::new(is_commit, old_ref);
+    let new_hover = super::diff_blame::Hover::new(is_commit, new_ref);
+    after_answer(move || {
+        if let (Some(old), Some(new)) = (old_ref.api::<EditorApi>(), new_ref.api::<EditorApi>()) {
+            state::sync_diff_scroll(tab, old, new);
+        }
+    });
     let (init_old, init_new) = app_signal().with_untracked(|s| {
         if is_commit {
             s.commit_diff
@@ -853,7 +1026,15 @@ fn render_side_by_side_diff(
             } else {
                 s.working_diff
                     .as_ref()
-                    .map(|w| format!("{} · {}", w.data.old_title, w.data.old_path))
+                    .map(|w| {
+                        let title = &w.data.old_title;
+                        let path = &w.data.old_path;
+                        if matches!(w.git_baseline_issue, Some(state::GitBaselineIssue::TextBlocked(_))) {
+                            format!("上次有效版本 · {title} · {path}")
+                        } else {
+                            format!("{title} · {path}")
+                        }
+                    })
                     .unwrap_or_default()
             }
         })
@@ -976,6 +1157,10 @@ fn render_side_by_side_diff(
                 .flex_1()
                 .flex_col()
                 .overflow_hidden()
+                .on_wheel(move |ev: &WheelEvent| {
+                    remember_scroll(Some(DiffSide::Old));
+                    old_hover.scroll(ev);
+                })
                 .border_r_1()
                 .border_color(p.border)
                 .child(
@@ -991,26 +1176,10 @@ fn render_side_by_side_diff(
                         .border_color(p.border)
                         .cursor(Cursor::Pointer)
                         .on_press(move || {
-                            app_signal().update(|s| {
-                                if is_commit {
-                                    if let Some(c) = &mut s.commit_diff {
-                                        c.active_side = DiffSide::Old;
-                                    }
-                                    s.focus_zone = FocusZone::CommitDiffOld;
-                                } else {
-                                    if let Some(w) = &mut s.working_diff {
-                                        w.active_side = DiffSide::Old;
-                                    }
-                                    s.focus_zone = FocusZone::WorkingDiffOld;
-                                }
-                                if s.diff_find_open {
-                                    s.diff_find_side = DiffSide::Old;
-                                }
-                            });
+                            state::focus_diff_side(tab, DiffSide::Old);
                             if let Some(api) = old_ref.api::<EditorApi>() {
                                 api.focus();
                             }
-                            state::request_shortcut_rebind();
                         })
                         .child(
                             text(move || old_header_text.get())
@@ -1045,72 +1214,35 @@ fn render_side_by_side_diff(
                         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
                         .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
                         .decorations(move || old_decs.get())
-                        .search(move || {
-                            app_signal().with(|s| {
-                                if s.diff_find_open
-                                    && s.diff_find_side == DiffSide::Old
-                                    && !s.diff_find_query.is_empty()
-                                {
-                                    Some(EditorSearch::new(s.diff_find_query.clone()))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
+                        .search(move || diff_search(tab, Some(DiffSide::Old)))
                         .on_focus(move || {
+                            remember_scroll(None);
                             state::set_text_input_focused(false);
-                            app_signal().update(|s| {
-                                if is_commit {
-                                    if let Some(c) = &mut s.commit_diff {
-                                        c.active_side = DiffSide::Old;
-                                    }
-                                    s.focus_zone = FocusZone::CommitDiffOld;
-                                } else {
-                                    if let Some(w) = &mut s.working_diff {
-                                        w.active_side = DiffSide::Old;
-                                    }
-                                    s.focus_zone = FocusZone::WorkingDiffOld;
-                                }
-                                if s.diff_find_open {
-                                    s.diff_find_side = DiffSide::Old;
-                                }
-                            });
-                            state::request_shortcut_rebind();
+                            state::focus_diff_side(tab, DiffSide::Old);
                         })
                         .on_selection_change(move |sels: &Vec<EditorSelection>| {
                             if let Some(last) = sels.last() {
-                                let head = last.head;
-                                app_signal().update(|s| {
-                                    if is_commit {
-                                        if let Some(c) = &mut s.commit_diff {
-                                            c.old_cursor = head;
-                                        }
-                                    } else if let Some(w) = &mut s.working_diff {
-                                        w.old_cursor = head;
-                                    }
-                                });
+                                state::record_diff_caret(tab, DiffSide::Old, last.head);
                             }
                         })
-                        .on_search_change(move |res: &EditorSearchResult| {
-                            let next = (res.count, res.current);
-                            let should = app_signal().with_untracked(|s| {
-                                s.diff_find_side == DiffSide::Old && s.diff_find_matches != next
-                            });
-                            if should {
-                                app_signal().update(|s| {
-                                    s.diff_find_matches = next;
-                                });
-                            }
+                        .on_vertical_scroll_drag_start(move || remember_scroll(Some(DiffSide::Old)))
+                        .on_search_change(move |res: &EditorSearchResult| record_diff_search(tab, Some(DiffSide::Old), res))
+                        .on_hover(move |ev: &EditorHoverEvent| {
+                            old_hover.show(is_commit, DiffSide::Old, ev.position.line as usize, ev);
                         })
+                        .on_hover_end(move || old_hover.clear())
                         .on_context_menu(move |ev: &EditorContextMenuEvent| {
+                            old_hover.clear();
                             show_diff_editor_context_menu(
-                                is_commit,
+                                tab,
                                 DiffSide::Old,
-                                ev.position.line + 1,
+                                ev.position,
                                 ev,
+                                None,
                             );
                         }),
-                ),
+                )
+                .child(old_hover.tooltip()),
         )
         // 右侧（工作区未暂存可编辑；暂存区与历史提交只读）
         .child(
@@ -1118,6 +1250,10 @@ fn render_side_by_side_diff(
                 .flex_1()
                 .flex_col()
                 .overflow_hidden()
+                .on_wheel(move |ev: &WheelEvent| {
+                    remember_scroll(Some(DiffSide::New));
+                    new_hover.scroll(ev);
+                })
                 .child(
                     view()
                         .test_id("diff-new-pane-bar")
@@ -1131,26 +1267,10 @@ fn render_side_by_side_diff(
                         .border_color(p.border)
                         .cursor(Cursor::Pointer)
                         .on_press(move || {
-                            app_signal().update(|s| {
-                                if is_commit {
-                                    if let Some(c) = &mut s.commit_diff {
-                                        c.active_side = DiffSide::New;
-                                    }
-                                    s.focus_zone = FocusZone::CommitDiffNew;
-                                } else {
-                                    if let Some(w) = &mut s.working_diff {
-                                        w.active_side = DiffSide::New;
-                                    }
-                                    s.focus_zone = FocusZone::WorkingDiffNew;
-                                }
-                                if s.diff_find_open {
-                                    s.diff_find_side = DiffSide::New;
-                                }
-                            });
+                            state::focus_diff_side(tab, DiffSide::New);
                             if let Some(api) = new_ref.api::<EditorApi>() {
                                 api.focus();
                             }
-                            state::request_shortcut_rebind();
                         })
                         .child(
                             text(move || new_header_text.get())
@@ -1161,9 +1281,7 @@ fn render_side_by_side_diff(
                         )
                         .child(when(
                             move || app_signal().with(|s| {
-                                is_commit || s.working_diff.as_ref().is_none_or(|w| {
-                                    !w.data.editable || w.data.staged_only
-                                })
+                                is_commit || s.working_diff.as_ref().is_none_or(|w| !w.editor_editable())
                             }),
                             move || text("只读").text_size(px(9.5)).text_color(p.text_muted),
                         )),
@@ -1194,7 +1312,7 @@ fn render_side_by_side_diff(
                                 app_signal().with(|s| {
                                     !s.working_diff
                                         .as_ref()
-                                        .is_some_and(|w| w.data.editable && !w.data.staged_only)
+                                        .is_some_and(|w| w.editor_editable())
                                 })
                             }
                         })
@@ -1202,91 +1320,49 @@ fn render_side_by_side_diff(
                         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
                         .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
                         .decorations(move || new_decs.get())
-                        .search(move || {
-                            app_signal().with(|s| {
-                                if s.diff_find_open
-                                    && s.diff_find_side == DiffSide::New
-                                    && !s.diff_find_query.is_empty()
-                                {
-                                    Some(EditorSearch::new(s.diff_find_query.clone()))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
+                        .search(move || diff_search(tab, Some(DiffSide::New)))
                         .on_focus(move || {
+                            remember_scroll(None);
                             state::set_text_input_focused(false);
-                            app_signal().update(|s| {
-                                if is_commit {
-                                    if let Some(c) = &mut s.commit_diff {
-                                        c.active_side = DiffSide::New;
-                                    }
-                                    s.focus_zone = FocusZone::CommitDiffNew;
-                                } else {
-                                    if let Some(w) = &mut s.working_diff {
-                                        w.active_side = DiffSide::New;
-                                    }
-                                    s.focus_zone = FocusZone::WorkingDiffNew;
-                                }
-                                if s.diff_find_open {
-                                    s.diff_find_side = DiffSide::New;
-                                }
-                            });
-                            state::request_shortcut_rebind();
+                            state::focus_diff_side(tab, DiffSide::New);
                         })
                         .on_change(move |val: &SharedString| {
                             if is_commit {
                                 return;
                             }
+                            new_hover.invalidate();
                             let new_str = val.to_string();
-                            app_signal().update(|s| {
-                                let ws_mode = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
-                                if let Some(w) = &mut s.working_diff {
-                                    if w.data.editable && !w.data.staged_only {
-                                        w.current_new_text = new_str;
-                                        w.computed = compute_diff(
-                                            &w.data.old_text,
-                                            &w.current_new_text,
-                                            ws_mode,
-                                        );
-                                    }
+                            if let Some(history) = &undo_history {
+                                let mut refresh_repo = None;
+                                app_signal().update(|s| refresh_repo = s.apply_working_diff_edit(history, new_str));
+                                if let Some(repo) = refresh_repo {
+                                    state::refresh_workspace_async(Some(HashSet::from([repo])));
                                 }
-                            });
+                            }
                         })
                         .on_selection_change(move |sels: &Vec<EditorSelection>| {
                             if let Some(last) = sels.last() {
-                                let head = last.head;
-                                app_signal().update(|s| {
-                                    if is_commit {
-                                        if let Some(c) = &mut s.commit_diff {
-                                            c.new_cursor = head;
-                                        }
-                                    } else if let Some(w) = &mut s.working_diff {
-                                        w.new_cursor = head;
-                                    }
-                                });
+                                state::record_diff_caret(tab, DiffSide::New, last.head);
                             }
                         })
-                        .on_search_change(move |res: &EditorSearchResult| {
-                            let next = (res.count, res.current);
-                            let should = app_signal().with_untracked(|s| {
-                                s.diff_find_side == DiffSide::New && s.diff_find_matches != next
-                            });
-                            if should {
-                                app_signal().update(|s| {
-                                    s.diff_find_matches = next;
-                                });
-                            }
+                        .on_vertical_scroll_drag_start(move || remember_scroll(Some(DiffSide::New)))
+                        .on_search_change(move |res: &EditorSearchResult| record_diff_search(tab, Some(DiffSide::New), res))
+                        .on_hover(move |ev: &EditorHoverEvent| {
+                            new_hover.show(is_commit, DiffSide::New, ev.position.line as usize, ev);
                         })
+                        .on_hover_end(move || new_hover.clear())
                         .on_context_menu(move |ev: &EditorContextMenuEvent| {
+                            new_hover.clear();
                             show_diff_editor_context_menu(
-                                is_commit,
+                                tab,
                                 DiffSide::New,
-                                ev.position.line + 1,
+                                ev.position,
                                 ev,
+                                None,
                             );
                         }),
-                ),
+                )
+                .child(new_hover.tooltip()),
         )
 }
 
@@ -1295,44 +1371,90 @@ fn render_single_column_diff(
     unified_ref: ComponentRef<Editor>,
     p: Palette,
 ) -> impl IntoElement {
-    let (doc, lang) = app_signal().with_untracked(|s| {
+    let tab = if is_commit { EditorTabKind::CommitDiff } else { EditorTabKind::WorkingDiff };
+    let (doc, lang, source) = app_signal().with_untracked(|s| {
         if is_commit {
             if let Some(c) = &s.commit_diff {
                 (
                     build_unified_diff(&c.data.old_text, &c.data.new_text, &c.computed.hunks, p),
                     c.data.new_path.clone(),
+                    None,
                 )
             } else {
-                (build_unified_diff("", "", &[], p), String::new())
+                (build_unified_diff("", "", &[], p), String::new(), None)
             }
         } else if let Some(w) = &s.working_diff {
             (
-                build_unified_diff(&w.data.old_text, &w.current_new_text, &w.computed.hunks, p),
+                working_unified_doc(w, p),
                 w.data.new_path.clone(),
+                w.editor_editable().then(|| (w.current_new_text.clone(), w.undo_history.clone())),
             )
         } else {
-            (build_unified_diff("", "", &[], p), String::new())
+            (build_unified_diff("", "", &[], p), String::new(), None)
         }
     });
-    let line_map = doc.line_map.clone();
-    let line_map_cm = doc.line_map.clone();
-    let decs = doc.decorations.clone();
-    let folds = doc.unchanged_folds.clone();
-
-    let collapse = app_signal().with_untracked(|s| s.cfg.diff_collapse_unchanged);
-    {
-        let f_clone = if collapse { folds.clone() } else { Vec::new() };
-        set_timeout(
-            std::time::Duration::from_millis(16),
-            move || {
-                if let Some(api) = unified_ref.api::<EditorApi>() {
-                    api.set_folds(f_clone);
-                }
-            },
-        );
+    let hover = super::diff_blame::Hover::new(is_commit, unified_ref);
+    let initial = SharedString::from(doc.text.clone());
+    let doc = signal(doc);
+    let inline_mode = computed(|| app_signal().with(|s| {
+        InlineHighlightMode::from_config(&s.cfg.diff_inline_mode)
+    }));
+    let projection_ready = signal(false);
+    if let Some((source_text, history)) = source {
+        let mounted = Rc::new(RefCell::new(None));
+        let editor_for_cleanup = mounted.clone();
+        let history_for_cleanup = history.clone();
+        after_answer(move || {
+            if let Some(api) = unified_ref.api::<EditorApi>() {
+                let identity = history.clone();
+                api.project_document(&source_text, doc.with_untracked(editor_projection), move |before, after| {
+                    let mut next = None;
+                    let mut refresh = None;
+                    app_signal().update(|s| {
+                        if s.editor_tab != state::EditorTabKind::WorkingDiff || !s.cfg.diff_single_column {
+                            return;
+                        }
+                        if !s.working_diff.as_ref().is_some_and(|w| {
+                            w.undo_history == identity && w.editor_editable() && w.current_new_text == before
+                        }) {
+                            return;
+                        }
+                        refresh = s.apply_working_diff_edit(&identity, after.to_owned());
+                        next = s.working_diff.as_ref().map(|w| working_unified_doc(w, p));
+                    });
+                    let next = next?;
+                    let view = editor_projection(&next);
+                    hover.invalidate();
+                    doc.set(next);
+                    if let Some(repo) = refresh {
+                        state::refresh_workspace_async(Some(HashSet::from([repo])));
+                    }
+                    Some(view)
+                });
+                history.resume(&api);
+                *mounted.borrow_mut() = Some(api);
+                projection_ready.set(true);
+            }
+        });
+        cleanup(move || {
+            if let Some(api) = editor_for_cleanup.borrow_mut().take() {
+                history_for_cleanup.park(&api);
+            }
+        });
     }
 
-    editor()
+    effect(move || {
+        if app_signal().with(|s| s.cfg.diff_collapse_unchanged) {
+            let folds = doc.with(|doc| doc.unchanged_folds.clone());
+            after_answer(move || {
+                if let Some(api) = unified_ref.api::<EditorApi>() {
+                    api.set_folds(folds);
+                }
+            });
+        }
+    });
+
+    let content = editor()
         .styles(super::review_editor_styles)
         .component_ref(&unified_ref)
         .test_id(if is_commit {
@@ -1348,151 +1470,98 @@ fn render_single_column_diff(
                 matches!(s.focus_zone, FocusZone::WorkingDiffOld | FocusZone::WorkingDiffNew)
             }
         }))
-        .default_value(Some(SharedString::from(doc.text)))
+        .default_value(Some(initial))
         .language(Some(SharedString::from(lang)))
-        .read_only(true)
+        .read_only(move || !projection_ready.get() || !app_signal().with(|s| {
+            s.working_diff.as_ref().is_some_and(|diff| diff.editor_editable())
+        }))
         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
         .font_size(move || px(app_signal().with(|s| s.cfg.editor_font_size)))
-        .decorations(decs)
-        .search(move || {
-            app_signal().with(|s| {
-                if s.diff_find_open && !s.diff_find_query.is_empty() {
-                    Some(EditorSearch::new(s.diff_find_query.clone()))
-                } else {
-                    None
-                }
-            })
-        })
-        .on_search_change(move |res: &EditorSearchResult| {
-            let next = (res.count, res.current);
-            if app_signal().with_untracked(|s| s.diff_find_matches != next) {
-                app_signal().update(|s| {
-                    s.diff_find_matches = next;
-                });
-            }
-        })
+        .decorations(move || doc.with(|doc| doc.decorations_with_inline(inline_mode.get(), p)))
+        .search(move || diff_search(tab, None))
+        .on_search_change(move |res: &EditorSearchResult| record_diff_search(tab, None, res))
         .on_focus(move || {
             state::set_text_input_focused(false);
-            app_signal().update(|s| {
-                let side = if is_commit {
-                    s.commit_diff
-                        .as_ref()
-                        .map(|c| c.active_side)
-                        .unwrap_or(DiffSide::New)
+            let side = app_signal().with_untracked(|s| {
+                if is_commit {
+                    s.commit_diff.as_ref().map(|diff| diff.active_side)
                 } else {
-                    s.working_diff
-                        .as_ref()
-                        .map(|w| w.active_side)
-                        .unwrap_or(DiffSide::New)
-                };
-                s.focus_zone = match (is_commit, side) {
-                    (true, DiffSide::Old) => FocusZone::CommitDiffOld,
-                    (true, DiffSide::New) => FocusZone::CommitDiffNew,
-                    (false, DiffSide::Old) => FocusZone::WorkingDiffOld,
-                    (false, DiffSide::New) => FocusZone::WorkingDiffNew,
-                };
-            });
-            state::request_shortcut_rebind();
-        })
-        .on_selection_change(move |sels: &Vec<EditorSelection>| {
-            if let Some(last) = sels.last() {
-                if let Some(mapped) = line_map.get(last.head.line as usize) {
-                    let col = last.head.column.saturating_sub(2);
-                    let pos = nsh_base::EditorPosition::new(mapped.orig_line as u32, col);
-                    app_signal().update(|s| {
-                        if is_commit {
-                            if let Some(c) = &mut s.commit_diff {
-                                c.active_side = mapped.side;
-                                match mapped.side {
-                                    DiffSide::Old => c.old_cursor = pos,
-                                    DiffSide::New => c.new_cursor = pos,
-                                }
-                            }
-                            if matches!(s.focus_zone, FocusZone::CommitDiffOld | FocusZone::CommitDiffNew) {
-                                s.focus_zone = match mapped.side {
-                                    DiffSide::Old => FocusZone::CommitDiffOld,
-                                    DiffSide::New => FocusZone::CommitDiffNew,
-                                };
-                            }
-                        } else {
-                            if let Some(w) = &mut s.working_diff {
-                                w.active_side = mapped.side;
-                                match mapped.side {
-                                    DiffSide::Old => w.old_cursor = pos,
-                                    DiffSide::New => w.new_cursor = pos,
-                                }
-                            }
-                            if matches!(s.focus_zone, FocusZone::WorkingDiffOld | FocusZone::WorkingDiffNew) {
-                                s.focus_zone = match mapped.side {
-                                    DiffSide::Old => FocusZone::WorkingDiffOld,
-                                    DiffSide::New => FocusZone::WorkingDiffNew,
-                                };
-                            }
-                        }
-                    });
+                    s.working_diff.as_ref().map(|diff| diff.active_side)
                 }
+            });
+            if let Some(side) = side {
+                state::focus_diff_side(tab, side);
             }
         })
-        .on_context_menu(move |ev: &EditorContextMenuEvent| {
-            let (side, line_1based) = if let Some(mapped) = line_map_cm.get(ev.position.line as usize) {
-                let col = ev.position.column.saturating_sub(2);
-                let pos = nsh_base::EditorPosition::new(mapped.orig_line as u32, col);
-                app_signal().update(|s| {
-                    if is_commit {
-                        if let Some(c) = &mut s.commit_diff {
-                            c.active_side = mapped.side;
-                            match mapped.side {
-                                DiffSide::Old => c.old_cursor = pos,
-                                DiffSide::New => c.new_cursor = pos,
-                            }
-                        }
-                        s.focus_zone = match mapped.side {
-                            DiffSide::Old => FocusZone::CommitDiffOld,
-                            DiffSide::New => FocusZone::CommitDiffNew,
-                        };
-                    } else {
-                        if let Some(w) = &mut s.working_diff {
-                            w.active_side = mapped.side;
-                            match mapped.side {
-                                DiffSide::Old => w.old_cursor = pos,
-                                DiffSide::New => w.new_cursor = pos,
-                            }
-                        }
-                        s.focus_zone = match mapped.side {
-                            DiffSide::Old => FocusZone::WorkingDiffOld,
-                            DiffSide::New => FocusZone::WorkingDiffNew,
-                        };
-                    }
-                });
-                (mapped.side, mapped.orig_line as u32 + 1)
-            } else {
-                let fallback_side = app_signal().with_untracked(|s| {
-                    if is_commit {
-                        s.commit_diff
-                            .as_ref()
-                            .map(|c| c.active_side)
-                            .unwrap_or(DiffSide::New)
-                    } else {
-                        s.working_diff
-                            .as_ref()
-                            .map(|w| w.active_side)
-                            .unwrap_or(DiffSide::New)
-                    }
-                });
-                (fallback_side, ev.position.line + 1)
-            };
-            show_diff_editor_context_menu(is_commit, side, line_1based, ev);
+        .on_selection_change(move |sels: &Vec<EditorSelection>| {
+            if let Some(last) = sels.last()
+                && let Some(row) = doc.with_untracked(|doc| doc.line_map.get(last.head.line as usize).copied())
+            {
+                state::record_diff_caret(tab, row.side, EditorPosition::new(
+                    row.orig_line as u32, last.head.column.saturating_sub(2),
+                ));
+            }
         })
+        .on_hover(move |ev: &EditorHoverEvent| {
+            doc.with_untracked(|doc| hover.show_unified(is_commit, &doc.line_map, ev));
+        })
+        .on_hover_end(move || hover.clear())
+        .on_context_menu(move |ev: &EditorContextMenuEvent| {
+            hover.clear();
+            doc.with_untracked(|doc| {
+                if let Some(row) = doc.line_map.get(ev.position.line as usize) {
+                    let position = EditorPosition::new(row.orig_line as u32, ev.position.column.saturating_sub(2));
+                    show_diff_editor_context_menu(tab, row.side, position, ev, Some(&doc.line_map));
+                }
+            });
+        });
+    view()
+        .flex_1()
+        .overflow_hidden()
+        .on_wheel(move |ev: &WheelEvent| hover.scroll(ev))
+        .child(content)
+        .child(hover.tooltip())
+}
+
+fn working_unified_doc(diff: &state::WorkingDiffSession, p: Palette) -> UnifiedDiffDoc {
+    let source = &diff.current_new_text;
+    let mut doc = build_unified_diff(&diff.data.old_text, source, &diff.computed.hunks, p);
+    if diff.editor_editable()
+        && let Some(eof) = unified_source_eof(source)
+    {
+        if !doc.line_map.is_empty() {
+            doc.text.push('\n');
+        }
+        doc.text.push_str("  ");
+        doc.line_map.push(eof);
+    }
+    doc
+}
+
+fn editor_projection(doc: &UnifiedDiffDoc) -> EditorProjection {
+    EditorProjection {
+        text: doc.text.clone(),
+        source_lines: doc.line_map.iter().map(|line| {
+            (line.side == DiffSide::New).then_some(line.orig_line as u32)
+        }).collect(),
+        prefix_columns: 2,
+    }
 }
 
 fn show_diff_editor_context_menu(
-    is_commit: bool,
+    tab: EditorTabKind,
     side: DiffSide,
-    line_1based: u32,
+    position: EditorPosition,
     ev: &EditorContextMenuEvent,
+    projection: Option<&[UnifiedLineRef]>,
 ) {
+    let is_commit = tab == EditorTabKind::CommitDiff;
+    let line_1based = position.line + 1;
     let info = app_signal().with_untracked(|s| {
+        if s.editor_tab != tab {
+            return None;
+        }
         if is_commit {
             s.commit_diff.as_ref().map(|c| {
                 let rel = match side {
@@ -1523,12 +1592,12 @@ fn show_diff_editor_context_menu(
         return;
     };
     let mut items = vec![
-        MenuItem::new("复制").on_select(state::copy_for_current_focus),
-        MenuItem::new("跳转到源码 (F4)").on_select(jump_from_diff_to_source),
+        MenuItem::new("复制").on_select(move || state::copy_diff_selection(tab, side)),
+        MenuItem::new("跳转到源码 (F4)").on_select(move || state::jump_from_diff_line(tab, side, position)),
         MenuItem::separator(),
     ];
     if !is_commit {
-        items.extend(super::git_review::line_items(side, line_1based as usize - 1));
+        items.extend(super::git_review::line_items(side, position.line as usize, ev.position.line as usize, projection));
     }
     items.extend(build_location_menu_items(
         repo_id,

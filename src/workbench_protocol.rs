@@ -7,20 +7,20 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 
-use crate::workbench_process::ChildGroup;
+use crate::workbench_process::{ChildGroup, ProcessDiagnostics, ProcessReport};
 
 const FRAME_LIMIT: usize = 16 * 1024 * 1024;
 const HEADER_LIMIT: usize = 8192;
 
 enum Transport {
-    Process(ChildGroup),
+    Process(ChildGroup, Option<ProcessDiagnostics>),
     Tcp(TcpStream),
 }
 
 pub(crate) struct Connection {
     write: SyncSender<Vec<u8>>,
     read: Receiver<Result<Value>>,
-    _transport: Transport,
+    transport: Transport,
 }
 
 impl Drop for Transport {
@@ -29,22 +29,42 @@ impl Drop for Transport {
             Self::Tcp(stream) => {
                 let _ = stream.shutdown(Shutdown::Both);
             }
-            Self::Process(child) => child.stop(),
+            Self::Process(child, _) => child.stop(),
         }
     }
 }
 
 impl Connection {
     pub(crate) fn stdio(command: &mut Command) -> Result<Self> {
-        let mut process = ChildGroup::spawn(
-            command
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null()),
-        )?;
+        Self::from_stdio(command, false)
+    }
+
+    pub(crate) fn stdio_with_diagnostics(command: &mut Command) -> Result<Self> {
+        Self::from_stdio(command, true)
+    }
+
+    fn from_stdio(command: &mut Command, diagnostics: bool) -> Result<Self> {
+        let mut process =
+            ChildGroup::spawn(command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(
+                if diagnostics {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                },
+            ))?;
+        let diagnostics = diagnostics
+            .then(|| ProcessDiagnostics::capture(&mut process))
+            .transpose()?;
         let send = process.child.stdin.take().context("无协议输入")?;
         let receive = process.child.stdout.take().context("无协议输出")?;
-        Self::new(send, receive, Transport::Process(process))
+        Self::new(send, receive, Transport::Process(process, diagnostics))
+    }
+
+    pub(crate) fn process_report(&mut self) -> Option<ProcessReport> {
+        match &mut self.transport {
+            Transport::Process(child, Some(diagnostics)) => Some(diagnostics.report(child)),
+            _ => None,
+        }
     }
 
     pub(crate) fn tcp(address: &str) -> Result<Self> {
@@ -101,7 +121,7 @@ impl Connection {
         Ok(Self {
             write: out,
             read: input,
-            _transport: transport,
+            transport,
         })
     }
 

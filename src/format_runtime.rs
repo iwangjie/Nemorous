@@ -2,7 +2,6 @@ use std::path::Path;
 
 use nsh_core::prelude::*;
 
-use crate::diff_model::{WhitespaceMode, compute_diff};
 use crate::formatter::format_source;
 use crate::git::ReviewVersion;
 use crate::state::{self, AppState, EditorTabKind, RootOwnerHolder, app_signal};
@@ -30,7 +29,7 @@ impl Target {
                 let tab = app
                     .code_tabs
                     .iter()
-                    .find(|tab| &tab.id == id && tab.editable && tab.revision.is_empty())?;
+                    .find(|tab| &tab.id == id && tab.editor_editable() && tab.revision.is_empty())?;
                 Some(Source {
                     target: self.clone(),
                     repo: tab.file.repo_path.clone(),
@@ -42,7 +41,7 @@ impl Target {
             }
             Self::WorkingDiff(id) => {
                 let diff = app.working_diff.as_ref().filter(|diff| {
-                    diff.file.key() == *id && diff.data.editable && !diff.data.staged_only
+                    diff.file.key() == *id && diff.editor_editable()
                 })?;
                 Some(Source {
                     target: self.clone(),
@@ -180,14 +179,7 @@ async fn format_and_save(workspace: &str, command: &str, source: Source, manual:
     if let Some(text) = &formatted {
         match &source.target {
             Target::Code(id) => crate::code_split_runtime::record_editor_change(id, text),
-            Target::WorkingDiff(_) => app_signal().update(|s| {
-                if let Some(diff) = &mut s.working_diff {
-                    diff.current_new_text.clone_from(text);
-                    let whitespace = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
-                    diff.computed = compute_diff(&diff.data.old_text, text, whitespace);
-                    diff.content_rev += 1;
-                }
-            }),
+            Target::WorkingDiff(key) => state::edit_working_diff_text(key, text),
         }
     }
     let saved = match &source.target {

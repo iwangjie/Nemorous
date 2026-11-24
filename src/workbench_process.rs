@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 const OUTPUT_LIMIT: usize = 512 * 1024;
+const DIAGNOSTICS_LIMIT: usize = 16 * 1024;
 
 pub(crate) struct ChildGroup {
     pub child: Child,
@@ -117,13 +118,51 @@ struct Capture {
 }
 
 impl Capture {
-    fn push(&mut self, bytes: &[u8]) {
+    fn push(&mut self, bytes: &[u8], limit: usize) {
         let excess = self.bytes.len() + bytes.len();
-        if excess > OUTPUT_LIMIT {
-            self.bytes.drain(..(excess - OUTPUT_LIMIT));
+        if excess > limit {
+            self.bytes.drain(..(excess - limit));
             self.dropped = true;
         }
         self.bytes.extend(bytes);
+    }
+}
+
+pub(crate) struct ProcessDiagnostics {
+    capture: Arc<Mutex<Capture>>,
+    reader: JoinHandle<io::Result<()>>,
+}
+
+pub(crate) struct ProcessReport {
+    pub status: Option<ExitStatus>,
+    pub stderr: String,
+    pub finished: bool,
+}
+
+impl ProcessDiagnostics {
+    pub(crate) fn capture(child: &mut ChildGroup) -> Result<Self> {
+        let pipe = child
+            .child
+            .stderr
+            .take()
+            .context("无法读取适配器的错误输出")?;
+        let capture = Arc::new(Mutex::new(Capture::default()));
+        let reader = read_output(pipe, &capture, DIAGNOSTICS_LIMIT)?;
+        Ok(Self { capture, reader })
+    }
+
+    pub(crate) fn report(&self, child: &mut ChildGroup) -> ProcessReport {
+        let status = child.child.try_wait().ok().flatten();
+        let finished = self.reader.is_finished();
+        let capture = self.capture.lock().unwrap_or_else(|err| err.into_inner());
+        let stderr = String::from_utf8_lossy(&capture.bytes.iter().copied().collect::<Vec<_>>())
+            .trim()
+            .to_owned();
+        ProcessReport {
+            status,
+            stderr,
+            finished,
+        }
     }
 }
 
@@ -153,8 +192,8 @@ impl RunProcess {
         let stdout = group.child.stdout.take().context("无法读取标准输出")?;
         let stderr = group.child.stderr.take().context("无法读取错误输出")?;
         let readers = vec![
-            read_output(stdout, &capture)?,
-            read_output(stderr, &capture)?,
+            read_output(stdout, &capture, OUTPUT_LIMIT)?,
+            read_output(stderr, &capture, OUTPUT_LIMIT)?,
         ];
         Ok(Self {
             group,
@@ -205,6 +244,7 @@ impl RunProcess {
 fn read_output(
     mut reader: impl Read + Send + 'static,
     capture: &Arc<Mutex<Capture>>,
+    limit: usize,
 ) -> io::Result<JoinHandle<io::Result<()>>> {
     let capture = Arc::clone(capture);
     thread::Builder::new()
@@ -217,7 +257,7 @@ fn read_output(
                     Ok(count) => capture
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
-                        .push(&buffer[..count]),
+                        .push(&buffer[..count], limit),
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => return Err(error),
                 }

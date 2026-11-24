@@ -3,18 +3,100 @@ use std::ops::Range;
 use anyhow::{Result, bail, ensure};
 use imara_diff::{Algorithm, Diff, InternedInput};
 
-use crate::diff_model::{DiffHunk, HunkKind};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Side {
-    Old,
-    New,
-}
+use crate::diff_model::{DiffHunk, DiffSide, HunkKind};
 
 #[derive(Debug, Clone)]
 pub(crate) enum Selection {
     Hunks(Vec<DiffHunk>),
-    Lines { side: Side, range: Range<usize> },
+    Lines(LineSelection),
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LineSelection {
+    old: Vec<Range<usize>>,
+    new: Vec<Range<usize>>,
+}
+
+impl LineSelection {
+    pub(crate) fn push(&mut self, side: DiffSide, range: Range<usize>) {
+        let ranges = match side {
+            DiffSide::Old => &mut self.old,
+            DiffSide::New => &mut self.new,
+        };
+        append_range(ranges, range);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.old.is_empty() && self.new.is_empty()
+    }
+}
+
+fn append_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
+    if range.is_empty() {
+        return;
+    }
+    if let Some(last) = ranges.last_mut()
+        && last.start <= range.start && range.start <= last.end
+    {
+        last.end = last.end.max(range.end);
+    } else {
+        ranges.push(range);
+    }
+}
+
+fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_unstable_by_key(|range| range.start);
+    let mut merged = Vec::new();
+    for range in ranges {
+        append_range(&mut merged, range);
+    }
+    merged
+}
+
+fn selected_offsets(selected: &[Range<usize>], changed: &Range<usize>) -> Vec<Range<usize>> {
+    if changed.is_empty() {
+        return Vec::new();
+    }
+    let start = selected.partition_point(|range| range.end <= changed.start);
+    selected[start..].iter().take_while(|range| range.start < changed.end).map(|range| {
+        range.start.max(changed.start) - changed.start..range.end.min(changed.end) - changed.start
+    }).collect()
+}
+
+fn line_edits(hunks: &[DiffHunk], selection: &LineSelection) -> Result<Vec<(Range<usize>, Range<usize>)>> {
+    ensure!(!selection.is_empty(), "请选中要操作的行");
+    let selected_old = merge_ranges(selection.old.clone());
+    let selected_new = merge_ranges(selection.new.clone());
+    let mut edits = Vec::new();
+
+    for hunk in hunks {
+        let old = hunk.line_range(DiffSide::Old);
+        let new = hunk.line_range(DiffSide::New);
+        let old_offsets = selected_offsets(&selected_old, &old);
+        let new_offsets = selected_offsets(&selected_new, &new);
+        if old_offsets.is_empty() && new_offsets.is_empty() {
+            continue;
+        }
+        if !old.is_empty() && !new.is_empty() && old.len() != new.len() {
+            ensure!(old_offsets == [0..old.len()] && new_offsets == [0..new.len()],
+                "该替换块两侧行数不同，请操作整个块");
+            edits.push((old, new));
+            continue;
+        }
+
+        let offsets = merge_ranges(old_offsets.into_iter().chain(new_offsets).collect());
+        for offset in offsets {
+            let pick = |part: &Range<usize>| {
+                if part.is_empty() {
+                    part.clone()
+                } else {
+                    part.start + offset.start..part.start + offset.end
+                }
+            };
+            edits.push((pick(&old), pick(&new)));
+        }
+    }
+    Ok(edits)
 }
 
 pub(crate) fn exact_hunks(old: &[u8], new: &[u8]) -> Vec<DiffHunk> {
@@ -95,40 +177,7 @@ pub(crate) fn apply_selection(
                 })
                 .collect()
         }
-        Selection::Lines { side, range } => {
-            ensure!(!range.is_empty(), "请选中要操作的行");
-            let mut edits = Vec::new();
-            for h in hunks {
-                let old_range = h.old_start..h.old_end;
-                let new_range = h.new_start..h.new_end;
-                let chosen = match side {
-                    Side::Old => &old_range,
-                    Side::New => &new_range,
-                };
-                let start = range.start.max(chosen.start);
-                let end = range.end.min(chosen.end);
-                if start >= end {
-                    continue;
-                }
-                if !old_range.is_empty()
-                    && !new_range.is_empty()
-                    && old_range.len() != new_range.len()
-                {
-                    bail!("该替换块两侧行数不同，请操作整个块");
-                }
-                let offset = start - chosen.start;
-                let count = end - start;
-                let pick = |part: Range<usize>| {
-                    if part.is_empty() {
-                        part
-                    } else {
-                        part.start + offset..part.start + offset + count
-                    }
-                };
-                edits.push((pick(old_range), pick(new_range)));
-            }
-            edits
-        }
+        Selection::Lines(selection) => line_edits(&hunks, selection)?,
     };
     ensure!(!edits.is_empty(), "所选行不在变更块内");
     let (base, target) = if reverse { (new, old) } else { (old, new) };
@@ -177,14 +226,19 @@ pub(crate) fn line_offsets(bytes: &[u8]) -> Vec<usize> {
 mod tests {
     use super::*;
 
+    fn selected_line_ranges(ranges: &[(DiffSide, Range<usize>)]) -> Selection {
+        let mut selection = LineSelection::default();
+        for (side, range) in ranges {
+            selection.push(*side, range.clone());
+        }
+        Selection::Lines(selection)
+    }
+
     #[test]
     fn selected_lines_and_hunks_reverse_preserve_crlf_and_missing_final_newline() {
         let old = b"one\r\nold a\r\nold b\r\nkeep\r\nno newline";
         let new = b"one\r\nnew a\r\nnew b\r\nkeep\r\ninsert1\r\ninsert2\r\nno newline";
-        let edit = Selection::Lines {
-            side: Side::New,
-            range: 2..3,
-        };
+        let edit = selected_line_ranges(&[(DiffSide::New, 2..3)]);
         assert_eq!(
             apply_selection(old, new, &edit, false).unwrap(),
             b"one\r\nold a\r\nnew b\r\nkeep\r\nno newline"
@@ -193,10 +247,7 @@ mod tests {
             apply_selection(old, new, &edit, true).unwrap(),
             b"one\r\nnew a\r\nold b\r\nkeep\r\ninsert1\r\ninsert2\r\nno newline"
         );
-        let edit = Selection::Lines {
-            side: Side::New,
-            range: 5..6,
-        };
+        let edit = selected_line_ranges(&[(DiffSide::New, 5..6)]);
         assert_eq!(
             apply_selection(old, new, &edit, false).unwrap(),
             b"one\r\nold a\r\nold b\r\nkeep\r\ninsert2\r\nno newline"
@@ -216,10 +267,7 @@ mod tests {
     fn selected_lines_delete_and_require_complete_unequal_replacement() {
         let old = b"start\na\nb\nc\nend\n";
         let new = b"start\nend\n";
-        let edit = Selection::Lines {
-            side: Side::Old,
-            range: 2..3,
-        };
+        let edit = selected_line_ranges(&[(DiffSide::Old, 2..3)]);
         assert_eq!(
             apply_selection(old, new, &edit, false).unwrap(),
             b"start\na\nc\nend\n"
@@ -229,5 +277,24 @@ mod tests {
             b"start\nb\nend\n"
         );
         assert!(apply_selection(old, b"start\nreplacement\nend\n", &edit, false).is_err());
+    }
+
+    #[test]
+    fn mixed_line_selection_deduplicates_pairs_and_preserves_disjoint_rows() {
+        let old = b"top\r\nold a\r\nold b\r\nold c\r\nlast";
+        let new = b"top\r\nnew a\r\nnew b\r\nnew c\r\nlast";
+        let edit = selected_line_ranges(&[(DiffSide::Old, 3..4), (DiffSide::New, 1..2), (DiffSide::New, 3..4)]);
+        assert_eq!(apply_selection(old, new, &edit, false).unwrap(), b"top\r\nnew a\r\nold b\r\nnew c\r\nlast");
+        assert_eq!(apply_selection(old, new, &edit, true).unwrap(), b"top\r\nold a\r\nnew b\r\nold c\r\nlast");
+    }
+
+    #[test]
+    fn unequal_replacement_requires_the_whole_selection_on_both_sides() {
+        let old = b"top\nold\nkeep\nold tail\n";
+        let new = b"top\nnew a\nnew b\nkeep\nnew tail\n";
+        let full = selected_line_ranges(&[(DiffSide::Old, 1..2), (DiffSide::New, 1..3)]);
+        let partial = selected_line_ranges(&[(DiffSide::Old, 1..2), (DiffSide::New, 2..3), (DiffSide::New, 4..5)]);
+        assert_eq!(apply_selection(old, new, &full, false).unwrap(), b"top\nnew a\nnew b\nkeep\nold tail\n");
+        assert!(apply_selection(old, new, &partial, false).is_err());
     }
 }

@@ -1,0 +1,128 @@
+diff --git a/crates/nsh-core/src/core/overlay.rs b/crates/nsh-core/src/core/overlay.rs
+index 85a3af5..d1127bc 100644
+--- a/crates/nsh-core/src/core/overlay.rs
++++ b/crates/nsh-core/src/core/overlay.rs
+@@ -1207,7 +1207,7 @@ impl<M: TextEngine> Core<M> {
+             return None;
+         }
+         let escape = Keystroke::parse_with("escape", false).ok()?;
+-        Some(KeyBinding::new(ESCAPE_BINDING, escape, When::Always, false))
++        Some(KeyBinding::new(ESCAPE_BINDING, escape, When::Always, false).with_priority(i16::MAX))
+     }
+
+     /// Escape: the top shown overlay that is a hint hides (it asks to,
+diff --git a/crates/nsh-core/src/element/ambient.rs b/crates/nsh-core/src/element/ambient.rs
+index 02c4076..97e3880 100644
+--- a/crates/nsh-core/src/element/ambient.rs
++++ b/crates/nsh-core/src/element/ambient.rs
+@@ -1751,6 +1751,17 @@ pub fn on_key(keystroke: &str, handler: impl Fn(&str) + 'static) {
+ /// As [`on_key`].
+ #[track_caller]
+ pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str) + 'static) {
++    on_key_with_priority(keystroke, options, 0, handler);
++}
++
++/// Registers a shortcut with an explicit priority. Default shortcuts have priority zero.
++#[track_caller]
++pub fn on_key_with_priority(
++    keystroke: &str,
++    options: KeyOptions,
++    priority: i16,
++    handler: impl Fn(&str) + 'static,
++) {
+     let os = os();
+     let parsed = crate::keymap::Keystroke::parse_with(keystroke, apple_keys())
+         .unwrap_or_else(|e| panic!("on_key: {e}"));
+@@ -1769,6 +1780,7 @@ pub fn on_key_with(keystroke: &str, options: KeyOptions, handler: impl Fn(&str)
+             crate::keymap::KeyBinding::new(id, parsed, options.when, options.repeat)
+                 .passing_through(options.pass_through)
+                 .focus_keys(options.for_focus)
++                .with_priority(priority)
+         },
+         keystroke.into(),
+         handler,
+diff --git a/crates/nsh-core/src/keymap.rs b/crates/nsh-core/src/keymap.rs
+index fe6fce9..9635f19 100644
+--- a/crates/nsh-core/src/keymap.rs
++++ b/crates/nsh-core/src/keymap.rs
+@@ -731,6 +731,7 @@ pub struct KeyBinding {
+     /// ([`Keymap::find_at`]). Other bindings of those keys give way to the
+     /// focused control.
+     pub for_focus: bool,
++    priority: i16,
+ }
+
+ impl KeyBinding {
+@@ -750,6 +751,7 @@ impl KeyBinding {
+             pass_through: false,
+             window: None,
+             for_focus: false,
++            priority: 0,
+         }
+     }
+
+@@ -773,6 +775,12 @@ impl KeyBinding {
+         self.for_focus = for_focus;
+         self
+     }
++
++    /// Higher priority bindings take precedence over equally eligible bindings.
++    pub fn with_priority(mut self, priority: i16) -> KeyBinding {
++        self.priority = priority;
++        self
++    }
+ }
+
+ /// Where the keyboard focus is as a key comes ([`Keymap::find_with`]).
+@@ -827,7 +835,7 @@ impl KeyMatch {
+     }
+ }
+
+-/// The bindings of a surface, oldest first.
++/// The bindings of a surface, in increasing priority and registration order.
+ #[derive(Debug, Clone, PartialEq, Eq, Default)]
+ pub struct Keymap {
+     bindings: Vec<KeyBinding>,
+@@ -835,7 +843,8 @@ pub struct Keymap {
+
+ impl Keymap {
+     /// A table of `bindings`, oldest first.
+-    pub fn new(bindings: Vec<KeyBinding>) -> Keymap {
++    pub fn new(mut bindings: Vec<KeyBinding>) -> Keymap {
++        bindings.sort_by_key(|binding| binding.priority);
+         Keymap { bindings }
+     }
+
+@@ -844,14 +853,14 @@ impl Keymap {
+         self.bindings.is_empty()
+     }
+
+-    /// The bindings, oldest first.
++    /// The bindings, in increasing priority and registration order.
+     pub fn bindings(&self) -> &[KeyBinding] {
+         &self.bindings
+     }
+
+-    /// What a key does: the newest binding of `keystroke` that fires while
+-    /// `editing` (a text input or hosted native view has the keyboard
+-    /// focus) takes it; `repeat` is an auto-repeat of a held key, which only
++    /// The highest priority eligible binding of `keystroke` takes it.
++    /// The newest binding wins at the same priority. `editing` indicates a text
++    /// input or hosted native view has focus. `repeat` is a held key, which only
+     /// fires bindings that ask for it. A binding that passes the key
+     /// through gives [`KeyMatch::Notify`], and its held key's auto-repeats
+     /// go on ([`KeyMatch::None`]) unless it repeats.
+diff --git a/crates/nsh-core/src/prelude.rs b/crates/nsh-core/src/prelude.rs
+index 8e3cc79..8ec5c92 100644
+--- a/crates/nsh-core/src/prelude.rs
++++ b/crates/nsh-core/src/prelude.rs
+@@ -270,7 +270,8 @@ pub use crate::element::{
+     keystroke_label, lifecycle, locale, locale_settings, log_file, measure_text, motion,
+     move_to_trash, next_app_url_change, next_frame, next_notification_press, next_open_files,
+     next_second_instance, next_url_scheme_open, notification_permission, on_back_press, on_key,
+-    on_key_with, open_auth_session, open_path, open_url, os, os_version, perf_stats, pick_files,
++    on_key_with, on_key_with_priority, open_auth_session, open_path, open_url, os, os_version,
++    perf_stats, pick_files,
+     pick_images, pick_paths, pick_save_path, pick_screen_color, pixel_ratio, platform_name,
+     prefetch_image, provide_context, reads_active_descendants, recognize_speech, reduce_motion,
+     register_font, request_animation_frame, request_notification_permission, resource,

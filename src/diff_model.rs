@@ -115,13 +115,83 @@ pub struct DiffHunk {
     pub kind: HunkKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl DiffHunk {
+    pub(crate) fn line_range(&self, side: DiffSide) -> Range<usize> {
+        match side {
+            DiffSide::Old => self.old_start..self.old_end,
+            DiffSide::New => self.new_start..self.new_end,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ComputedDiff {
     pub hunks: Vec<DiffHunk>,
     pub old_line_count: usize,
     pub new_line_count: usize,
     pub added_lines: usize,
     pub deleted_lines: usize,
+}
+
+pub(crate) struct HunkNavigation {
+    pub(crate) current: Option<usize>,
+    pub(crate) previous: Option<usize>,
+    pub(crate) next: Option<usize>,
+}
+
+impl HunkNavigation {
+    pub(crate) fn counter_index(&self) -> usize {
+        self.current.or(self.previous).or(self.next).unwrap_or(0)
+    }
+}
+
+impl ComputedDiff {
+    pub(crate) fn split_hunk_position(&self, hunk: &DiffHunk, side: DiffSide, text: &str) -> EditorPosition {
+        let range = hunk.line_range(side);
+        let lines = match side {
+            DiffSide::Old => self.old_line_count,
+            DiffSide::New => self.new_line_count,
+        };
+        // An empty range after an unterminated line lands at the actual end of text.
+        if range.is_empty() && range.start == lines && lines > 0 && !text.ends_with('\n') {
+            let last_line = text.rsplit_once('\n').map_or(text, |(_, last)| last);
+            EditorPosition::new((lines - 1) as u32, last_line.encode_utf16().count() as u32)
+        } else {
+            EditorPosition::new(range.start as u32, 0)
+        }
+    }
+
+    pub(crate) fn hunk_navigation(
+        &self,
+        side: DiffSide,
+        caret: EditorPosition,
+        split_text: Option<&str>,
+    ) -> HunkNavigation {
+        let line = caret.line as usize;
+        let next = self.hunks.partition_point(|hunk| {
+            let start = hunk.line_range(side).start;
+            start <= line || (start == line + 1 && split_text.is_some_and(|text| {
+                self.split_hunk_position(hunk, side, text) <= caret
+            }))
+        });
+        let at_or_before = next.checked_sub(1);
+        let current = at_or_before.filter(|&index| {
+            let hunk = &self.hunks[index];
+            let range = hunk.line_range(side);
+            // Only the split viewer represents an empty range on this side.
+            range.contains(&line) || (range.is_empty() && split_text.is_some_and(|text| {
+                self.split_hunk_position(hunk, side, text).line == caret.line
+            }))
+        });
+        HunkNavigation {
+            current,
+            previous: match current {
+                Some(index) => index.checked_sub(1),
+                None => at_or_before,
+            },
+            next: (next < self.hunks.len()).then_some(next),
+        }
+    }
 }
 
 /// 按逻辑行拆分文本，去掉恰好一个行尾终止换行符（`\n` 或 `\r\n`），
@@ -321,6 +391,12 @@ pub fn source_position(
     pos: EditorPosition,
 ) -> EditorPosition {
     let new_lines = split_lines_keep_logical(new_text);
+    if active_side == DiffSide::New
+        && new_text.ends_with('\n')
+        && pos.line as usize == new_lines.len()
+    {
+        return EditorPosition::new(pos.line, 0);
+    }
     if new_lines.is_empty() {
         return EditorPosition::new(0, 0);
     }
@@ -467,29 +543,30 @@ pub fn build_side_by_side_decorations(
                 }
                 let (old_ranges, new_ranges) =
                     compute_inline_ranges(old_lines[ol], new_lines[nl], inline_mode);
-                for r in old_ranges {
-                    let mut dec = EditorDecoration::default();
-                    dec.range = EditorRange::new(
-                        EditorPosition::new(ol as u32, r.start),
-                        EditorPosition::new(ol as u32, r.end),
-                    );
-                    dec.style = Some(bg_style(p.diff_del_inline));
-                    old_decs.push(dec);
-                }
-                for r in new_ranges {
-                    let mut dec = EditorDecoration::default();
-                    dec.range = EditorRange::new(
-                        EditorPosition::new(nl as u32, r.start),
-                        EditorPosition::new(nl as u32, r.end),
-                    );
-                    dec.style = Some(bg_style(p.diff_add_inline));
-                    new_decs.push(dec);
-                }
+                old_decs.extend(inline_decorations(ol, 0, old_ranges, p.diff_del_inline));
+                new_decs.extend(inline_decorations(nl, 0, new_ranges, p.diff_add_inline));
             }
         }
     }
 
     (old_decs, new_decs)
+}
+
+fn inline_decorations(
+    row: usize,
+    prefix: u32,
+    ranges: Vec<Range<u32>>,
+    color: Hsla,
+) -> impl Iterator<Item = EditorDecoration> {
+    ranges.into_iter().map(move |span| {
+        let mut decoration = EditorDecoration::default();
+        decoration.range = EditorRange::new(
+            EditorPosition::new(row as u32, prefix + span.start),
+            EditorPosition::new(row as u32, prefix + span.end),
+        );
+        decoration.style = Some(bg_style(color));
+        decoration
+    })
 }
 
 /// 计算单行对比的 UTF-16 列高亮区段。
@@ -639,7 +716,7 @@ pub fn compute_unchanged_fold_ranges(
 }
 
 /// 单栏统一 Diff 文档，含行映射与装饰，使单栏模式也支持准确跳源码与 hunk 导航。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedDiffDoc {
     pub text: String,
     pub line_map: Vec<UnifiedLineRef>,
@@ -648,11 +725,50 @@ pub struct UnifiedDiffDoc {
     pub unchanged_folds: Vec<EditorFoldRange>,
 }
 
+impl UnifiedDiffDoc {
+    pub(crate) fn decorations_with_inline(
+        &self,
+        mode: InlineHighlightMode,
+        palette: Palette,
+    ) -> Vec<EditorDecoration> {
+        let mut decorations = self.decorations.clone();
+        if mode == InlineHighlightMode::None || self.hunk_start_lines.is_empty() {
+            return decorations;
+        }
+
+        let lines: Vec<_> = self.text.split('\n').collect();
+        for (index, &start) in self.hunk_start_lines.iter().enumerate() {
+            let end = self.hunk_start_lines.get(index + 1).copied().unwrap_or(self.line_map.len());
+            let rows = &self.line_map[start..end];
+            let old_count = rows.iter().take_while(|row| row.is_changed && row.side == DiffSide::Old).count();
+            let new_count = rows[old_count..].iter().take_while(|row| row.is_changed && row.side == DiffSide::New).count();
+            for offset in 0..old_count.min(new_count) {
+                let old_row = start + offset;
+                let new_row = start + old_count + offset;
+                // Diff prefixes are two ASCII columns on either side.
+                let (old, new) = compute_inline_ranges(&lines[old_row][2..], &lines[new_row][2..], mode);
+                decorations.extend(inline_decorations(old_row, 2, old, palette.diff_del_inline));
+                decorations.extend(inline_decorations(new_row, 2, new, palette.diff_add_inline));
+            }
+        }
+        decorations
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnifiedLineRef {
     pub side: DiffSide,
     pub orig_line: usize,
     pub is_changed: bool,
+}
+
+/// The editor can place a caret in the empty paragraph after a final line break.
+pub(crate) fn unified_source_eof(text: &str) -> Option<UnifiedLineRef> {
+    (text.is_empty() || text.ends_with('\n')).then(|| UnifiedLineRef {
+        side: DiffSide::New,
+        orig_line: logical_line_count(text),
+        is_changed: false,
+    })
 }
 
 /// 计算单栏统一 Diff 的行映射、每个 hunk 起始行以及未改动行折叠区间。
@@ -721,7 +837,30 @@ pub fn map_side_line_to_unified(
     side: DiffSide,
     orig_line: usize,
 ) -> usize {
-    let (line_map, _, _) = compute_unified_layout(old_text, new_text, hunks);
+    map_editable_side_line_to_unified(old_text, new_text, hunks, side, orig_line, false)
+}
+
+pub(crate) fn map_editable_side_line_to_unified(
+    old_text: &str,
+    new_text: &str,
+    hunks: &[DiffHunk],
+    side: DiffSide,
+    orig_line: usize,
+    source_editable: bool,
+) -> usize {
+    let (mut line_map, _, _) = compute_unified_layout(old_text, new_text, hunks);
+    if source_editable {
+        line_map.extend(unified_source_eof(new_text));
+    }
+    unified_line_for_side(&line_map, hunks, side, orig_line)
+}
+
+pub(crate) fn unified_line_for_side(
+    line_map: &[UnifiedLineRef],
+    hunks: &[DiffHunk],
+    side: DiffSide,
+    orig_line: usize,
+) -> usize {
     if line_map.is_empty() {
         return 0;
     }
@@ -844,5 +983,71 @@ pub fn build_unified_diff(
         hunk_start_lines,
         decorations,
         unchanged_folds,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caret_navigation_distinguishes_a_split_deletion_anchor_from_unified_context() {
+        let old = "before\ndelete this\ncontext\nold last\nfinal\n";
+        let new = "before\ncontext\nnew last\nfinal\n";
+        let diff = compute_diff(old, new, WhitespaceMode::None);
+        let caret = EditorPosition::new(1, 0);
+        let split = diff.hunk_navigation(DiffSide::New, caret, Some(new));
+        assert_eq!((split.previous, split.current, split.next), (None, Some(0), Some(1)));
+        let unified = diff.hunk_navigation(DiffSide::New, caret, None);
+        assert_eq!((unified.previous, unified.current, unified.next), (Some(0), None, Some(1)));
+        let historical = diff.hunk_navigation(DiffSide::Old, caret, None);
+        assert_eq!((historical.previous, historical.current, historical.next), (None, Some(0), Some(1)));
+    }
+
+    #[test]
+    fn split_navigation_places_a_tail_change_at_the_shorter_files_end() {
+        let short = "old\ncontext\ntail 🐈";
+        let long = "new\ncontext\ntail 🐈\nadded\n";
+        for (old, new, side) in [(short, long, DiffSide::Old), (long, short, DiffSide::New)] {
+            let diff = compute_diff(old, new, WhitespaceMode::Trim);
+            let eof = EditorPosition::new(2, 7);
+            assert_eq!(diff.split_hunk_position(&diff.hunks[1], side, short), eof);
+            let in_context = diff.hunk_navigation(side, EditorPosition::new(2, 5), Some(short));
+            assert_eq!((in_context.previous, in_context.current, in_context.next), (Some(0), None, Some(1)));
+            let at_end = diff.hunk_navigation(side, eof, Some(short));
+            assert_eq!((at_end.previous, at_end.current, at_end.next), (Some(0), Some(1), None));
+        }
+
+        let terminated = "old\ncontext\ntail 🐈\n";
+        let diff = compute_diff(terminated, long, WhitespaceMode::None);
+        let next_line = EditorPosition::new(3, 0);
+        assert_eq!(diff.split_hunk_position(&diff.hunks[1], DiffSide::Old, terminated), next_line);
+        let at_end = diff.hunk_navigation(DiffSide::Old, next_line, Some(terminated));
+        assert_eq!(at_end.current, Some(1));
+    }
+
+    #[test]
+    fn unified_inline_highlights_only_the_paired_rows_at_utf16_columns() {
+        let old = "head\n变量 valueOld 🐈\nend\n";
+        let new = "head\n变量 valueNew 🐕\nextra\nend\n";
+        let diff = compute_diff(old, new, WhitespaceMode::None);
+        let palette = crate::theme::light_palette();
+        let doc = build_unified_diff(old, new, &diff.hunks, palette);
+        assert_eq!(doc.decorations_with_inline(InlineHighlightMode::None, palette), doc.decorations);
+        assert_eq!(doc.decorations.len(), 3);
+
+        for (mode, start_column) in [(InlineHighlightMode::Word, 5), (InlineHighlightMode::Char, 10)] {
+            let decorations = doc.decorations_with_inline(mode, palette);
+            assert_eq!(&decorations[..doc.decorations.len()], doc.decorations);
+            let ranges: Vec<_> = decorations[doc.decorations.len()..].iter()
+                .map(|mark| mark.range.clone()).collect();
+            let span = |row, start, end| {
+                EditorRange::new(EditorPosition::new(row, start), EditorPosition::new(row, end))
+            };
+            assert_eq!(ranges, vec![span(1, start_column, 13), span(1, 14, 16),
+                span(2, start_column, 13), span(2, 14, 16)]);
+            assert_eq!(decorations[3].style, Some(bg_style(palette.diff_del_inline)));
+            assert_eq!(decorations[5].style, Some(bg_style(palette.diff_add_inline)));
+        }
     }
 }

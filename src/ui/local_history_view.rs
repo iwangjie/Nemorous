@@ -1,10 +1,9 @@
-use nsh_base::{
-    Editor, EditorApi, EditorDecoration, EditorPosition, editor, h_resizable, resizable_panel,
-};
+use nsh_base::{Editor, EditorDecoration, EditorPosition, EditorSelection, editor, h_resizable, resizable_panel};
 use nsh_core::prelude::*;
 
+use super::diff_view::{bind_comparison_hunk_keys, reveal_comparison_hunk};
 use crate::diff_model::{
-    InlineHighlightMode, WhitespaceMode, build_side_by_side_decorations, compute_diff,
+    DiffSide, InlineHighlightMode, WhitespaceMode, build_side_by_side_decorations, compute_diff,
 };
 use crate::history_runtime::{self, View as HistoryView};
 use crate::state::{self, app_signal, current_palette};
@@ -22,8 +21,15 @@ pub fn modal_layer() -> impl IntoElement {
 
 fn modal() -> impl IntoElement {
     let p = current_palette();
+    let focus = element_ref();
+    after_answer(move || {
+        dismiss_keyboard();
+        focus.focus();
+    });
     let data = computed(history_runtime::snapshot);
-    let selected = signal(0usize);
+    let ready = computed(move || data.with(|state| {
+        state.as_ref().is_some_and(|state| state.comparison_ready)
+    }));
     let compare = signal(true);
     let texts = computed(move || {
         data.with(|state| {
@@ -51,23 +57,52 @@ fn modal() -> impl IntoElement {
     });
     let old_ref = component_ref::<Editor>();
     let new_ref = component_ref::<Editor>();
-    let navigate_change = move |delta: isize| {
-        let hunk = diff.with(|diff| {
-            let index = selected
-                .get()
-                .saturating_add_signed(delta)
-                .min(diff.hunks.len().saturating_sub(1));
-            selected.set(index);
-            diff.hunks.get(index).cloned()
-        });
+    let active_side = signal(DiffSide::New);
+    let old_caret = signal(EditorPosition::new(0, 0));
+    let new_caret = signal(EditorPosition::new(0, 0));
+    let navigation = computed(move || {
+        let side = active_side.get();
+        texts.with(|(_, old, new)| {
+            let (caret, text) = match side {
+                DiffSide::Old => (old_caret.get(), old.as_str()),
+                DiffSide::New => (new_caret.get(), new.as_str()),
+            };
+            diff.with(|diff| {
+                let nav = diff.hunk_navigation(side, caret, Some(text));
+                (nav.current, nav.previous, nav.next, nav.counter_index(), diff.hunks.len())
+            })
+        })
+    });
+    let reveal = move |index| {
+        let hunk = diff.with_untracked(|value| value.hunks.get(index).cloned());
         if let Some(hunk) = hunk {
-            for (reference, line) in [(old_ref, hunk.old_start), (new_ref, hunk.new_start)] {
-                if let Some(editor) = reference.api::<EditorApi>() {
-                    editor.reveal_position(EditorPosition::new(line as u32, 0), true);
-                }
-            }
+            reveal_comparison_hunk(&hunk, old_ref, new_ref);
         }
     };
+    let needs_initial_reveal = stored(true);
+    effect(move || {
+        if !ready.get() {
+            needs_initial_reveal.replace(true);
+        } else if compare.get() && needs_initial_reveal.with(|value| *value) {
+            after_answer(move || {
+                if ready.get_untracked() && compare.get_untracked() {
+                    needs_initial_reveal.replace(false);
+                    reveal(0);
+                }
+            });
+        }
+    });
+    let can_navigate = move || ready.get() && compare.get() && !history_runtime::confirmation();
+    let navigate_change = move |delta: i32| {
+        if !can_navigate() {
+            return;
+        }
+        let (_, previous, next, _, _) = navigation.get_untracked();
+        if let Some(next) = if delta < 0 { previous } else { next } {
+            reveal(next);
+        }
+    };
+    bind_comparison_hunk_keys(can_navigate, navigate_change);
 
     view()
         .test_id("local-history-modal")
@@ -79,6 +114,8 @@ fn modal() -> impl IntoElement {
         .justify_center()
         .child(
             view()
+                .element_ref(&focus)
+                .focusable(true)
                 .w_full()
                 .max_w(px(960.0))
                 .h_full()
@@ -109,6 +146,7 @@ fn modal() -> impl IntoElement {
                         .child(button(
                             "local-history-close",
                             "关闭",
+                            true,
                             state::close_active_modal,
                         )),
                 )
@@ -117,20 +155,16 @@ fn modal() -> impl IntoElement {
                         .flex_1()
                         .flex_row()
                         .overflow_hidden()
-                        .child(dynamic(move || snapshot_list(data.get(), selected)))
+                        .child(dynamic(move || snapshot_list(data.get())))
                         .child(
                             view()
                                 .flex_1()
                                 .flex_col()
                                 .overflow_hidden()
                                 .child(dynamic(move || {
-                                    let ready = data.with(|state| {
-                                        state.as_ref().is_some_and(|state| {
-                                            state.selected_id.is_some() && !state.loading
-                                        })
-                                    });
-                                    let changes = diff.with(|diff| diff.hunks.len());
-                                    let index = selected.get().min(changes.saturating_sub(1));
+                                    let ready = ready.get();
+                                    let confirming = history_runtime::confirmation();
+                                    let (current, previous, next, index, changes) = navigation.get();
                                     view()
                                         .h(px(37.0))
                                         .px(px(8.0))
@@ -144,6 +178,7 @@ fn modal() -> impl IntoElement {
                                             } else {
                                                 "对比当前"
                                             },
+                                            true,
                                             move || compare.update(|value| *value = !*value),
                                         ))
                                         .child((ready && compare.get() && changes > 0).then(|| {
@@ -154,24 +189,31 @@ fn modal() -> impl IntoElement {
                                                 .child(button(
                                                     "local-history-hunk-prev",
                                                     "上一处",
+                                                    previous.is_some() && !confirming,
                                                     move || navigate_change(-1),
                                                 ))
                                                 .child(button(
                                                     "local-history-hunk-next",
                                                     "下一处",
+                                                    next.is_some() && !confirming,
                                                     move || navigate_change(1),
                                                 ))
                                                 .child(
                                                     text(format!("{} / {}", index + 1, changes))
+                                                        .test_id("local-history-change-count")
                                                         .text_size(px(10.5))
                                                         .text_color(p.text_muted),
                                                 )
                                                 .child(button(
                                                     "local-history-restore-hunk",
                                                     "恢复此变更块",
+                                                    current.is_some() && !confirming,
                                                     move || {
-                                                        history_runtime::restore_hunk(index);
-                                                        selected.set(0);
+                                                        if let Some(index) = current.filter(|_| {
+                                                            can_navigate() && navigation.get_untracked().0 == current
+                                                        }) {
+                                                            history_runtime::restore_hunk(index);
+                                                        }
                                                     },
                                                 ))
                                         }))
@@ -180,6 +222,7 @@ fn modal() -> impl IntoElement {
                                             button(
                                                 "local-history-restore-all",
                                                 "恢复此版本…",
+                                                !confirming,
                                                 history_runtime::request_restore_all,
                                             )
                                         }))
@@ -207,9 +250,10 @@ fn modal() -> impl IntoElement {
                                     h_resizable()
                                         .flex_1()
                                         .child(resizable_panel().child(history_editor(
-                                            "local-history-snapshot",
-                                            "快照",
+                                            DiffSide::Old,
                                             old_ref,
+                                            old_caret,
+                                            active_side,
                                             move || texts.with(|(_, text, _)| text.clone()),
                                             move || texts.with(|(title, _, _)| title.clone()),
                                             move || {
@@ -223,9 +267,10 @@ fn modal() -> impl IntoElement {
                                         .child(
                                             resizable_panel().visible(move || compare.get()).child(
                                                 history_editor(
-                                                    "local-history-current",
-                                                    "当前内容",
+                                                    DiffSide::New,
                                                     new_ref,
+                                                    new_caret,
+                                                    active_side,
                                                     move || texts.with(|(_, _, text)| text.clone()),
                                                     move || {
                                                         texts.with(|(title, _, _)| title.clone())
@@ -240,7 +285,7 @@ fn modal() -> impl IntoElement {
         )
 }
 
-fn snapshot_list(state: Option<HistoryView>, selected: Signal<usize>) -> impl IntoElement {
+fn snapshot_list(state: Option<HistoryView>) -> impl IntoElement {
     let p = current_palette();
     let rows = state.as_ref().into_iter().flat_map(|state| {
         state.entries.iter().map(move |entry| {
@@ -263,10 +308,7 @@ fn snapshot_list(state: Option<HistoryView>, selected: Signal<usize>) -> impl In
                     p.surface
                 })
                 .hover(move |style| style.bg(p.surface_hover))
-                .on_press(move || {
-                    selected.set(0);
-                    history_runtime::select(&id);
-                })
+                .on_press(move || history_runtime::select(&id))
                 .child(
                     text(entry.label.clone())
                         .text_size(px(11.5))
@@ -318,24 +360,31 @@ fn confirmation() -> impl IntoElement {
         .child(button(
             "local-history-cancel-restore",
             "取消",
+            true,
             history_runtime::cancel_confirmation,
         ))
         .child(button(
             "local-history-confirm-restore",
             "确认恢复",
+            true,
             history_runtime::confirm_restore,
         ))
 }
 
 fn history_editor(
-    id: &'static str,
-    label: &'static str,
+    side: DiffSide,
     reference: ComponentRef<Editor>,
+    caret: Signal<EditorPosition>,
+    active_side: Signal<DiffSide>,
     value: impl Fn() -> String + 'static,
     language: impl Fn() -> String + 'static,
     decorations: impl Fn() -> Vec<EditorDecoration> + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
+    let (id, label) = match side {
+        DiffSide::Old => ("local-history-snapshot", "快照"),
+        DiffSide::New => ("local-history-current", "当前内容"),
+    };
     view()
         .flex_1()
         .flex_col()
@@ -359,14 +408,20 @@ fn history_editor(
                 .value(move || Some(SharedString::from(value())))
                 .language(move || Some(SharedString::from(language())))
                 .decorations(decorations)
+                .on_selection_change(move |selections: &Vec<EditorSelection>| {
+                    if let Some(selection) = selections.last() {
+                        caret.set(selection.head);
+                    }
+                })
                 .on_focus(move || {
+                    active_side.set(side);
                     state::set_text_input_focused(false);
                     state::editor_refs_signal().update(|refs| refs.modal_active = Some(reference));
                 }),
         )
 }
 
-fn button(id: &'static str, label: &'static str, handler: impl Fn() + 'static) -> impl IntoElement {
+fn button(id: &'static str, label: &'static str, enabled: bool, handler: impl Fn() + 'static) -> impl IntoElement {
     let p = current_palette();
     view()
         .test_id(id)
@@ -374,8 +429,10 @@ fn button(id: &'static str, label: &'static str, handler: impl Fn() + 'static) -
         .px(px(6.0))
         .rounded(px(4.0))
         .items_center()
-        .bg(p.surface2)
         .cursor(Cursor::Pointer)
+        .disabled(!enabled)
+        .style_when(!enabled, |style| style.opacity(0.45).cursor(Cursor::Default))
+        .bg(p.surface2)
         .hover(move |style| style.bg(p.surface_hover))
         .on_press(move || handler())
         .child(text(label).text_size(px(10.5)).text_color(p.text_control))

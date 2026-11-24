@@ -132,10 +132,10 @@ pub(crate) fn editor_position(text: &str, position: Position) -> Result<nsh_base
         .split('\n')
         .nth(position.line as usize)
         .context("LSP 坐标超出文件")?;
-    let byte = utf16_to_byte(line.trim_end_matches('\r'), position.character)?;
+    utf16_to_byte(line.trim_end_matches('\r'), position.character)?;
     Ok(nsh_base::EditorPosition::new(
         position.line,
-        line[..byte].chars().count() as u32,
+        position.character,
     ))
 }
 
@@ -208,6 +208,17 @@ mod tests {
         );
         assert!(utf16_to_byte("😀", 1).is_err());
         assert!(apply_edits("a😀b\r\nline\r\n", &[edits[0].clone(), edits[0].clone()]).is_err());
+        assert_eq!(
+            editor_position(
+                "a😀b",
+                Position {
+                    line: 0,
+                    character: 3
+                }
+            )
+            .unwrap(),
+            nsh_base::EditorPosition::new(0, 3),
+        );
     }
 
     #[cfg(unix)]

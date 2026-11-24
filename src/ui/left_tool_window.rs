@@ -6,6 +6,25 @@ use crate::theme::Palette;
 
 use super::icons::{self, ICO_MINUS, ICO_MORE_VERTICAL};
 
+pub(super) fn tree_scroll(
+    viewport: &'static str,
+    rows: &'static str,
+    content: impl IntoElement,
+) -> impl IntoElement {
+    scroll()
+        .horizontal()
+        .test_id(viewport)
+        .flex_1()
+        .child(
+            scroll()
+                .test_id(rows)
+                .flex_none()
+                .h_full()
+                .min_w(relative(1.0))
+                .child(content),
+        )
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct ToolWindow {
     tab: LeftTab,

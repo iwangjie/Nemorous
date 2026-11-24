@@ -127,7 +127,7 @@ fn parse_commit_log(
 
         commits.push(CommitEntry {
             repo_id: repo.id.clone(),
-            repo_name: repo.name.clone(),
+            repo_name: repo.label().to_owned(),
             repo_path: repo_path.clone(),
             hash,
             short_hash,
@@ -358,6 +358,7 @@ mod tests {
         let repo = RepoInfo {
             id: "fixture".into(),
             name: "fixture".into(),
+            display_name: None,
             path: dir.to_string_lossy().into_owned(),
             rel_path: String::new(),
             desc: String::new(),

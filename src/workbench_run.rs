@@ -189,7 +189,7 @@ pub fn run_command(cfg: &RunConfig, workspace: &Path) -> Result<std::process::Co
     );
     let mut command = if cwd.join(direct).is_file() || Path::new(direct).is_file() {
         let path = cwd.join(direct);
-        std::process::Command::new(if path.is_file() {
+        crate::tool_command::command(if path.is_file() {
             path
         } else {
             Path::new(direct).to_path_buf()
@@ -200,7 +200,7 @@ pub fn run_command(cfg: &RunConfig, workspace: &Path) -> Result<std::process::Co
             .next()
             .filter(|s| !s.is_empty())
             .context("请输入可执行命令")?;
-        let mut command = std::process::Command::new(program);
+        let mut command = crate::tool_command::command(program);
         command.args(parts);
         command
     };

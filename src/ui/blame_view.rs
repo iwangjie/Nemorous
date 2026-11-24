@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nsh_base::{Editor, EditorApi, EditorPosition, EditorRange};
+use nsh_base::{Editor, EditorApi, EditorFoldRange, EditorPosition, EditorRange};
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -21,6 +21,7 @@ struct Source {
     workspace: String,
     tab: String,
     revision: u64,
+    git_revision: blame::Revision,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -53,6 +54,9 @@ fn attribution() -> Signal<Attribution> {
 
 fn active_source() -> Option<(Source, u32)> {
     app_signal().with(|s| {
+        if s.editor_tab != state::EditorTabKind::File {
+            return None;
+        }
         let tab = s.code_tabs.get(s.active_code_tab_idx)?;
         if tab.binary || tab.too_large {
             return None;
@@ -62,6 +66,11 @@ fn active_source() -> Option<(Source, u32)> {
                 workspace: s.cfg.workspace_path.clone(),
                 tab: tab.id.clone(),
                 revision: tab.content_rev,
+                git_revision: if tab.revision.is_empty() {
+                    blame::Revision::Working(s.repository_head(&tab.file.repo_path))
+                } else {
+                    blame::Revision::Commit(tab.revision.clone())
+                },
             },
             tab.cursor.line + 1,
         ))
@@ -213,24 +222,38 @@ fn request(source: Source, first: u32, last: u32) {
                     .revision
                     .is_empty()
                     .then(|| tab.text.as_bytes().to_vec());
-                Some((tab.file.clone(), tab.revision.clone(), count, bytes))
+                Some((tab.file.clone(), count, bytes))
             });
-            let Some((file, revision, count, bytes)) = data else {
+            let Some((file, count, bytes)) = data else {
                 return;
             };
             spawn(async move {
-                let outcome = blocking(move || {
+                let revision = request.source.git_revision.clone();
+                let outcome = blocking(move || -> anyhow::Result<Option<Vec<Line>>> {
                     if count < first {
-                        return Ok(Vec::new());
+                        return Ok(Some(Vec::new()));
                     }
-                    blame::read(
+                    let last = last.min(count);
+                    let Some(lines) = revision.read(
                         Path::new(&file.repo_path),
                         &file.rel_path,
-                        &revision,
                         first,
-                        last.min(count),
+                        last,
                         bytes,
-                    )
+                    )? else {
+                        return Ok(None);
+                    };
+                    if revision.uses_buffer() && lines.is_empty() {
+                        // Files the agent just created have no committed lines yet.
+                        return Ok(Some((first..=last).map(|number| Line {
+                            number,
+                            hash: String::new(),
+                            author: String::new(),
+                            author_unix: 0,
+                            summary: String::new(),
+                        }).collect()));
+                    }
+                    Ok(Some(lines))
                 })
                 .await;
                 if !active_source().is_some_and(|(source, _)| source == request.source) {
@@ -242,8 +265,9 @@ fn request(source: Source, first: u32, last: u32) {
                     }
                     s.loading = false;
                     match outcome {
-                        Ok(Ok(lines)) if !lines.is_empty() => s.lines = Arc::new(lines),
-                        Ok(Ok(_)) => s.error = Some("没有可归属的行".into()),
+                        Ok(Ok(Some(lines))) if !lines.is_empty() => s.lines = Arc::new(lines),
+                        Ok(Ok(Some(_))) => s.error = Some("没有可归属的行".into()),
+                        Ok(Ok(None)) => {}
                         Ok(Err(err)) => s.error = Some(format!("读取 Git 归属失败：{err}")),
                         Err(err) => s.error = Some(format!("读取 Git 归属失败：{err}")),
                     }
@@ -253,12 +277,21 @@ fn request(source: Source, first: u32, last: u32) {
     });
 }
 
-#[derive(Clone, Copy, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 struct Viewport {
     first: u32,
     last: u32,
     line: u32,
     scroll: Point<Points>,
+    folds: Vec<EditorFoldRange>,
+}
+
+impl Viewport {
+    fn shows_line(&self, number: u32) -> bool {
+        let row = number.saturating_sub(1);
+        (self.first..=self.last).contains(&number)
+            && !self.folds.iter().any(|fold| fold.start_line < row && row <= fold.end_line)
+    }
 }
 
 pub(super) fn editor_body(
@@ -268,6 +301,8 @@ pub(super) fn editor_body(
 ) -> impl IntoElement {
     let size = signal(Size::new(px(0.0), px(0.0)));
     let viewport = signal(Viewport::default());
+    let scrolling = signal(false);
+    let last_wheel = stored(None::<nsh_core::time::Instant>);
     let active = computed(move || {
         let pane_has_focus = side.is_none_or(|side| {
             app_signal().with(|s| {
@@ -307,16 +342,17 @@ pub(super) fn editor_body(
             last: visible.end.line + 1,
             line,
             scroll: api.scroll_offset(),
+            folds: api.folds(),
         };
-        if viewport.get_untracked() != view {
-            viewport.set(view);
+        let (first, last) = (view.first, view.last);
+        viewport.set(view);
+        if scrolling.get_untracked() && last_wheel.get().is_some_and(|at| {
+            nsh_core::time::now().duration_since(at) >= Duration::from_millis(90)
+        }) {
+            scrolling.set(false);
         }
         if mode == Mode::File {
-            request(
-                source,
-                view.first,
-                view.last.min(view.first + blame::MAX_LINES - 1),
-            );
+            request(source, first, last.min(first + blame::MAX_LINES - 1));
         } else {
             request(source, line, line);
         }
@@ -337,7 +373,7 @@ pub(super) fn editor_body(
                 return view().into_element();
             }
             let vp = viewport.get();
-            let lines = visible_lines(vp);
+            let lines = if scrolling.get() { Vec::new() } else { visible_lines(&vp) };
             let p = current_palette();
             let height = size.get().height;
             let labels = ed_ref
@@ -347,9 +383,8 @@ pub(super) fn editor_body(
                         .into_iter()
                         .filter_map(move |line| {
                             let bounds = row_box(&api, line.number, 0)?;
-                            (bounds.origin.y < height
-                                && bounds.origin.y.0 + bounds.size.height.0 > 0.0)
-                                .then(|| label(line, bounds.origin.y, px(4.0), px(152.0), p))
+                            row_in_view(bounds, height)
+                                .then(|| label(line, bounds, px(4.0), px(152.0), false, p))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -371,6 +406,12 @@ pub(super) fn editor_body(
                 .relative()
                 .flex_1()
                 .overflow_hidden()
+                .on_wheel(move |_: &WheelEvent| {
+                    if active.get_untracked().is_some() {
+                        last_wheel.replace(Some(nsh_core::time::now()));
+                        scrolling.set(true);
+                    }
+                })
                 .on_layout(move |bounds: &Bounds<Points>| {
                     if size.get_untracked() != bounds.size {
                         size.set(bounds.size);
@@ -410,7 +451,7 @@ pub(super) fn editor_body(
                             )
                             .into_element();
                     }
-                    if mode != Mode::Line || vp.line < vp.first || vp.line > vp.last {
+                    if mode != Mode::Line || scrolling.get() || !vp.shows_line(vp.line) {
                         return view().into_element();
                     }
                     let Some(line) = state
@@ -428,25 +469,21 @@ pub(super) fn editor_body(
                         return view().into_element();
                     };
                     let next = bounds.origin.x + px(12.0);
-                    let width = size.get().width;
+                    let size = size.get();
+                    if !row_in_view(bounds, size.height) {
+                        return view().into_element();
+                    }
+                    let width = size.width;
                     if width.0 - next.0 >= 94.0 {
-                        label(line, bounds.origin.y, next, width - next - px(6.0), p)
+                        label(line, bounds, next, width - next - px(6.0), false, p)
                     } else {
-                        view()
-                            .absolute()
-                            .bottom(px(23.0))
-                            .right(px(8.0))
-                            .w(px(215.0))
-                            .h(px(19.0))
-                            .bg(p.rail_bg)
-                            .child(label(line, px(0.0), px(0.0), px(215.0), p))
-                            .into_element()
+                        label(line, bounds, (width - px(26.0)).max(px(0.0)), px(22.0), true, p)
                     }
                 })),
         )
 }
 
-fn visible_lines(view: Viewport) -> Vec<Line> {
+fn visible_lines(view: &Viewport) -> Vec<Line> {
     let source = active_source().map(|(source, _)| source);
     attribution().with(|s| {
         if s.request.as_ref().map(|request| &request.source) != source.as_ref() {
@@ -454,7 +491,7 @@ fn visible_lines(view: Viewport) -> Vec<Line> {
         }
         s.lines
             .iter()
-            .filter(|line| (view.first..=view.last).contains(&line.number))
+            .filter(|line| view.shows_line(line.number))
             .cloned()
             .collect()
     })
@@ -467,42 +504,50 @@ fn row_box(api: &EditorApi, number: u32, col: u32) -> Option<Bounds<Points>> {
         .map(|b| b.bounds)
 }
 
+fn row_in_view(bounds: Bounds<Points>, height: Points) -> bool {
+    bounds.origin.y < height && bounds.origin.y.0 + bounds.size.height.0 > 0.0
+}
+
 fn label(
     line: Line,
-    top: Points,
+    bounds: Bounds<Points>,
     left: Points,
     width: Points,
+    compact: bool,
     p: crate::theme::Palette,
 ) -> AnyElement {
     let date = chrono::DateTime::from_timestamp(line.author_unix, 0)
-        .map_or_else(String::new, |date| date.format("%Y-%m-%d").to_string());
+        .map(|date| date.with_timezone(&chrono::Local));
     let pending = line.hash.is_empty();
     let name = if pending {
         "未提交的本地修改".into()
     } else {
-        format!("{} · {date}", line.author)
+        format!("{} · {}", line.author, date.map_or(String::new(), |date| date.format("%Y-%m-%d").to_string()))
     };
     let hint = if pending {
         name.clone()
     } else {
         format!(
-            "{} · {} · {}",
+            "{} · {} · {} · {}",
             line.hash.get(..8).unwrap_or(&line.hash),
-            name,
+            line.author,
+            date.map_or(String::new(), |date| date.format("%Y-%m-%d %H:%M").to_string()),
             line.summary
         )
     };
     view()
         .test_id(&format!("blame-line-{}", line.number))
         .absolute()
-        .top(top)
+        .top(bounds.origin.y)
         .left(left)
         .w(width)
-        .h(px(19.0))
+        .h(bounds.size.height)
         .px(px(4.0))
         .justify_center()
         .overflow_hidden()
-        .label(hint)
+        .when(compact, |label| label.items_center().bg(p.rail_bg))
+        .label(hint.clone())
+        .tooltip(super::tooltip_label(hint, p))
         .cursor(if pending {
             Cursor::Default
         } else {
@@ -513,11 +558,14 @@ fn label(
                 reveal(line.hash.clone());
             }
         })
-        .child(
+        .child(if compact {
+            super::icons::icon(super::icons::ICO_BRANCH, 12.0, p.text_control).into_element()
+        } else {
             text(name)
                 .text_size(px(10.0))
                 .text_color(p.text_muted)
-                .number_of_lines(1u32),
-        )
+                .number_of_lines(1u32)
+                .into_element()
+        })
         .into_element()
 }

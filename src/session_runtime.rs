@@ -249,7 +249,7 @@ fn read_plan(path: &Path, workspace: &str, files: Vec<WorkspaceFile>) -> Option<
                 cursor: EditorPosition::new(0, 0),
                 scroll_y: 0.0,
                 scroll_x: 0.0,
-                external_changed: false,
+                disk_state: crate::state::ReviewDiskState::Current,
                 preview: false,
                 content_rev: 1,
             });

@@ -11,6 +11,31 @@ pub(crate) struct IndexEntry {
     pub mode: String,
 }
 
+pub(crate) enum ReviewIndexEntry {
+    File(IndexEntry),
+    Missing,
+    IntentToAdd,
+    Unmerged,
+}
+
+impl ReviewIndexEntry {
+    pub(crate) fn file(&self) -> Option<&IndexEntry> {
+        match self {
+            Self::File(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn into_checked_entry(self) -> Result<Option<IndexEntry>> {
+        match self {
+            Self::File(entry) => Ok(Some(entry)),
+            Self::Missing => Ok(None),
+            Self::IntentToAdd => bail!("仅标记为意向添加的文件无法按块修改"),
+            Self::Unmerged => bail!("文件存在未合并的索引条目"),
+        }
+    }
+}
+
 pub(crate) fn literal_file(path: &str) -> Result<()> {
     ensure!(
         !path.is_empty()
@@ -50,6 +75,10 @@ pub(crate) fn index_git(
 }
 
 pub(crate) fn read_index_entry(repo: &Path, path: &str) -> Result<Option<IndexEntry>> {
+    read_review_index_entry(repo, path)?.into_checked_entry()
+}
+
+pub(crate) fn read_review_index_entry(repo: &Path, path: &str) -> Result<ReviewIndexEntry> {
     literal_file(path)?;
     let raw = index_git(
         repo,
@@ -66,7 +95,7 @@ pub(crate) fn read_index_entry(repo: &Path, path: &str) -> Result<Option<IndexEn
         None,
     )?;
     if raw.is_empty() {
-        return Ok(None);
+        return Ok(ReviewIndexEntry::Missing);
     }
     let raw = String::from_utf8(raw).context("索引条目含有无效 UTF-8")?;
     let (record, info) = raw.split_once('\0').context("无法读取 Git 索引条目")?;
@@ -76,21 +105,19 @@ pub(crate) fn read_index_entry(repo: &Path, path: &str) -> Result<Option<IndexEn
     let mode = fields.next().context("索引条目缺少文件类型")?;
     let oid = fields.next().context("索引条目缺少对象 ID")?;
     let stage = fields.next().context("索引条目缺少 stage")?;
-    ensure!(
-        stage == "0" && !info.contains('\0'),
-        "文件存在未合并的索引条目"
-    );
+    if stage != "0" || info.contains('\0') {
+        return Ok(ReviewIndexEntry::Unmerged);
+    }
     ensure!(oid_ok(oid), "索引条目的对象 ID 无效");
     let flags = info
         .lines()
         .find_map(|line| line.rsplit_once("\tflags: "))
         .and_then(|(_, value)| u32::from_str_radix(value.trim(), 16).ok())
         .context("无法读取索引条目标志")?;
-    ensure!(
-        flags & 0x2000_0000 == 0,
-        "仅标记为意向添加的文件无法按块修改"
-    );
-    Ok(Some(IndexEntry {
+    if flags & 0x2000_0000 != 0 {
+        return Ok(ReviewIndexEntry::IntentToAdd);
+    }
+    Ok(ReviewIndexEntry::File(IndexEntry {
         oid: oid.to_owned(),
         mode: mode.to_owned(),
     }))
@@ -289,6 +316,9 @@ pub(crate) fn tree_file(repo: &Path, treeish: &str, path: &str) -> Result<Option
     let mode = fields.next().context("缺少 Git 树文件模式")?;
     let kind = fields.next().context("缺少 Git 树对象类型")?;
     let oid = fields.next().context("缺少 Git 树对象 ID")?;
+    if kind == "tree" {
+        return Ok(None);
+    }
     ensure!(
         matches!(kind, "blob" | "commit") && oid_ok(oid),
         "目标不是单个 Git 文件"

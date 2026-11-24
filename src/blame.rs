@@ -2,7 +2,7 @@ use std::path::{Component, Path};
 
 use anyhow::{Result, bail};
 
-use crate::git::{BoundedGitOutput, run_git_limited};
+use crate::git::{BoundedGitOutput, RepositoryHead, run_git_limited};
 
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_LINES: u32 = 200;
@@ -14,6 +14,47 @@ pub struct Line {
     pub author: String,
     pub author_unix: i64,
     pub summary: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Revision {
+    Commit(String),
+    Working(RepositoryHead),
+}
+
+impl Revision {
+    pub(crate) fn uses_buffer(&self) -> bool {
+        matches!(self, Self::Working(_))
+    }
+
+    /// A buffer query uses Git's implicit HEAD. Discard the result when the
+    /// repository advances before the query starts or while it is running.
+    pub(crate) fn read(
+        &self,
+        repo: &Path,
+        rel: &str,
+        first: u32,
+        last: u32,
+        contents: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<Line>>> {
+        match self {
+            Self::Commit(commit) => read(repo, rel, commit, first, last, None).map(Some),
+            Self::Working(RepositoryHead::Unborn) => Ok(Some(Vec::new())),
+            Self::Working(RepositoryHead::Unavailable) => bail!("无法确认仓库 HEAD"),
+            Self::Working(RepositoryHead::Commit(head)) => {
+                let Some(contents) = contents else { bail!("缺少工作区归属内容") };
+                let expected = Some(head.as_str());
+                if crate::git_commit::head_oid(repo)?.as_deref() != expected {
+                    return Ok(None);
+                }
+                let result = read(repo, rel, "", first, last, Some(contents));
+                if crate::git_commit::head_oid(repo)?.as_deref() != expected {
+                    return Ok(None);
+                }
+                result.map(Some)
+            }
+        }
+    }
 }
 
 pub fn read(
@@ -157,6 +198,7 @@ fn is_untracked(stderr: &str) -> bool {
         || s.contains("has no commits yet")
         || s.contains("has only")
         || s.contains("bad revision 'head'")
+        || s.contains("no such ref: head")
 }
 
 #[cfg(test)]
@@ -195,6 +237,8 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q"]);
         fs::write(dir.join("a.txt"), "alpha\nbeta\ngamma\n").unwrap();
+        assert!(read(&dir, "a.txt", "", 1, 1, Some(b"alpha\nbeta\ngamma\n".to_vec()))
+            .unwrap().is_empty());
         git(&dir, &["add", "a.txt"]);
         git(&dir, &["commit", "-q", "-m", "初始提交"]);
 
@@ -231,6 +275,15 @@ gamma
 delta
 "
         );
+
+        let old_head = lines[0].hash.clone();
+        let working = Revision::Working(RepositoryHead::Commit(old_head.clone()));
+        let buffer = || Some(b"alpha\nbeta\ngamma\ndraft\n".to_vec());
+        assert_eq!(working.read(&dir, "a.txt", 2, 2, buffer()).unwrap().unwrap(), lines);
+        git(&dir, &["commit", "--quiet", "--allow-empty", "-m", "Advance HEAD"]);
+        assert!(working.read(&dir, "a.txt", 2, 2, buffer()).unwrap().is_none());
+        let pinned = Revision::Commit(old_head);
+        assert_eq!(pinned.read(&dir, "a.txt", 2, 2, None).unwrap().unwrap(), lines);
 
         let _ = fs::remove_dir_all(&dir);
     }

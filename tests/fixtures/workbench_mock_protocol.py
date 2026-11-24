@@ -28,12 +28,15 @@ def event(name, body=None):
 
 
 while incoming := read():
-    if mode == "dap" and incoming.get("type") == "request":
+    if mode in ("dap", "dap-retry") and incoming.get("type") == "request":
         command = incoming["command"]
         arguments = incoming.get("arguments", {})
         with proof.open("a") as log:
             log.write(f"{command} {json.dumps(arguments)}\n")
         if command == "launch":
+            if mode == "dap-retry" and proof.read_text().count("\nlaunch ") == 1:
+                print("synthetic adapter startup failure", file=sys.stderr, flush=True)
+                sys.exit(7)
             event("initialized")
         body = {
             "initialize": {"supportsConfigurationDoneRequest": True},
@@ -62,6 +65,12 @@ while incoming := read():
             result = {
                 "initialize": {"capabilities": {"positionEncoding": "utf-16"}},
                 "textDocument/hover": {"contents": {"kind": "plaintext", "value": "synthetic hover"}},
+                "textDocument/codeAction": [{"title": "Synthetic source fix", "edit": {"changes": {
+                    params.get("textDocument", {}).get("uri", ""): [{
+                        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+                        "newText": "// synthetic fix\n",
+                    }],
+                }}}],
                 "textDocument/formatting": [{"range": {"start": {"line": 0, "character": 0},
                                                        "end": {"line": 0, "character": 0}},
                                              "newText": "// verified LSP\n"}],

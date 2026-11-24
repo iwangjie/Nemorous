@@ -1,5 +1,4 @@
-use std::collections::{HashMap, VecDeque};
-use std::ops::Range;
+use std::collections::HashMap;
 
 use nsh_base::EditorPosition;
 
@@ -132,159 +131,6 @@ impl EditorSplit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ChangeSpan {
-    pub start: usize,
-    pub before_end: usize,
-    pub after_end: usize,
-}
-
-impl ChangeSpan {
-    pub fn between(before: &str, after: &str) -> Option<Self> {
-        if before == after {
-            return None;
-        }
-
-        let before_bytes = before.as_bytes();
-        let after_bytes = after.as_bytes();
-        let max_prefix = before_bytes.len().min(after_bytes.len());
-
-        let mut prefix = 0;
-        while prefix < max_prefix && before_bytes[prefix] == after_bytes[prefix] {
-            prefix += 1;
-        }
-
-        while prefix > 0 && (!before.is_char_boundary(prefix) || !after.is_char_boundary(prefix)) {
-            prefix -= 1;
-        }
-
-        let max_suffix = (before_bytes.len() - prefix).min(after_bytes.len() - prefix);
-        let mut suffix = 0;
-        while suffix < max_suffix
-            && before_bytes[before_bytes.len() - 1 - suffix]
-                == after_bytes[after_bytes.len() - 1 - suffix]
-        {
-            suffix += 1;
-        }
-
-        while suffix > 0
-            && (!before.is_char_boundary(before_bytes.len() - suffix)
-                || !after.is_char_boundary(after_bytes.len() - suffix))
-        {
-            suffix -= 1;
-        }
-
-        let start = prefix;
-        let before_end = before_bytes.len() - suffix;
-        let after_end = after_bytes.len() - suffix;
-
-        if start == before_end && start == after_end {
-            return None;
-        }
-
-        Some(Self {
-            start,
-            before_end,
-            after_end,
-        })
-    }
-
-    pub fn before_range(self) -> Range<usize> {
-        self.start..self.before_end
-    }
-
-    pub fn after_range(self) -> Range<usize> {
-        self.start..self.after_end
-    }
-}
-
-const MAX_UNDO_ENTRIES: usize = 200;
-const MAX_UNDO_BYTES: usize = 4 * 1024 * 1024;
-
-#[derive(Debug, Clone)]
-struct UndoEntry {
-    start: usize,
-    before: String,
-    after: String,
-}
-
-impl UndoEntry {
-    fn size(&self) -> usize {
-        self.before.len() + self.after.len()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct UndoLog {
-    undo: VecDeque<UndoEntry>,
-    redo: Vec<UndoEntry>,
-    bytes: usize,
-}
-
-impl UndoLog {
-    pub fn record(&mut self, before: &str, after: &str) {
-        let Some(span) = ChangeSpan::between(before, after) else {
-            return;
-        };
-        let before = &before[span.before_range()];
-        let after = &after[span.after_range()];
-        if before.len() + after.len() > MAX_UNDO_BYTES {
-            self.clear();
-            return;
-        }
-        self.bytes -= self.redo.drain(..).map(|entry| entry.size()).sum::<usize>();
-        let entry = UndoEntry {
-            start: span.start,
-            before: before.to_string(),
-            after: after.to_string(),
-        };
-        self.bytes += entry.size();
-        self.undo.push_back(entry);
-        while self.undo.len() > MAX_UNDO_ENTRIES || self.bytes > MAX_UNDO_BYTES {
-            let Some(entry) = self.undo.pop_front() else {
-                break;
-            };
-            self.bytes -= entry.size();
-        }
-    }
-
-    /// Return the edit's start byte for restoring the active caret.
-    pub fn apply(&mut self, text: &mut String, redo: bool) -> Option<usize> {
-        let entry = if redo {
-            self.redo.pop()?
-        } else {
-            self.undo.pop_back()?
-        };
-        let (expected, next) = if redo {
-            (&entry.before, &entry.after)
-        } else {
-            (&entry.after, &entry.before)
-        };
-        let range = entry.start..entry.start + expected.len();
-        if text.get(range.clone()) != Some(expected) {
-            self.clear();
-            return None;
-        }
-        text.replace_range(range, next);
-        let offset = entry.start;
-        if redo {
-            self.undo.push_back(entry);
-        } else {
-            self.redo.push(entry);
-        }
-        Some(offset)
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.undo.is_empty() && self.redo.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,16 +162,12 @@ mod tests {
 
     #[test]
     fn shared_undo_uses_unicode_boundaries_and_rejects_stale_replay() {
-        let mut log = UndoLog::default();
-        log.record("x😀終", "x😃終");
-        let mut text = "x😃終".to_string();
-        assert_eq!(log.apply(&mut text, false), Some(1));
-        assert_eq!(text, "x😀終");
-        assert_eq!(log.apply(&mut text, true), Some(1));
-        assert_eq!(text, "x😃終");
-        text = "x😺終".into();
-        assert_eq!(log.apply(&mut text, false), None);
-        assert_eq!(text, "x😺終");
-        assert!(log.is_empty());
+        let history = crate::state::DocumentUndo::default();
+        history.record_source_replacement("x😀終", "x😃終");
+        let caret = EditorPosition::new(0, 1);
+        assert_eq!(history.step("x😃終", false), Some(("x😀終".to_owned(), caret)));
+        assert_eq!(history.step("x😀終", true), Some(("x😃終".to_owned(), caret)));
+        assert_eq!(history.step("x😺終", false), None);
+        assert_eq!(history.step("x😃終", false), None);
     }
 }

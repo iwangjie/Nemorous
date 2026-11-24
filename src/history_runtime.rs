@@ -17,6 +17,7 @@ pub(crate) struct View {
     pub current_text: String,
     pub snapshot_text: String,
     pub loading: bool,
+    pub comparison_ready: bool,
     pub error: Option<String>,
     pub notice: Option<String>,
 }
@@ -211,11 +212,11 @@ fn live_buffer(s: &AppState, file: &WorkspaceFile) -> Option<Buffer> {
     let code = s
         .code_tabs
         .iter()
-        .find(|tab| tab.file.key() == key && tab.editable && tab.revision.is_empty());
+        .find(|tab| tab.file.key() == key && tab.editor_editable() && tab.revision.is_empty());
     let diff = s
         .working_diff
         .as_ref()
-        .filter(|diff| diff.file.key() == key && diff.data.editable && !diff.data.staged_only);
+        .filter(|diff| diff.file.key() == key && diff.editor_editable());
     if let Some(tab) =
         code.filter(|tab| tab.is_dirty() || !diff.is_some_and(|diff| diff.is_dirty()))
     {
@@ -291,6 +292,7 @@ pub fn snapshot() -> Option<View> {
             current_text: current,
             snapshot_text: snapshot,
             loading: s.loading || s.writing,
+            comparison_ready: s.comparison.is_some() && !s.loading && !s.writing,
             error: s.error.clone(),
             notice: s.notice.clone(),
         })
@@ -448,7 +450,7 @@ fn restore(hunk: Option<usize>) {
                             tab.saved_text.clone_from(&text);
                             tab.version = version.clone();
                             tab.line_ending = ending;
-                            tab.external_changed = false;
+                            tab.disk_state = crate::state::ReviewDiskState::Current;
                         }
                         if let Some(diff) = s
                             .working_diff
@@ -459,7 +461,7 @@ fn restore(hunk: Option<usize>) {
                             diff.data.new_text = text.clone();
                             diff.data.version = version;
                             diff.data.line_ending = ending;
-                            diff.external_changed = false;
+                            diff.disk_state = crate::state::ReviewDiskState::Current;
                         }
                     });
                 }
@@ -478,15 +480,6 @@ fn restore(hunk: Option<usize>) {
 fn apply_buffer(buffer: &Buffer, text: &str) {
     match buffer {
         Buffer::Code { id, .. } => crate::code_split_runtime::record_editor_change(id, text),
-        Buffer::Diff { key, .. } => app_signal().update(|s| {
-            let whitespace = WhitespaceMode::from_config(&s.cfg.diff_whitespace_mode);
-            if let Some(diff) = &mut s.working_diff
-                && diff.file.key() == *key
-            {
-                diff.current_new_text = text.into();
-                diff.computed = compute_diff(&diff.data.old_text, text, whitespace);
-                diff.content_rev += 1;
-            }
-        }),
+        Buffer::Diff { key, .. } => state::edit_working_diff_text(key, text),
     }
 }

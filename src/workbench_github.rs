@@ -62,8 +62,14 @@ pub(crate) enum Action {
     },
 }
 
+impl Action {
+    pub(crate) fn is_submission(&self) -> bool {
+        matches!(self, Self::Comment { .. } | Self::Create { .. })
+    }
+}
+
 fn command(program: &Path, path: &Path, repository: &str, action: &Action) -> Result<Command> {
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::tool_command::command(program);
     cmd.current_dir(path)
         .env("GH_PROMPT_DISABLED", "1")
         .env("NO_COLOR", "1")
@@ -106,12 +112,26 @@ fn command(program: &Path, path: &Path, repository: &str, action: &Action) -> Re
     Ok(cmd)
 }
 
-pub(crate) fn run(repo: &Path, action: Action, cancelled: &AtomicBool) -> Result<(String, Value)> {
+pub(crate) fn run(
+    repo: &Path,
+    expected_repository: &str,
+    action: Action,
+    cancelled: &AtomicBool,
+) -> Result<(String, Value)> {
+    ensure!(
+        !expected_repository.is_empty() || matches!(&action, Action::List(_)),
+        "请先加载当前仓库的 PR 列表"
+    );
+    ensure!(repo.join(".git").exists(), "当前目录已不再是 Git 仓库");
     let remote = crate::git::run_git_string(repo, &["remote", "get-url", "origin"])
         .map_err(|_| anyhow::anyhow!("当前仓库缺少 origin"))?;
     let target = repository(&remote)?;
+    ensure!(
+        expected_repository.is_empty() || target.eq_ignore_ascii_case(expected_repository),
+        "origin 已更改，请重新打开此仓库"
+    );
     let mut cmd = command(Path::new("gh"), repo, &target, &action)?;
-    let output = capture(&mut cmd, cancelled)?;
+    let output = capture(&mut cmd, cancelled, action.is_submission())?;
     let value = match action {
         Action::List(_) | Action::Detail(_) => {
             serde_json::from_str(&output).context("无法读取 gh 返回的数据")?
@@ -121,7 +141,7 @@ pub(crate) fn run(repo: &Path, action: Action, cancelled: &AtomicBool) -> Result
     Ok((target, value))
 }
 
-fn capture(command: &mut Command, cancelled: &AtomicBool) -> Result<String> {
+fn capture(command: &mut Command, cancelled: &AtomicBool, submission: bool) -> Result<String> {
     ensure!(!cancelled.load(Ordering::Acquire), "GitHub 操作已取消");
     let mut process = ChildGroup::spawn(
         command
@@ -152,6 +172,9 @@ fn capture(command: &mut Command, cancelled: &AtomicBool) -> Result<String> {
             bail!("GitHub 操作已取消");
         }
         if Instant::now() >= deadline {
+            if submission {
+                bail!("提交结果未确认，请先在 GitHub 核对后再试");
+            }
             bail!("GitHub 请求超时");
         }
         if let Some(status) = process.child.try_wait()? {
@@ -174,6 +197,9 @@ fn capture(command: &mut Command, cancelled: &AtomicBool) -> Result<String> {
             || error.contains("authentication")
         {
             bail!("GitHub CLI 需要认证");
+        }
+        if submission {
+            bail!("提交结果未确认，请先在 GitHub 核对后再试（gh 退出码 {:?}）", status.code());
         }
         bail!("GitHub CLI 请求失败（退出码 {:?}）", status.code());
     }
@@ -213,7 +239,7 @@ mod tests {
         ));
         let mut mock = Command::new("/bin/sh");
         mock.args(["-c", "printf '%s' '[{\"number\":2}]'"]);
-        let result = capture(&mut mock, &AtomicBool::new(false)).unwrap();
+        let result = capture(&mut mock, &AtomicBool::new(false), false).unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&result).unwrap()[0]["number"],
             2

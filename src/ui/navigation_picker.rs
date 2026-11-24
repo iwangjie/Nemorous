@@ -375,24 +375,27 @@ fn push_recent(s: &AppState, mode: Mode, query: &str, rows: &mut Vec<Row>) {
     }
     for nav in &s.recent_locations {
         let NavTarget::CodeFile {
-            repo_id, rel_path, ..
+            repo_id, rel_path, revision, ..
         } = nav
         else {
             continue;
         };
-        let id = format!("file::{repo_id}::{rel_path}");
-        if !matches(query, &[repo_id, rel_path]) || !seen.insert(id) {
+        let id = state::code_tab_id(repo_id, rel_path, revision);
+        if !matches(query, &[repo_id, rel_path, revision]) || !seen.insert(id) {
             continue;
         }
-        if !s
-            .workspace_files
-            .iter()
-            .any(|file| file.repo_id == *repo_id && file.rel_path == *rel_path)
-        {
+        let exists = if revision.is_empty() {
+            s.workspace_files.iter().any(|file| file.repo_id == *repo_id && file.rel_path == *rel_path)
+        } else {
+            s.repos.iter().any(|repo| repo.id == *repo_id)
+        };
+        if !exists {
             continue;
         }
         rows.push(Row {
-            title: basename(rel_path),
+            title: if revision.is_empty() { basename(rel_path) } else {
+                format!("{} ({})", basename(rel_path), revision.get(..8).unwrap_or(revision))
+            },
             detail: format!("{repo_id} / {rel_path}"),
             destination: Destination::Location(nav.clone()),
         });
@@ -418,7 +421,8 @@ fn activate(destination: Destination) {
     }
     match destination {
         Destination::Tab(id) => {
-            crate::code_split_runtime::capture_views();
+            state::cancel_diff_read();
+            state::capture_editor_views();
             app_signal().update(|s| {
                 if let Some(index) = s.code_tabs.iter().position(|tab| tab.id == id) {
                     crate::code_split_runtime::select_tab_in_model(s, index);

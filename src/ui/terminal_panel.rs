@@ -21,6 +21,7 @@ struct Pty {
     parser: vt100::Parser,
     rows: u16,
     columns: u16,
+    wheel_remainder: f32,
 }
 
 impl Default for Pty {
@@ -30,6 +31,7 @@ impl Default for Pty {
             parser: vt100::Parser::new(14, 90, 2000),
             rows: 14,
             columns: 90,
+            wheel_remainder: 0.0,
         }
     }
 }
@@ -77,6 +79,7 @@ fn start() {
     workbench::update_resource::<Pty>(|pty| {
         pty.terminal.take();
         pty.parser = vt100::Parser::new(pty.rows, pty.columns, 2000);
+        pty.wheel_remainder = 0.0;
         match Terminal::spawn(&directory, &shell, pty.rows, pty.columns) {
             Ok(terminal) => {
                 pty.terminal = Some(terminal);
@@ -245,11 +248,30 @@ fn nav_scrollback(lines: isize) {
     let mut frame = None;
     workbench::update_resource::<Pty>(|pty| {
         let screen = pty.parser.screen_mut();
-        screen.set_scrollback(screen.scrollback().saturating_add_signed(lines));
-        frame = Some(paint(pty));
+        let previous = screen.scrollback();
+        screen.set_scrollback(previous.saturating_add_signed(lines));
+        if screen.scrollback() != previous {
+            frame = Some(paint(pty));
+        }
     });
     if let Some(lines) = frame {
         global::<Display>().update(|view| view.lines = lines);
+    }
+}
+
+fn wheel_scrollback(event: &WheelEvent) {
+    let delta = event.delta.points(px(CELL_HEIGHT)).y.0;
+    if !delta.is_finite() || delta == 0.0 {
+        return;
+    }
+    let mut lines = 0;
+    workbench::update_resource::<Pty>(|pty| {
+        let distance = pty.wheel_remainder - delta;
+        lines = (distance / CELL_HEIGHT).trunc() as isize;
+        pty.wheel_remainder = distance % CELL_HEIGHT;
+    });
+    if lines != 0 {
+        nav_scrollback(lines);
     }
 }
 
@@ -393,6 +415,7 @@ pub(super) fn body() -> impl IntoElement {
                 .capture_keys(KeyCapture::All)
                 .on_press(move || focus.focus())
                 .on_key_down(handle_key)
+                .on_wheel(wheel_scrollback)
                 .on_layout(resize)
                 .label("终端输出与输入")
                 .bg(rgba(0x16171aff))

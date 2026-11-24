@@ -225,7 +225,7 @@ pub(super) fn button(
     label: &'static str,
     id: &'static str,
     action: impl Fn() + 'static,
-) -> impl IntoElement {
+) -> impl IntoElement + Interactive {
     let p = current_palette();
     view()
         .test_id(id)
@@ -237,6 +237,7 @@ pub(super) fn button(
         .items_center()
         .justify_center()
         .cursor(Cursor::Pointer)
+        .disabled_style(|style| style.opacity(0.5))
         .on_press(action)
         .child(text(label).text_color(p.text_control).text_size(px(11.0)))
 }

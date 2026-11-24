@@ -247,7 +247,7 @@ fn commit(push: bool) {
                             committed += 1;
                             let short = &result.hash[..result.hash.len().min(8)];
                             if let Some(warning) = result.index_warning {
-                                details.push(format!("{} {short}：{warning}", repo.name));
+                                details.push(format!("{} {short}：{warning}", repo.label()));
                             } else {
                                 for key in keys {
                                     s.checked_changes.remove(&key);
@@ -257,14 +257,14 @@ fn commit(push: bool) {
                         }
                         Err(err) => {
                             failed += 1;
-                            details.push(format!("{}：{err}", repo.name));
+                            details.push(format!("{}：{err}", repo.label()));
                         }
                     }
                 }
             });
             for report in reports {
                 if report.status != RemoteStatus::Done {
-                    details.push(format!("{} 推送：{}", report.repo.name, report.detail));
+                    details.push(format!("{} 推送：{}", report.repo.label(), report.detail));
                 }
             }
             if failed == 0 && global::<Form>().with_untracked(|f| f.message.trim() == submitted) {
@@ -297,7 +297,7 @@ fn undo() {
         };
         let label = format!(
             "撤销 {} 最近提交 {}？提交内容将保留在暂存区。",
-            repo.name,
+            repo.label(),
             &head[..8]
         );
         super::git_prompt::confirm(label, move || {

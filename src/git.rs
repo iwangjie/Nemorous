@@ -6,7 +6,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
@@ -90,12 +90,20 @@ pub enum SaveReviewOutcome {
 pub struct RepoInfo {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub path: String,
     pub rel_path: String,
     pub desc: String,
     pub monogram: String,
     pub color_idx: usize,
     pub is_root: bool,
+}
+
+impl RepoInfo {
+    pub fn label(&self) -> &str {
+        self.display_name.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +148,7 @@ impl ChangedFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoStatus {
     pub repo: RepoInfo,
+    pub(crate) head: RepositoryHead,
     pub branch: String,
     pub upstream: String,
     pub ahead: usize,
@@ -147,6 +156,14 @@ pub struct RepoStatus {
     pub detached: bool,
     pub files: Vec<ChangedFile>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum RepositoryHead {
+    #[default]
+    Unavailable,
+    Unborn,
+    Commit(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,8 +200,45 @@ pub struct ReviewChangeData {
     pub readonly_reason: Option<String>,
     pub line_ending: LineEnding,
     pub version: ReviewVersion,
-    pub binary: bool,
-    pub too_large: bool,
+    pub(crate) old_text_block: Option<ReviewTextBlock>,
+    pub(crate) new_text_block: Option<ReviewTextBlock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewTextBlock {
+    Binary,
+    TooLarge,
+}
+
+impl ReviewTextBlock {
+    pub(crate) fn from_flags(binary: bool, too_large: bool) -> Option<Self> {
+        if too_large {
+            Some(Self::TooLarge)
+        } else {
+            binary.then_some(Self::Binary)
+        }
+    }
+
+    pub(crate) fn comparison_notice(self) -> &'static str {
+        match self {
+            Self::Binary => "二进制或非 UTF-8 文件，无法以文本对比",
+            Self::TooLarge => "文件超过 2 MiB 审阅上限",
+        }
+    }
+}
+
+impl ReviewChangeData {
+    pub fn can_compare_text(&self) -> bool {
+        self.old_text_block.is_none() && self.new_text_block.is_none()
+    }
+
+    pub(crate) fn text_block(&self) -> Option<ReviewTextBlock> {
+        if [self.old_text_block, self.new_text_block].contains(&Some(ReviewTextBlock::TooLarge)) {
+            Some(ReviewTextBlock::TooLarge)
+        } else {
+            self.old_text_block.or(self.new_text_block)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,7 +303,7 @@ pub struct StashEntry {
 /// 运行系统 git 命令，强制 `-c core.quotepath=false`、`LC_ALL=C` 与 `GIT_OPTIONAL_LOCKS=0`。
 /// 使用独立后台线程并发排空 stdout/stderr，彻底避免输出 >64 KiB 时的管道死锁，并保留超时保护。
 pub fn run_git_bytes(repo_path: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::tool_command::command("git");
     cmd.arg("-c")
         .arg("core.quotepath=false")
         .args(args)
@@ -366,7 +420,7 @@ pub(crate) fn run_git_limited_with_env(
         .find(|arg| !arg.starts_with('-'))
         .unwrap_or("git");
 
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::tool_command::command("git");
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index).args(["-c", "core.splitIndex=false"]);
     }
@@ -593,6 +647,16 @@ fn parse_mani_projects(workspace: &Path) -> Vec<(String, String, String)> {
 
 /// 发现工作区内的所有 Git 仓库（支持 mani.yaml、单根仓、多子仓混合模式）。
 pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -> Vec<RepoInfo> {
+    let mut repos = discover_workspace_repository_inventory(workspace_path, &[], &mut BTreeMap::new());
+    repos.retain(|repo| !hidden_repos.contains(&repo.id));
+    repos
+}
+
+pub(crate) fn discover_workspace_repository_inventory(
+    workspace_path: &str,
+    previous: &[RepoInfo],
+    bindings: &mut BTreeMap<String, String>,
+) -> Vec<RepoInfo> {
     let trimmed = workspace_path.trim();
     if trimmed.is_empty() {
         return Vec::new();
@@ -602,7 +666,6 @@ pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -
         return Vec::new();
     }
 
-    let hidden: HashSet<&str> = hidden_repos.iter().map(|s| s.as_str()).collect();
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut repos = Vec::new();
 
@@ -616,15 +679,12 @@ pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -
         if !seen_paths.insert(canon) {
             continue;
         }
-        let id = name.clone();
-        if hidden.contains(id.as_str()) {
-            continue;
-        }
         let is_root = rel == "." || full == ws;
         repos.push(RepoInfo {
-            id,
+            id: name.clone(),
             monogram: make_monogram(&name),
             name,
+            display_name: None,
             path: full.to_string_lossy().to_string(),
             rel_path: rel,
             desc,
@@ -642,19 +702,17 @@ pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -
                 .and_then(|s| s.to_str())
                 .unwrap_or("workspace")
                 .to_string();
-            let id = name.clone();
-            if !hidden.contains(id.as_str()) {
-                repos.push(RepoInfo {
-                    id,
-                    monogram: make_monogram(&name),
-                    name,
-                    path: ws.to_string_lossy().to_string(),
-                    rel_path: ".".to_string(),
-                    desc: String::new(),
-                    color_idx: 0,
-                    is_root: true,
-                });
-            }
+            repos.push(RepoInfo {
+                id: name.clone(),
+                monogram: make_monogram(&name),
+                name,
+                display_name: None,
+                path: ws.to_string_lossy().to_string(),
+                rel_path: ".".to_string(),
+                desc: String::new(),
+                color_idx: 0,
+                is_root: true,
+            });
         }
     }
 
@@ -684,14 +742,11 @@ pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -
                 .and_then(|s| s.to_str())
                 .unwrap_or("repo")
                 .to_string();
-            let id = name.clone();
-            if hidden.contains(id.as_str()) {
-                continue;
-            }
             repos.push(RepoInfo {
-                id,
+                id: name.clone(),
                 monogram: make_monogram(&name),
                 name: name.clone(),
+                display_name: None,
                 path: sub.to_string_lossy().to_string(),
                 rel_path: name,
                 desc: String::new(),
@@ -701,10 +756,129 @@ pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -
         }
     }
 
+    assign_repository_ids(&mut repos, previous, bindings);
     for (idx, repo) in repos.iter_mut().enumerate() {
         repo.color_idx = idx % 6;
     }
     repos
+}
+
+fn assign_repository_ids(
+    repos: &mut [RepoInfo],
+    previous: &[RepoInfo],
+    bindings: &mut BTreeMap<String, String>,
+) {
+    let mut names = HashSet::new();
+    let mut duplicates = HashSet::new();
+    for repo in repos.iter() {
+        if !names.insert(repo.name.clone()) {
+            duplicates.insert(repo.name.clone());
+        }
+    }
+    if duplicates.is_empty() && bindings.is_empty() {
+        return;
+    }
+    let paths: Vec<_> = repos.iter().map(repository_path_key).collect();
+
+    // Reserve remembered IDs even while a repository is absent. A newly
+    // discovered repository must not inherit the absent repository's state.
+    let mut claimed = HashSet::new();
+    bindings.retain(|_, id| !id.is_empty() && claimed.insert(id.clone()));
+    if !duplicates.is_empty() {
+        let existing: BTreeMap<_, _> = previous
+            .iter()
+            .map(|repo| (repository_path_key(repo), &repo.id))
+            .collect();
+        for (repo, path) in repos.iter().zip(&paths) {
+            if duplicates.contains(&repo.name)
+                && !bindings.contains_key(path)
+                && let Some(&id) = existing.get(path)
+                && claimed.insert(id.clone())
+            {
+                bindings.insert(path.clone(), id.clone());
+            }
+        }
+    }
+
+    let mut labels = HashSet::new();
+    for (repo, path) in repos.iter_mut().zip(paths) {
+        if let Some(id) = bindings.get(&path) {
+            repo.id.clone_from(id);
+        } else if !claimed.insert(repo.id.clone()) {
+            let hash = sha256_hex(path.as_bytes());
+            repo.id = unique_repository_value(format!("repo-{}", &hash[..16]), &names, &mut claimed);
+        }
+        if duplicates.contains(&repo.name) || repo.id != repo.name {
+            bindings.entry(path).or_insert_with(|| repo.id.clone());
+            let base = format!("{} · {}", repo.name, repo.rel_path);
+            repo.display_name = Some(unique_repository_value(base, &names, &mut labels));
+        }
+    }
+}
+
+fn repository_path_key(repo: &RepoInfo) -> String {
+    fs::canonicalize(&repo.path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| repo.path.clone())
+}
+
+fn unique_repository_value(
+    base: String,
+    reserved: &HashSet<String>,
+    claimed: &mut HashSet<String>,
+) -> String {
+    for index in 1.. {
+        let candidate = if index == 1 {
+            base.clone()
+        } else {
+            format!("{base} ({index})")
+        };
+        if !reserved.contains(&candidate) && claimed.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("finite repository inventory cannot claim every suffix")
+}
+
+#[cfg(test)]
+mod repository_identity_tests {
+    use super::{RepoInfo, assign_repository_ids, sha256_hex};
+    use std::collections::BTreeMap;
+
+    fn repository(name: &str, path: &str) -> RepoInfo {
+        RepoInfo {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            display_name: None,
+            path: path.to_owned(),
+            rel_path: path.to_owned(),
+            desc: String::new(),
+            monogram: String::new(),
+            color_idx: 0,
+            is_root: false,
+        }
+    }
+
+    #[test]
+    fn newly_colliding_alias_keeps_the_open_repository_id_with_its_path() {
+        let original = repository("shared", "fixture-repos/shared");
+        let introduced = repository("shared", "fixture-repos/projects/nested");
+        let hash = sha256_hex(introduced.path.as_bytes());
+        let reserved_name = format!("repo-{}", &hash[..16]);
+        let reserved = repository(&reserved_name, "fixture-repos/reserved");
+        let mut bindings = BTreeMap::new();
+        let mut repos = [introduced.clone(), original.clone(), reserved];
+        assign_repository_ids(&mut repos, &[original], &mut bindings);
+        assert_eq!(repos[1].id, "shared");
+        assert_eq!(repos[2].id, reserved_name);
+        assert_ne!(repos[0].id, "shared");
+        assert_ne!(repos[0].id, reserved_name);
+        assert_ne!(repos[0].label(), repos[1].label());
+
+        let mut after_restart = [introduced];
+        assign_repository_ids(&mut after_restart, &[], &mut bindings);
+        assert_eq!(after_restart[0].id, repos[0].id);
+    }
 }
 
 fn parse_numstat_z(bytes: &[u8]) -> BTreeMap<String, (usize, usize)> {
@@ -759,6 +933,7 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
     let dir = Path::new(&repo.path);
     let mut status = RepoStatus {
         repo: repo.clone(),
+        head: RepositoryHead::Unavailable,
         branch: String::new(),
         upstream: String::new(),
         ahead: 0,
@@ -768,7 +943,7 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
         error: None,
     };
 
-    let raw = match run_git_bytes(dir, &["status", "--porcelain=v1", "-z", "-uall", "--branch"]) {
+    let raw = match run_git_bytes(dir, &["status", "--porcelain=v2", "-z", "-uall", "--branch"]) {
         Ok(b) => b,
         Err(err) => {
             status.error = Some(err.to_string());
@@ -783,34 +958,38 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
         .map(|b| parse_numstat_z(&b))
         .unwrap_or_default();
 
-    let records: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
-    let mut i = 0;
-    while i < records.len() {
-        let rec = records[i];
-        if rec.is_empty() {
-            i += 1;
+    let mut records = raw.split(|&b| b == 0);
+    while let Some(record) = records.next() {
+        if let Some(header) = record.strip_prefix(b"# ") {
+            parse_status_header(&String::from_utf8_lossy(header), &mut status);
             continue;
         }
-        let s = String::from_utf8_lossy(rec);
-        if let Some(branch_header) = s.strip_prefix("## ") {
-            parse_branch_header(branch_header, &mut status);
-            i += 1;
+        let fields = match record.first() {
+            Some(b'1') => 9,
+            Some(b'2') => 10,
+            Some(b'u') => 11,
+            Some(b'?') => 2,
+            _ => continue,
+        };
+        let orig_path = if record.first() == Some(&b'2') {
+            String::from_utf8_lossy(records.next().unwrap_or_default()).into_owned()
+        } else {
+            String::new()
+        };
+        let Some(path) = record.splitn(fields, |&byte| byte == b' ').nth(fields - 1) else {
             continue;
-        }
-        if rec.len() < 4 {
-            i += 1;
-            continue;
-        }
-        let x = rec[0] as char;
-        let y = rec[1] as char;
-        let path = String::from_utf8_lossy(&rec[3..]).to_string();
-        let mut orig_path = String::new();
-        if (x == 'R' || x == 'C' || y == 'R' || y == 'C') && i + 1 < records.len() {
-            orig_path = String::from_utf8_lossy(records[i + 1]).to_string();
-            i += 1;
-        }
+        };
+        let untracked = record.first() == Some(&b'?');
+        let (x, y) = if untracked {
+            ('?', '?')
+        } else {
+            let Some([x, y]) = record.get(2..4) else { continue };
+            (*x as char, *y as char)
+        };
+        let x = if x == '.' { ' ' } else { x };
+        let y = if y == '.' { ' ' } else { y };
+        let path = String::from_utf8_lossy(path).into_owned();
 
-        let untracked = x == '?' && y == '?';
         let conflict = matches!(
             (x, y),
             ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D')
@@ -841,7 +1020,7 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
 
         status.files.push(ChangedFile {
             repo_id: repo.id.clone(),
-            repo_name: repo.name.clone(),
+            repo_name: repo.label().to_owned(),
             repo_path: repo.path.clone(),
             path,
             orig_path,
@@ -855,7 +1034,6 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
             added: sa + ua,
             deleted: sd + ud,
         });
-        i += 1;
     }
 
     if status.branch.is_empty() {
@@ -864,42 +1042,23 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
     status
 }
 
-fn parse_branch_header(header: &str, status: &mut RepoStatus) {
-    let h = header.trim();
-    if let Some(rest) = h.strip_prefix("No commits yet on ") {
-        status.branch = rest.trim().to_string();
-        return;
-    }
-    if let Some(rest) = h.strip_prefix("Initial commit on ") {
-        status.branch = rest.trim().to_string();
-        return;
-    }
-    if h.starts_with("HEAD (no branch)") {
-        status.branch = "HEAD".to_string();
-        status.detached = true;
-        return;
-    }
-
-    let (main_part, bracket_part) = match h.split_once(" [") {
-        Some((l, r)) => (l, Some(r.trim_end_matches(']'))),
-        None => (h, None),
-    };
-    if let Some((branch, upstream)) = main_part.split_once("...") {
-        status.branch = branch.trim().to_string();
-        status.upstream = upstream.trim().to_string();
-    } else {
-        status.branch = main_part.trim().to_string();
-    }
-
-    if let Some(info) = bracket_part {
-        for token in info.split(',') {
-            let t = token.trim();
-            if let Some(n) = t.strip_prefix("ahead ") {
-                status.ahead = n.trim().parse().unwrap_or(0);
-            } else if let Some(n) = t.strip_prefix("behind ") {
-                status.behind = n.trim().parse().unwrap_or(0);
+fn parse_status_header(header: &str, status: &mut RepoStatus) {
+    let Some((key, value)) = header.split_once(' ') else { return };
+    match key {
+        "branch.oid" if value == "(initial)" => status.head = RepositoryHead::Unborn,
+        "branch.oid" if crate::git_index::oid_ok(value) => {
+            status.head = RepositoryHead::Commit(value.to_owned());
+        }
+        "branch.head" if value == "(detached)" => status.detached = true,
+        "branch.head" => status.branch = value.to_owned(),
+        "branch.upstream" => status.upstream = value.to_owned(),
+        "branch.ab" => {
+            if let Some((ahead, behind)) = value.split_once(' ') {
+                status.ahead = ahead.strip_prefix('+').and_then(|n| n.parse().ok()).unwrap_or(0);
+                status.behind = behind.strip_prefix('-').and_then(|n| n.parse().ok()).unwrap_or(0);
             }
         }
+        _ => {}
     }
 }
 
@@ -968,89 +1127,81 @@ pub(crate) fn metadata_to_version(meta: &fs::Metadata, bytes: &[u8]) -> ReviewVe
     }
 }
 
-/// 读取工作树文件用于审阅与轻编辑（严格执行 2 MiB 限制、二进制/UTF-8 检验、只读检验与行尾保真）。
+/// 读取工作树文件用于审阅与轻编辑。差异仍需要将缺失的一侧表示为空文本。
 pub fn read_review_worktree(abs_path: &Path) -> WorktreeRead {
-    let meta = match fs::symlink_metadata(abs_path) {
-        Ok(m) => m,
-        Err(_) => {
-            return WorktreeRead {
-                text: String::new(),
-                line_ending: LineEnding::Lf,
-                version: ReviewVersion::default(),
-                editable: false,
-                readonly_reason: Some("文件不存在或已删除".to_string()),
-                binary: false,
-                too_large: false,
-            };
-        }
+    match read_worktree_source(abs_path) {
+        Ok(Some(read)) => read,
+        Ok(None) => unavailable_worktree("文件不存在或已删除".to_owned()),
+        Err(err) => unavailable_worktree(format!("读取失败：{err}")),
+    }
+}
+
+fn unavailable_worktree(reason: String) -> WorktreeRead {
+    WorktreeRead {
+        text: String::new(),
+        line_ending: LineEnding::Lf,
+        version: ReviewVersion::default(),
+        editable: false,
+        readonly_reason: Some(reason),
+        binary: false,
+        too_large: false,
+    }
+}
+
+/// Review documents distinguish an empty file from a missing or unreadable path.
+pub(crate) fn read_worktree_source(abs_path: &Path) -> Result<Option<WorktreeRead>> {
+    let link_meta = match fs::symlink_metadata(abs_path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
     };
+    let symlink = link_meta.is_symlink();
+    anyhow::ensure!(symlink || link_meta.is_file(), "目标不是普通文件");
 
-    if meta.file_type().is_symlink() {
-        // 跟随符号链接做只读读取，避免误覆盖符号链接目标
-        let target_meta = match fs::metadata(abs_path) {
-            Ok(m) if m.is_file() => m,
-            _ => {
-                return WorktreeRead {
-                    text: String::new(),
-                    line_ending: LineEnding::Lf,
-                    version: ReviewVersion::default(),
-                    editable: false,
-                    readonly_reason: Some("符号链接或非常规文件仅只读".to_string()),
-                    binary: false,
-                    too_large: false,
-                };
-            }
-        };
-        if target_meta.len() as usize > MAX_REVIEW_BYTES {
-            return WorktreeRead {
-                text: String::new(),
-                line_ending: LineEnding::Lf,
-                version: ReviewVersion::default(),
-                editable: false,
-                readonly_reason: Some("文件超过 2 MiB 审阅上限，已只读拦截".to_string()),
-                binary: false,
-                too_large: true,
-            };
-        }
-        let bytes = fs::read(abs_path).unwrap_or_default();
-        let version = metadata_to_version(&target_meta, &bytes);
-        if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
-            return WorktreeRead {
-                text: String::new(),
-                line_ending: LineEnding::Lf,
-                version,
-                editable: false,
-                readonly_reason: Some("二进制或非 UTF-8 文件不可编辑".to_string()),
-                binary: true,
-                too_large: false,
-            };
-        }
-        let raw = String::from_utf8_lossy(&bytes);
-        return WorktreeRead {
-            text: LineEnding::normalize_to_lf(&raw),
-            line_ending: LineEnding::detect(&bytes),
-            version,
-            editable: false,
-            readonly_reason: Some("符号链接文件只读展示".to_string()),
-            binary: false,
-            too_large: false,
-        };
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    // A concurrently replaced path can be a FIFO even after lstat reports a file.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
     }
-
-    if !meta.is_file() {
-        return WorktreeRead {
-            text: String::new(),
-            line_ending: LineEnding::Lf,
-            version: ReviewVersion::default(),
-            editable: false,
-            readonly_reason: Some("非常规文件不可编辑".to_string()),
-            binary: false,
-            too_large: false,
-        };
+    let file = match options.open(abs_path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    let meta = file.metadata()?;
+    anyhow::ensure!(meta.is_file(), "目标不是普通文件");
+    let max_bytes = MAX_REVIEW_BYTES as u64;
+    let mut bytes = Vec::new();
+    if meta.len() <= max_bytes {
+        file.take(max_bytes + 1).read_to_end(&mut bytes)?;
     }
+    let current_link = match fs::symlink_metadata(abs_path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    anyhow::ensure!(current_link.is_symlink() == symlink, "文件在读取期间发生变化，请重试");
+    let current = if symlink {
+        match fs::metadata(abs_path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        }
+    } else {
+        current_link
+    };
+    anyhow::ensure!(current.is_file()
+        && review_inode(&current) == review_inode(&meta)
+        && review_mode(&current) == review_mode(&meta)
+        && current.len() == meta.len()
+        && current.modified().ok() == meta.modified().ok(), "文件在读取期间发生变化，请重试");
 
-    if meta.len() as usize > MAX_REVIEW_BYTES {
-        return WorktreeRead {
+    let too_large = meta.len() > max_bytes || bytes.len() > MAX_REVIEW_BYTES;
+    if too_large {
+        return Ok(Some(WorktreeRead {
             text: String::new(),
             line_ending: LineEnding::Lf,
             version: ReviewVersion {
@@ -1064,108 +1215,110 @@ pub fn read_review_worktree(abs_path: &Path) -> WorktreeRead {
             readonly_reason: Some("文件超过 2 MiB 审阅上限".to_string()),
             binary: false,
             too_large: true,
-        };
+        }));
     }
-
-    let bytes = match fs::read(abs_path) {
-        Ok(b) => b,
-        Err(err) => {
-            return WorktreeRead {
-                text: String::new(),
-                line_ending: LineEnding::Lf,
-                version: ReviewVersion::default(),
-                editable: false,
-                readonly_reason: Some(format!("读取失败: {err}")),
-                binary: false,
-                too_large: false,
-            };
-        }
+    let text = std::str::from_utf8(&bytes).ok().filter(|_| !bytes.contains(&0));
+    let reason = if text.is_none() {
+        Some("二进制或非 UTF-8 文件不可编辑")
+    } else if symlink {
+        Some("符号链接文件只读展示")
+    } else if review_mode(&meta) & 0o222 == 0 {
+        Some("磁盘文件为只读权限")
+    } else {
+        None
     };
-
-    let version = metadata_to_version(&meta, &bytes);
-    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
-        return WorktreeRead {
-            text: String::new(),
-            line_ending: LineEnding::Lf,
-            version,
-            editable: false,
-            readonly_reason: Some("二进制或非 UTF-8 文件不可编辑".to_string()),
-            binary: true,
-            too_large: false,
-        };
-    }
-
-    let mode = review_mode(&meta);
-    let writable = (mode & 0o222) != 0;
-    let line_ending = LineEnding::detect(&bytes);
-    let text = LineEnding::normalize_to_lf(std::str::from_utf8(&bytes).unwrap_or(""));
-
-    WorktreeRead {
-        text,
-        line_ending,
-        version,
-        editable: writable,
-        readonly_reason: if writable {
-            None
-        } else {
-            Some("磁盘文件为只读权限".to_string())
-        },
-        binary: false,
+    Ok(Some(WorktreeRead {
+        text: text.map_or_else(String::new, LineEnding::normalize_to_lf),
+        line_ending: LineEnding::detect(&bytes),
+        version: metadata_to_version(&meta, &bytes),
+        editable: reason.is_none(),
+        readonly_reason: reason.map(str::to_owned),
+        binary: text.is_none(),
         too_large: false,
-    }
+    }))
 }
 
 /// 读取 Git 对象内容（如 `HEAD:path` 或 `:path`），使用 `git cat-file blob` 流式 2 MiB+1 限流与二进制校验。
 /// 对象缺失返回空文本；真实 Git 错误或超时向上返回 `Err`，绝不静默伪装为空文件。
 pub fn read_git_object_text(repo_path: &Path, spec: &str) -> Result<(String, bool, bool)> {
-    let bytes = match run_git_blob_limited(repo_path, spec, MAX_REVIEW_BYTES)? {
-        LimitedGitOutput::Ok(b) => b,
-        LimitedGitOutput::TooLarge => return Ok((String::new(), false, true)),
-        LimitedGitOutput::Missing => return Ok((String::new(), false, false)),
-    };
-    if bytes.len() > MAX_REVIEW_BYTES {
-        return Ok((String::new(), false, true));
-    }
-    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
-        return Ok((String::new(), true, false));
-    }
-    let text = LineEnding::normalize_to_lf(std::str::from_utf8(&bytes).unwrap_or(""));
-    Ok((text, false, false))
+    Ok(read_optional_git_object_text(repo_path, spec)?.unwrap_or_default())
 }
 
-/// 读取工作区变更 Diff（严格对齐旧版 `gitops.ReadReviewChange`）：
-/// - 暂存区：`HEAD:<orig_path or path>` vs `:<path>`，只读
-/// - 未暂存：`""`(未跟踪) / `HEAD:<path>`(冲突) / `:<path>`(其余) vs 工作树文件，可编辑
-pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> ReviewChangeData {
+pub(crate) fn read_required_git_object_text(repo_path: &Path, spec: &str) -> Result<(String, bool, bool)> {
+    read_optional_git_object_text(repo_path, spec)?
+        .with_context(|| format!("无法读取 Git 文件对象 {spec}"))
+}
+
+pub(crate) fn read_tree_version_text(
+    repo: &Path,
+    commit: &str,
+    path: &str,
+) -> Result<(String, bool, bool)> {
+    let entry = crate::git_index::tree_file(repo, commit, path)?;
+    read_review_entry_text(repo, entry.as_ref())
+}
+
+fn read_review_entry_text(
+    repo: &Path,
+    entry: Option<&crate::git_index::IndexEntry>,
+) -> Result<(String, bool, bool)> {
+    entry.map_or_else(|| Ok(Default::default()), |entry| read_required_git_object_text(repo, &entry.oid))
+}
+
+pub(crate) fn read_optional_git_object_text(repo_path: &Path, spec: &str) -> Result<Option<(String, bool, bool)>> {
+    let bytes = match run_git_blob_limited(repo_path, spec, MAX_REVIEW_BYTES)? {
+        LimitedGitOutput::Ok(b) => b,
+        LimitedGitOutput::TooLarge => return Ok(Some((String::new(), false, true))),
+        LimitedGitOutput::Missing => return Ok(None),
+    };
+    if bytes.len() > MAX_REVIEW_BYTES {
+        return Ok(Some((String::new(), false, true)));
+    }
+    match std::str::from_utf8(&bytes) {
+        Ok(text) if !bytes.contains(&0) => Ok(Some((LineEnding::normalize_to_lf(text), false, false))),
+        _ => Ok(Some((String::new(), true, false))),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct WorktreeDiffReadError;
+
+impl std::fmt::Display for WorktreeDiffReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("无法读取工作区文件")
+    }
+}
+
+/// Compare pinned Git objects and the worktree. Empty sides represent missing
+/// entries. A failed read of an existing entry aborts the comparison.
+pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> Result<ReviewChangeData> {
+    use crate::git_index::{ReviewIndexEntry, read_review_index_entry};
+
     let repo_dir = Path::new(&cf.repo_path);
-    let old_path = cf.old_path_or_current().to_string();
+    let scope_status = if staged_only { cf.index_status } else { cf.worktree_status };
+    let old_path = if matches!(scope_status, 'R' | 'C') {
+        cf.old_path_or_current().to_owned()
+    } else {
+        cf.path.clone()
+    };
     let new_path = cf.path.clone();
-    let index_snapshot = crate::git_index::read_index_entry(repo_dir, &new_path)
-        .map_err(|err| err.to_string());
-    let head_snapshot = staged_only.then(|| crate::git_commit::head_oid(repo_dir).ok().flatten()).flatten();
+    let index = read_review_index_entry(repo_dir, &new_path)?;
+    let unmerged = matches!(index, ReviewIndexEntry::Unmerged);
+    let compare_head = staged_only || cf.conflict || unmerged;
+    let head_snapshot = if compare_head { crate::git_commit::head_oid(repo_dir)? } else { None };
+    let head_text = |path: &str| {
+        head_snapshot.as_deref().map_or_else(
+            || Ok(Default::default()),
+            |head| read_tree_version_text(repo_dir, head, path),
+        )
+    };
 
     if staged_only {
-        let head_spec = format!("HEAD:{old_path}");
-        let idx_spec = format!(":{new_path}");
-        let mut git_err: Option<String> = None;
-        let (old_text, old_bin, old_large) = match read_git_object_text(repo_dir, &head_spec) {
-            Ok(v) => v,
-            Err(e) => {
-                git_err = Some(e.to_string());
-                (String::new(), false, false)
-            }
-        };
-        let (new_text, new_bin, new_large) = match read_git_object_text(repo_dir, &idx_spec) {
-            Ok(v) => v,
-            Err(e) => {
-                if git_err.is_none() {
-                    git_err = Some(e.to_string());
-                }
-                (String::new(), false, false)
-            }
-        };
-        return ReviewChangeData {
-            index_snapshot,
+        anyhow::ensure!(!unmerged, "文件存在未合并的索引条目");
+        let (old_text, old_bin, old_large) = head_text(&old_path)?;
+        let (new_text, new_bin, new_large) = read_review_entry_text(repo_dir, index.file())?;
+        return Ok(ReviewChangeData {
+            index_snapshot: index.into_checked_entry().map_err(|err| err.to_string()),
             head_snapshot,
             repo_id: cf.repo_id.clone(),
             repo_name: cf.repo_name.clone(),
@@ -1178,60 +1331,51 @@ pub fn read_review_change(cf: &ChangedFile, staged_only: bool) -> ReviewChangeDa
             new_text,
             staged_only: true,
             editable: false,
-            readonly_reason: git_err.or_else(|| Some("暂存区差异为只读视图".to_string())),
+            readonly_reason: Some("暂存区差异为只读视图".to_string()),
             line_ending: LineEnding::Lf,
             version: ReviewVersion::default(),
-            binary: old_bin || new_bin,
-            too_large: old_large || new_large,
-        };
+            old_text_block: ReviewTextBlock::from_flags(old_bin, old_large),
+            new_text_block: ReviewTextBlock::from_flags(new_bin, new_large),
+        });
     }
 
-    let mut old_err: Option<String> = None;
-    let (old_text, old_bin, old_large, old_title) = if cf.untracked {
-        (String::new(), false, false, "未跟踪".to_string())
-    } else if cf.conflict {
-        let spec = format!("HEAD:{new_path}");
-        let (t, b, l) = match read_git_object_text(repo_dir, &spec) {
-            Ok(v) => v,
-            Err(e) => {
-                old_err = Some(e.to_string());
-                (String::new(), false, false)
-            }
-        };
-        (t, b, l, "HEAD".to_string())
+    let ((old_text, old_bin, old_large), old_title) = if compare_head {
+        (head_text(&new_path)?, "HEAD")
+    } else if cf.untracked && matches!(index, ReviewIndexEntry::Missing) {
+        (Default::default(), "未跟踪")
     } else {
-        let spec = format!(":{new_path}");
-        let (t, b, l) = match read_git_object_text(repo_dir, &spec) {
-            Ok(v) => v,
-            Err(e) => {
-                old_err = Some(e.to_string());
-                (String::new(), false, false)
-            }
+        let contents = if old_path == new_path {
+            read_review_entry_text(repo_dir, index.file())?
+        } else {
+            let previous = read_review_index_entry(repo_dir, &old_path)?.into_checked_entry()?;
+            read_review_entry_text(repo_dir, previous.as_ref())?
         };
-        (t, b, l, "暂存区".to_string())
+        (contents, "暂存区")
     };
 
-    let wt = read_review_worktree(&PathBuf::from(cf.abs_path()));
-    ReviewChangeData {
-        index_snapshot,
+    let wt = read_worktree_source(Path::new(&cf.abs_path()))
+        .context(WorktreeDiffReadError)?
+        .unwrap_or_else(|| unavailable_worktree("文件不存在或已删除".to_owned()));
+    Ok(ReviewChangeData {
+        index_snapshot: index.into_checked_entry().map_err(|err| err.to_string()),
         head_snapshot,
         repo_id: cf.repo_id.clone(),
         repo_name: cf.repo_name.clone(),
         repo_path: cf.repo_path.clone(),
         old_path,
         new_path,
-        old_title,
+        old_title: old_title.to_owned(),
         new_title: "工作区".to_string(),
         old_text,
         new_text: wt.text,
         staged_only: false,
-        editable: wt.editable && !old_bin && !old_large && old_err.is_none(),
-        readonly_reason: old_err.or(wt.readonly_reason),
+        editable: wt.editable && !old_bin && !old_large,
+        readonly_reason: wt.readonly_reason,
         line_ending: wt.line_ending,
         version: wt.version,
-        binary: old_bin || wt.binary,
-        too_large: old_large || wt.too_large,
-    }
+        old_text_block: ReviewTextBlock::from_flags(old_bin, old_large),
+        new_text_block: ReviewTextBlock::from_flags(wt.binary, wt.too_large),
+    })
 }
 
 static TEMP_SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -1328,13 +1472,16 @@ pub fn save_review_text_in_repo(
     let check_target = || -> Result<CheckedFile, SaveReviewOutcome> {
         let meta = match fs::symlink_metadata(abs_path) {
             Ok(m) => m,
-            Err(_) => {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 return Err(SaveReviewOutcome::Conflict {
                     disk_text: String::new(),
                     disk_version: ReviewVersion::default(),
                     disk_deleted: true,
                 });
             }
+            Err(err) => return Err(SaveReviewOutcome::Rejected {
+                reason: format!("无法核对磁盘文件：{err}"),
+            }),
         };
         if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(SaveReviewOutcome::Rejected {
@@ -1527,7 +1674,7 @@ pub fn repo_log(repo: &RepoInfo, limit: usize) -> Result<Vec<CommitEntry>> {
             .collect();
         commits.push(CommitEntry {
             repo_id: repo.id.clone(),
-            repo_name: repo.name.clone(),
+            repo_name: repo.label().to_owned(),
             repo_path: repo.path.clone(),
             hash: cols[0].to_string(),
             short_hash: cols[1].to_string(),
@@ -1606,13 +1753,13 @@ pub fn read_commit_diff(
     let (old_text, old_bin, old_large) = if parent_hash.is_empty() || file.status == "A" {
         (String::new(), false, false)
     } else {
-        read_git_object_text(dir, &format!("{parent_hash}:{old_path}"))?
+        read_required_git_object_text(dir, &format!("{parent_hash}:{old_path}"))?
     };
 
     let (new_text, new_bin, new_large) = if file.status == "D" {
         (String::new(), false, false)
     } else {
-        read_git_object_text(dir, &format!("{}:{new_path}", commit.hash))?
+        read_required_git_object_text(dir, &format!("{}:{new_path}", commit.hash))?
     };
 
     let parent_short = if parent_hash.is_empty() {
@@ -1681,7 +1828,7 @@ pub fn file_history_at_revision(
             .collect();
         commits.push(CommitEntry {
             repo_id: repo.id.clone(),
-            repo_name: repo.name.clone(),
+            repo_name: repo.label().to_owned(),
             repo_path: repo.path.clone(),
             hash: cols[0].to_string(),
             short_hash: cols[1].to_string(),
@@ -1719,7 +1866,7 @@ pub fn list_workspace_files(repos: &[RepoInfo]) -> Vec<WorkspaceFile> {
             }
             out.push(WorkspaceFile {
                 repo_id: repo.id.clone(),
-                repo_name: repo.name.clone(),
+                repo_name: repo.label().to_owned(),
                 repo_path: repo.path.clone(),
                 rel_path: rel,
                 abs_path: abs.to_string_lossy().to_string(),
@@ -1738,18 +1885,18 @@ pub fn stage_or_unstage_files(repo_path: &str, paths: &[String], stage: bool) ->
     }
     let dir = Path::new(repo_path);
     if stage {
-        let mut args: Vec<&str> = vec!["add", "--"];
+        let mut args: Vec<&str> = vec!["--literal-pathspecs", "add", "--"];
         for p in paths {
             args.push(p.as_str());
         }
         run_git_bytes(dir, &args)?;
     } else {
         // 检查是否存在 HEAD（首提交无 HEAD 时用 rm --cached）
-        let has_head = run_git_bytes(dir, &["rev-parse", "--verify", "HEAD"]).is_ok();
+        let has_head = crate::git_commit::head_oid(dir)?.is_some();
         let mut args: Vec<&str> = if has_head {
-            vec!["reset", "HEAD", "--"]
+            vec!["--literal-pathspecs", "reset", "HEAD", "--"]
         } else {
-            vec!["rm", "--cached", "-q", "--"]
+            vec!["--literal-pathspecs", "rm", "--cached", "-q", "--"]
         };
         for p in paths {
             args.push(p.as_str());
@@ -1769,7 +1916,7 @@ pub fn list_stashes(repos: &[RepoInfo]) -> Vec<StashEntry> {
                 if let Some((sel, msg)) = line.split_once('\x1f') {
                     out.push(StashEntry {
                         repo_id: repo.id.clone(),
-                        repo_name: repo.name.clone(),
+                        repo_name: repo.label().to_owned(),
                         repo_path: repo.path.clone(),
                         selector: sel.to_string(),
                         message: msg.to_string(),

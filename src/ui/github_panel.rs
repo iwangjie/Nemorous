@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -10,6 +10,7 @@ use nsh_core::prelude::*;
 use serde_json::Value;
 
 use super::workbench::button;
+use crate::git::RepoInfo;
 use crate::state::{self, app_signal, current_palette};
 use crate::workbench_github::{self, Action};
 
@@ -17,15 +18,37 @@ use crate::workbench_github::{self, Action};
 struct Store {
     open: bool,
     path: PathBuf,
+    repo_label: String,
     request: u64,
-    cancel: Option<Arc<AtomicBool>>,
+    pending: Option<PendingRequest>,
     filter: String,
     repository: String,
     prs: Vec<Value>,
     detail: Option<Value>,
     result_url: String,
+    notice: Option<&'static str>,
     error: String,
     form: Option<Form>,
+}
+
+#[derive(Clone)]
+enum PendingRequest {
+    Read(Arc<AtomicBool>),
+    Submission,
+}
+
+impl Store {
+    fn submitting(&self) -> bool {
+        matches!(self.pending, Some(PendingRequest::Submission))
+    }
+
+    fn cancel_read(&mut self) {
+        if let Some(PendingRequest::Read(cancel)) = &self.pending {
+            cancel.store(true, Ordering::Release);
+            self.pending = None;
+            self.request = self.request.wrapping_add(1);
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -42,21 +65,36 @@ fn store() -> Signal<Store> {
 }
 
 pub(super) fn open() {
-    let repo =
-        app_signal().with_untracked(|s| s.repos.first().map(|repo| PathBuf::from(&repo.path)));
-    let Some(repo) = repo else {
-        state::show_toast("warn", "当前工作区没有 Git 仓库");
-        return;
-    };
-    open_repo(repo);
+    open_for_repository(None);
 }
 
-fn open_repo(path: PathBuf) {
-    close_active();
-    let request = store().with_untracked(|view| view.request + 1);
+pub(super) fn open_for_repository(id: Option<&str>) {
+    let repo = app_signal().with_untracked(|s| match id {
+        Some(id) => s.repos.iter().find(|repo| repo.id == id).cloned(),
+        None => s.repos.first().cloned(),
+    });
+    let Some(repo) = repo else {
+        let message = if id.is_some() {
+            "当前仓库已移出工作区"
+        } else {
+            "当前工作区没有 Git 仓库"
+        };
+        state::show_toast("warn", message);
+        return;
+    };
+    open_repo(&repo);
+}
+
+fn open_repo(repo: &RepoInfo) {
+    if submitting() {
+        return;
+    }
+    cancel();
+    let request = store().with_untracked(|view| view.request.wrapping_add(1));
     store().set(Store {
         open: true,
-        path,
+        path: PathBuf::from(&repo.path),
+        repo_label: repo.label().to_owned(),
         request,
         filter: "open".into(),
         ..Store::default()
@@ -66,10 +104,10 @@ fn open_repo(path: PathBuf) {
 }
 
 pub(crate) fn close_active() -> bool {
-    let open = store().with_untracked(|view| view.open);
+    let open = store().with_untracked(|view| view.open && !view.submitting());
     if open {
         cancel();
-        let request = store().with_untracked(|view| view.request + 1);
+        let request = store().with_untracked(|view| view.request.wrapping_add(1));
         store().set(Store {
             request,
             ..Store::default()
@@ -78,13 +116,20 @@ pub(crate) fn close_active() -> bool {
     open
 }
 
+pub(crate) fn submitting() -> bool {
+    store().with(Store::submitting)
+}
+
 fn cancel() {
-    store().update(|view| {
-        if let Some(cancel) = view.cancel.take() {
-            cancel.store(true, Ordering::Release);
-        }
-        view.request += 1;
-    });
+    store().update(Store::cancel_read);
+}
+
+fn no_pending_read() -> bool {
+    store().with(|view| !matches!(view.pending, Some(PendingRequest::Read(_))))
+}
+
+fn request_pending() -> bool {
+    store().with(|view| view.pending.is_some())
 }
 
 fn refresh() {
@@ -94,6 +139,14 @@ fn refresh() {
 }
 
 fn execute(action: Action) {
+    let current = store().with_untracked(|view| {
+        (view.open && !view.submitting()).then(|| {
+            (view.path.clone(), view.repository.clone(), view.request.wrapping_add(1))
+        })
+    });
+    let Some((path, repository, request)) = current else {
+        return;
+    };
     enum Update {
         Rows,
         Detail,
@@ -106,21 +159,27 @@ fn execute(action: Action) {
         Action::Comment { number, .. } => Update::Comment(*number),
         Action::Create { .. } => Update::Created,
     };
-    cancel();
-    let (path, request) = store().with_untracked(|view| (view.path.clone(), view.request));
     let cancel = Arc::new(AtomicBool::new(false));
+    let pending = if action.is_submission() {
+        PendingRequest::Submission
+    } else {
+        PendingRequest::Read(Arc::clone(&cancel))
+    };
     store().update(|view| {
-        view.cancel = Some(Arc::clone(&cancel));
+        view.cancel_read();
+        view.request = request;
+        view.pending = Some(pending);
         view.error.clear();
     });
     state::spawn_from_root(async move {
-        let result = blocking(move || workbench_github::run(&path, action, &cancel)).await;
+        let result =
+            blocking(move || workbench_github::run(&path, &repository, action, &cancel)).await;
         if !store().with_untracked(|view| view.open && view.request == request) {
             return;
         }
-        let mut refresh_detail = None;
+        let mut follow_up = None;
         store().update(|view| {
-            view.cancel = None;
+            view.pending = None;
             match result {
                 Ok(Ok((repository, value))) => {
                     view.repository = repository;
@@ -132,12 +191,15 @@ fn execute(action: Action) {
                         Update::Detail => view.detail = Some(value),
                         Update::Comment(number) => {
                             view.form = None;
-                            refresh_detail = Some(number);
+                            view.notice = Some("评论已发送");
+                            follow_up = Some(Action::Detail(number));
                         }
                         Update::Created => {
                             view.form = None;
                             view.detail = None;
+                            view.notice = Some("PR 已创建");
                             view.result_url = value.as_str().unwrap_or_default().to_owned();
+                            follow_up = Some(Action::List(view.filter.clone()));
                         }
                     }
                 }
@@ -145,20 +207,22 @@ fn execute(action: Action) {
                 Err(error) => view.error = error.to_string(),
             }
         });
-        if let Some(number) = refresh_detail {
-            execute(Action::Detail(number));
+        if let Some(action) = follow_up {
+            execute(action);
         }
     });
 }
 
 fn repos() {
+    let current = store().with_untracked(|view| view.path.clone());
     state::show_popup_menu(
         app_signal()
             .with_untracked(|s| s.repos.clone())
             .into_iter()
             .map(|repo| {
-                let path = PathBuf::from(repo.path);
-                MenuItem::new(repo.name).on_select(move || open_repo(path.clone()))
+                MenuItem::new(repo.label().to_owned())
+                    .checked(current == Path::new(&repo.path))
+                    .on_select(move || open_repo(&repo))
             })
             .collect(),
     );
@@ -175,6 +239,9 @@ fn filters() {
         .into_iter()
         .map(|(label, filter)| {
             MenuItem::new(label).on_select(move || {
+                if submitting() {
+                    return;
+                }
                 store().update(|view| view.filter = filter.into());
                 refresh();
             })
@@ -184,8 +251,13 @@ fn filters() {
 }
 
 fn form(number: Option<u64>) {
+    if submitting() {
+        return;
+    }
     let base = app_signal().with_untracked(|state| state.cfg.default_base_branch.clone());
     store().update(|view| {
+        view.notice = None;
+        view.error.clear();
         view.form = Some(Form {
             number,
             base,
@@ -194,9 +266,18 @@ fn form(number: Option<u64>) {
     });
 }
 
+fn edit_form(edit: impl FnOnce(&mut Form)) {
+    store().update(|view| {
+        if !view.submitting() && let Some(form) = &mut view.form {
+            edit(form);
+        }
+    });
+}
+
 fn submit() {
-    let Some(form) =
-        store().with_untracked(|view| view.cancel.is_none().then(|| view.form.clone()).flatten())
+    let Some(form) = store().with_untracked(|view| {
+        view.pending.is_none().then(|| view.form.clone()).flatten()
+    })
     else {
         return;
     };
@@ -215,6 +296,19 @@ fn submit() {
     }
 }
 
+fn status_text(view: &Store) -> String {
+    let status = match &view.pending {
+        Some(PendingRequest::Read(_)) => "正在加载…",
+        Some(PendingRequest::Submission) => "正在提交…",
+        None => &view.error,
+    };
+    match view.notice {
+        Some(notice) if status.is_empty() => notice.into(),
+        Some(notice) => format!("{notice} · {status}"),
+        None => status.into(),
+    }
+}
+
 fn text_value(view: &Store) -> String {
     let Some(detail) = &view.detail else {
         return view.result_url.clone();
@@ -228,32 +322,31 @@ fn text_value(view: &Store) -> String {
             val("baseRefName"),
             val("state")
         ),
-        val("body").to_owned(),
     ];
-    for (key, heading) in [
-        ("statusCheckRollup", "检查结果"),
-        ("reviews", "审阅"),
-        ("comments", "评论"),
-    ] {
-        if let Some(entries) = detail[key].as_array() {
+    if let Some(checks) = detail["statusCheckRollup"].as_array().filter(|items| !items.is_empty()) {
+        lines.push("\n检查结果".into());
+        lines.extend(checks.iter().map(|check| {
+            let val = |field: &str| check[field].as_str().unwrap_or_default();
+            format!(
+                "{} · {}",
+                val("name").if_empty(val("context")),
+                val("conclusion").if_empty(val("state")).if_empty(val("status")),
+            )
+        }));
+    }
+    let body = val("body");
+    if !body.is_empty() {
+        lines.push(format!("\n{body}"));
+    }
+    for (key, heading) in [("reviews", "审阅"), ("comments", "评论")] {
+        if let Some(entries) = detail[key].as_array().filter(|items| !items.is_empty()) {
             lines.push(format!("\n{heading}"));
             lines.extend(entries.iter().map(|item| {
-                let val = |field: &str| item[field].as_str().unwrap_or_default();
-                if key == "statusCheckRollup" {
-                    format!(
-                        "{} · {}",
-                        val("name").if_empty(val("context")),
-                        val("conclusion")
-                            .if_empty(val("state"))
-                            .if_empty(val("status"))
-                    )
-                } else {
-                    format!(
-                        "{}\n{}",
-                        item["author"]["login"].as_str().unwrap_or_default(),
-                        val("body")
-                    )
-                }
+                format!(
+                    "{}\n{}",
+                    item["author"]["login"].as_str().unwrap_or_default(),
+                    item["body"].as_str().unwrap_or_default(),
+                )
             }));
         }
     }
@@ -270,7 +363,6 @@ impl Fallback for &str {
 }
 
 fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
-    let p = current_palette();
     view()
         .flex_1()
         .min_h(px(0.0))
@@ -283,6 +375,7 @@ fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
                 .child(
                     input()
                         .test_id("gh-pr-title")
+                        .disabled(submitting)
                         .h(px(27.0))
                         .flex_1()
                         .placeholder("PR 标题")
@@ -294,17 +387,12 @@ fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
                                     .unwrap_or_default()
                             })
                         })
-                        .on_change(|v: &str| {
-                            store().update(|view| {
-                                if let Some(f) = &mut view.form {
-                                    f.title = v.into();
-                                }
-                            })
-                        }),
+                        .on_change(|v: &str| edit_form(|form| form.title = v.into())),
                 )
                 .child(
                     input()
                         .test_id("gh-pr-base")
+                        .disabled(submitting)
                         .h(px(27.0))
                         .w(px(165.0))
                         .placeholder("目标分支")
@@ -316,41 +404,24 @@ fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
                                     .unwrap_or_default()
                             })
                         })
-                        .on_change(|v: &str| {
-                            store().update(|view| {
-                                if let Some(f) = &mut view.form {
-                                    f.base = v.into();
-                                }
-                            })
-                        }),
+                        .on_change(|v: &str| edit_form(|form| form.base = v.into())),
                 )
                 .child(button(
                     if draft { "草稿 ✓" } else { "草稿" },
                     "gh-pr-draft",
-                    || {
-                        store().update(|view| {
-                            if let Some(f) = &mut view.form {
-                                f.draft = !f.draft;
-                            }
-                        })
-                    },
-                ))
+                    || edit_form(|form| form.draft = !form.draft),
+                ).disabled(submitting))
         }))
         .child(
             editor()
                 .test_id("gh-pr-body")
+                .read_only(submitting)
                 .line_numbers(false)
                 .soft_wrap(true)
                 .flex_1()
                 .placeholder(Some("正文".into()))
                 .value(|| store().with(|view| view.form.as_ref().map(|f| f.body.clone().into())))
-                .on_change(|v: &SharedString| {
-                    store().update(|view| {
-                        if let Some(form) = &mut view.form {
-                            form.body = v.to_string();
-                        }
-                    })
-                }),
+                .on_change(|v: &SharedString| edit_form(|form| form.body = v.to_string())),
         )
         .child(
             view()
@@ -364,20 +435,22 @@ fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
                     },
                     "gh-submit",
                     submit,
-                ))
+                ).disabled(request_pending))
                 .child(button("取消编辑", "gh-close-form", || {
-                    store().update(|view| view.form = None)
-                }))
-                .child(
-                    text(|| store().with(|view| view.error.clone()))
-                        .text_size(px(11.0))
-                        .text_color(p.danger),
-                ),
+                    store().update(|view| {
+                        if !view.submitting() {
+                            view.form = None;
+                            view.error.clear();
+                        }
+                    })
+                }).disabled(submitting)),
         )
 }
 
 pub(super) fn layer() -> impl IntoElement {
     let opened = computed(|| store().with(|view| view.open));
+    let repository_loaded = computed(|| store().with(|view| !view.repository.is_empty()));
+    let rows = computed(|| store().with(|view| view.prs.clone()));
     let display = computed(|| {
         store().with(|view| {
             (
@@ -423,11 +496,11 @@ pub(super) fn layer() -> impl IntoElement {
                             .gap(px(6.0))
                             .items_center()
                             .child(text("GitHub PR / CI").flex_1().text_color(p.text_primary))
-                            .child(button("选择仓库", "gh-select-repo", repos))
-                            .child(button("状态", "gh-filter", filters))
-                            .child(button("刷新", "gh-refresh", refresh))
-                            .child(button("取消请求", "gh-cancel", cancel))
-                            .child(button("关闭", "gh-close", state::close_active_modal)),
+                            .child(button("选择仓库", "gh-select-repo", repos).disabled(submitting))
+                            .child(button("状态", "gh-filter", filters).disabled(submitting))
+                            .child(button("刷新", "gh-refresh", refresh).disabled(submitting))
+                            .child(button("取消请求", "gh-cancel", cancel).disabled(no_pending_read))
+                            .child(button("关闭", "gh-close", state::close_active_modal).disabled(submitting)),
                     )
                     .child(
                         view()
@@ -435,22 +508,17 @@ pub(super) fn layer() -> impl IntoElement {
                             .gap(px(6.0))
                             .items_center()
                             .child(
-                                text(|| store().with(|view| view.repository.clone()))
+                                text(|| store().with(|view| {
+                                    view.repository.as_str().if_empty(&view.repo_label).to_owned()
+                                }))
                                     .text_color(p.text_muted),
                             )
                             .child(
-                                text(|| {
-                                    store().with(|view| {
-                                        if view.cancel.is_some() {
-                                            "正在加载…".into()
-                                        } else {
-                                            view.error.clone()
-                                        }
-                                    })
-                                })
-                                .text_color(p.text_muted),
+                                text(|| store().with(status_text)).text_color(p.text_muted),
                             )
-                            .child(button("新建 PR", "gh-new", || form(None))),
+                            .child(when(move || repository_loaded.get(), || {
+                                button("新建 PR", "gh-new", || form(None)).disabled(submitting)
+                            })),
                     )
                     .child(
                         view()
@@ -459,10 +527,9 @@ pub(super) fn layer() -> impl IntoElement {
                             .min_h(px(0.0))
                             .gap(px(6.0))
                             .child(scroll().w(px(285.0)).flex_none().child(dynamic(move || {
-                                let prs = store().with(|view| view.prs.clone());
                                 view()
                                     .flex_col()
-                                    .children(prs.into_iter().filter_map(|pr| {
+                                    .children(rows.get().into_iter().filter_map(|pr| {
                                         let number = pr["number"].as_u64()?;
                                         Some(
                                             view()
@@ -471,6 +538,8 @@ pub(super) fn layer() -> impl IntoElement {
                                                 .h(px(25.0))
                                                 .items_center()
                                                 .cursor(Cursor::Pointer)
+                                                .disabled(submitting)
+                                                .disabled_style(|style| style.opacity(0.5))
                                                 .on_press(move || execute(Action::Detail(number)))
                                                 .child(
                                                     text(format!(

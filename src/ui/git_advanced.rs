@@ -151,10 +151,42 @@ fn admin_confirm(repo: PathBuf, title: String, action: AdminAction) {
     });
 }
 
+#[derive(Default)]
+struct RepositoryMenuGeneration(u64);
+
+struct RepositoryMenuRequest {
+    generation: u64,
+    workspace: String,
+}
+
+impl RepositoryMenuRequest {
+    fn start() -> Self {
+        let current = global::<RepositoryMenuGeneration>();
+        let generation = current.with_untracked(|value| value.0.wrapping_add(1));
+        current.set(RepositoryMenuGeneration(generation));
+        Self {
+            generation,
+            workspace: app_signal().with_untracked(|s| s.cfg.workspace_path.clone()),
+        }
+    }
+
+    fn is_current(&self, repo: &Path) -> bool {
+        global::<RepositoryMenuGeneration>().with_untracked(|value| value.0 == self.generation)
+            && app_signal().with_untracked(|s| {
+                s.cfg.workspace_path == self.workspace
+                    && s.repos.iter().any(|candidate| Path::new(&candidate.path) == repo)
+            })
+    }
+}
+
 fn inspect_admin(repo: PathBuf) {
+    let request = RepositoryMenuRequest::start();
     state::spawn_from_root(async move {
         let path = repo.clone();
         let result = blocking(move || admin::inspect(&path)).await;
+        if !request.is_current(&repo) {
+            return;
+        }
         match result {
             Ok(Ok(summary)) => {
                 let mut items = Vec::new();
@@ -357,33 +389,33 @@ fn inspect_admin(repo: PathBuf) {
                         }),
                     ],
                 ));
-                items.push(MenuItem::submenu(
-                    if summary.lfs_installed {
-                        "Git LFS · 已配置"
-                    } else {
-                        "Git LFS"
-                    },
-                    [
-                        MenuItem::new("在此仓库安装").on_select(move || {
-                            job(install.clone(), "安装 Git LFS", |path| {
-                                admin::run(path, &AdminAction::Lfs(LfsAction::InstallLocal))
-                            })
-                        }),
-                        MenuItem::new("拉取 LFS 内容").on_select(move || {
-                            job(pull.clone(), "拉取 Git LFS", |path| {
-                                admin::run(path, &AdminAction::Lfs(LfsAction::Pull))
-                            })
-                        }),
-                        MenuItem::new("跟踪模式…").on_select(move || {
-                            admin_prompt("Git LFS 跟踪模式", track.clone(), |text| {
-                                ensure!(!text.is_empty(), "请输入跟踪模式");
-                                Ok(AdminAction::Lfs(LfsAction::Track {
-                                    patterns: vec![text.to_owned()],
-                                }))
-                            })
-                        }),
-                    ],
-                ));
+                if summary.lfs_available {
+                    items.push(MenuItem::submenu(
+                        if summary.lfs_configured { "Git LFS · 仓库已初始化" } else { "Git LFS" },
+                        [
+                            MenuItem::new("在此仓库初始化").on_select(move || {
+                                job(install.clone(), "初始化 Git LFS", |path| {
+                                    admin::run(path, &AdminAction::Lfs(LfsAction::InstallLocal))
+                                })
+                            }),
+                            MenuItem::new("拉取 LFS 内容").on_select(move || {
+                                job(pull.clone(), "拉取 Git LFS", |path| {
+                                    admin::run(path, &AdminAction::Lfs(LfsAction::Pull))
+                                })
+                            }),
+                            MenuItem::new("跟踪模式…").on_select(move || {
+                                admin_prompt("Git LFS 跟踪模式", track.clone(), |text| {
+                                    ensure!(!text.is_empty(), "请输入跟踪模式");
+                                    Ok(AdminAction::Lfs(LfsAction::Track {
+                                        patterns: vec![text.to_owned()],
+                                    }))
+                                })
+                            }),
+                        ],
+                    ));
+                } else {
+                    items.push(MenuItem::new("Git LFS · 未安装").disabled(true));
+                }
                 let sign = repo.clone();
                 let enabled = summary.signing.enabled;
                 let signing = summary.signing.format.as_deref().unwrap_or("openpgp");
@@ -434,12 +466,23 @@ fn inspect_admin(repo: PathBuf) {
 }
 
 fn worktrees(repo: PathBuf) {
+    let request = RepositoryMenuRequest::start();
     state::spawn_from_root(async move {
         let path = repo.clone();
         let result = blocking(move || git_worktrees::list(&path)).await;
-        let Ok(Ok(rows)) = result else {
-            state::show_toast("warn", "无法读取工作树");
+        if !request.is_current(&repo) {
             return;
+        }
+        let rows = match result {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(err)) => {
+                state::show_toast("warn", format!("无法读取工作树：{err:#}"));
+                return;
+            }
+            Err(err) => {
+                state::show_toast("warn", format!("无法读取工作树：{err}"));
+                return;
+            }
         };
         let (add, prune) = (repo.clone(), repo.clone());
         let mut items = vec![
@@ -473,16 +516,24 @@ fn worktrees(repo: PathBuf) {
                 .as_deref()
                 .or(row.hash.as_deref())
                 .unwrap_or("HEAD");
-            let label = format!("{} · {}", row.path.display(), branch);
-            if index == 0 {
-                items.push(MenuItem::new(label).disabled(true));
-            } else {
+            let mut label = format!("{} · {}", row.path.display(), branch);
+            if row.locked {
+                label.push_str(" · 已锁定");
+            }
+            if row.prunable {
+                label.push_str(" · 目录已失效");
+            }
+            let can_open = !row.prunable && (row.branch.is_some() || row.detached)
+                && Path::new(&request.workspace) != row.path;
+            let open_path = row.path.clone();
+            let mut actions = vec![MenuItem::new("打开工作树")
+                .disabled(!can_open)
+                .on_select(move || super::workspace_menu::open_in_this_window(&open_path))];
+            if index != 0 {
                 let repo = repo.clone();
                 let forced = repo.clone();
                 let force_path = row.path.clone();
-                items.push(MenuItem::submenu(
-                    label,
-                    [
+                actions.extend([
                         MenuItem::new("移除工作树…")
                             .disabled(row.locked)
                             .on_select(move || {
@@ -513,15 +564,16 @@ fn worktrees(repo: PathBuf) {
                                     },
                                 );
                             }),
-                    ],
-                ));
+                ]);
             }
+            items.push(MenuItem::submenu(label, actions));
         }
         state::show_popup_menu(items);
     });
 }
 
 fn reflog(repo: PathBuf) {
+    let request = RepositoryMenuRequest::start();
     state::spawn_from_root(async move {
         let path = repo.clone();
         let result = blocking(move || -> Result<_> {
@@ -531,6 +583,9 @@ fn reflog(repo: PathBuf) {
             ))
         })
         .await;
+        if !request.is_current(&repo) {
+            return;
+        }
         let Ok(Ok((expected, entries))) = result else {
             state::show_toast("warn", "无法读取 reflog");
             return;
@@ -706,9 +761,9 @@ fn stash_workspace(pop: bool) {
                         run_git_string(path, args).map(Some)
                     })();
                     match result {
-                        Ok(Some(_)) => format!("{} · 已完成", repo.name),
-                        Ok(None) => format!("{} · 跳过", repo.name),
-                        Err(err) => format!("{} · 失败\n{err}", repo.name),
+                        Ok(Some(_)) => format!("{} · 已完成", repo.label()),
+                        Ok(None) => format!("{} · 跳过", repo.label()),
+                        Err(err) => format!("{} · 失败\n{err}", repo.label()),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -718,11 +773,15 @@ fn stash_workspace(pop: bool) {
 }
 
 fn list_stash(repo: PathBuf) {
+    let request = RepositoryMenuRequest::start();
     state::spawn_from_root(async move {
         let dir = repo.clone();
         let result =
             blocking(move || run_git_string(&dir, &["stash", "list", "--format=%gd%x00%H%x00%gs"]))
                 .await;
+        if !request.is_current(&repo) {
+            return;
+        }
         let Ok(Ok(list)) = result else {
             state::show_toast("warn", "无法读取 stash");
             return;
@@ -962,7 +1021,7 @@ pub(super) fn open() {
         state::show_popup_menu(
             repos
                 .into_iter()
-                .map(|repo| MenuItem::submenu(repo.name.clone(), repo_items(repo)))
+                .map(|repo| MenuItem::submenu(repo.label().to_owned(), repo_items(repo)))
                 .collect(),
         );
     }

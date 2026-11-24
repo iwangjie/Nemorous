@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use nsh_base::EditorPosition;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 use serde_json::{Value, json};
@@ -52,6 +52,32 @@ struct Pending {
     started: Instant,
 }
 
+#[derive(Clone)]
+struct MenuTarget {
+    tab_id: String,
+    position: EditorPosition,
+}
+
+impl MenuTarget {
+    fn tab(&self) -> Option<CodeTab> {
+        app_signal().with_untracked(|s| {
+            s.code_tabs
+                .iter()
+                .find(|tab| tab.id == self.tab_id)
+                .cloned()
+        })
+    }
+
+    fn item(&self, label: &'static str, operation: Operation) -> MenuItem {
+        let target = self.clone();
+        MenuItem::new(label).on_select(move || {
+            if let Err(error) = query(&target, operation, None) {
+                state::show_toast("warn", error.to_string());
+            }
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Operation {
     Hover,
@@ -82,7 +108,7 @@ impl Operation {
 #[derive(Clone, Default)]
 struct Diagnostics(BTreeMap<String, Vec<Value>>);
 
-fn enabled() -> bool {
+pub(super) fn enabled() -> bool {
     app_signal().with(|s| {
         s.cfg
             .extra
@@ -123,7 +149,7 @@ impl Server {
     fn start(key: &ServerKey) -> Result<Self> {
         let args = split_args(&key.cmd)?;
         let (program, args) = args.split_first().context("LSP 命令为空")?;
-        let mut cmd = Command::new(program);
+        let mut cmd = crate::tool_command::command(program);
         cmd.args(args).current_dir(&key.root);
         let io =
             Connection::stdio(&mut cmd).with_context(|| format!("无法启动语言服务器 {program}"))?;
@@ -181,6 +207,9 @@ impl Server {
                     if self.notify("textDocument/didChange",json!({
                         "textDocument":{"uri":doc.uri,"version":next},"contentChanges":[{"text":doc.text}]
                     })).is_err() { return; }
+                    global::<Diagnostics>().update(|markers| {
+                        markers.0.remove(&doc.uri);
+                    });
                     next
                 }
                 None => {
@@ -342,7 +371,13 @@ fn reconcile(snapshot: &[(ServerKey, Document)]) {
             }
         }
         for (key, error) in failed {
-            registry.servers.remove(&key);
+            if let Some(server) = registry.servers.remove(&key) {
+                global::<Diagnostics>().update(|markers| {
+                    for uri in server.docs.keys() {
+                        markers.0.remove(uri);
+                    }
+                });
+            }
             registry.failures.insert(key, error);
         }
     });
@@ -353,13 +388,9 @@ fn reconcile(snapshot: &[(ServerKey, Document)]) {
     }
 }
 
-fn active_tab() -> Option<CodeTab> {
-    app_signal().with_untracked(|s| s.code_tabs.get(s.active_code_tab_idx).cloned())
-}
-
-fn query(operation: Operation, new_name: Option<String>) -> Result<()> {
+fn query(target: &MenuTarget, operation: Operation, new_name: Option<String>) -> Result<()> {
     ensure!(enabled(), "请先启用语言服务");
-    let tab = active_tab().context("请打开源代码文件")?;
+    let tab = target.tab().context("源代码文件已关闭")?;
     let settings = app_signal().with_untracked(|s| s.cfg.extra.get("lsp_servers").cloned());
     let (key, doc) = document(&tab, settings.as_ref()).context("当前文件没有可用的语言服务")?;
     let mut answer = Ok(());
@@ -381,17 +412,8 @@ fn query(operation: Operation, new_name: Option<String>) -> Result<()> {
                 "语言服务正在同步文档"
             );
             ensure!(server.requests.len() < 30, "语言服务请求过多");
-            let line = tab
-                .text
-                .split('\n')
-                .nth(tab.cursor.line as usize)
-                .unwrap_or_default();
-            let column = line
-                .chars()
-                .take(tab.cursor.column as usize)
-                .map(char::len_utf16)
-                .sum::<usize>();
-            let position = json!({"line":tab.cursor.line,"character":column});
+            let caret = target.position;
+            let position = json!({"line":caret.line,"character":caret.column});
             let mut params = json!({"textDocument":{"uri":doc.uri},"position":position});
             match operation {
                 Operation::Format => {
@@ -438,10 +460,29 @@ fn query(operation: Operation, new_name: Option<String>) -> Result<()> {
     answer
 }
 
-fn request(operation: Operation) {
-    if let Err(error) = query(operation, None) {
+fn request_at_cursor(operation: Operation) {
+    let target = app_signal().with_untracked(|state| {
+        state
+            .code_tabs
+            .get(state.active_code_tab_idx)
+            .map(|tab| MenuTarget {
+                tab_id: tab.id.clone(),
+                position: tab.cursor,
+            })
+    });
+    if let Some(target) = target
+        && let Err(error) = query(&target, operation, None)
+    {
         state::show_toast("warn", error.to_string());
     }
+}
+
+pub(super) fn find_references() {
+    request_at_cursor(Operation::References);
+}
+
+pub(super) fn quick_fixes() {
+    request_at_cursor(Operation::Actions);
 }
 
 fn unchanged(doc: &Document) -> bool {
@@ -504,9 +545,12 @@ fn approved_edits(doc: &Document, changes: Vec<(String, Option<i32>, Vec<Edit>)>
             std::fs::read_to_string(physical)?.replace("\r\n", "\n")
         };
         let replacement = lsp::apply_edits(&original, &edits)?;
-        plan.push((file, original, replacement));
+        if replacement != original {
+            plan.push((file, original, replacement));
+        }
     }
     if plan.is_empty() {
+        state::show_toast("info", "没有需要应用的改动");
         return Ok(());
     }
     let reviewed = doc.clone();
@@ -519,7 +563,9 @@ fn approved_edits(doc: &Document, changes: Vec<(String, Option<i32>, Vec<Edit>)>
             }
             let mut writes = Vec::new();
             for (file, original, new) in &plan {
-                state::open_code_file(file.clone(), None, false);
+                if !state::prepare_workspace_edit_tab(file.clone()) {
+                    return;
+                }
                 let tab = app_signal().with_untracked(|s| {
                     s.code_tabs
                         .iter()
@@ -527,7 +573,7 @@ fn approved_edits(doc: &Document, changes: Vec<(String, Option<i32>, Vec<Edit>)>
                         .cloned()
                 });
                 let Some(tab) = tab
-                    .filter(|tab| tab.editable && &tab.text == original && !tab.external_changed)
+                    .filter(|tab| tab.editor_editable() && &tab.text == original && tab.disk_state == state::ReviewDiskState::Current)
                 else {
                     state::show_toast("warn", "文件已变化，已取消应用语言服务编辑");
                     return;
@@ -544,23 +590,30 @@ fn approved_edits(doc: &Document, changes: Vec<(String, Option<i32>, Vec<Edit>)>
 }
 
 fn location(value: &Value) -> Option<(WorkspaceFile, Position)> {
-    let path = lsp::uri_path(
-        value["uri"]
-            .as_str()
-            .or_else(|| value["targetUri"].as_str())?,
-    )
-    .ok()?;
+    let uri = value["uri"]
+        .as_str()
+        .or_else(|| value["targetUri"].as_str())?;
     let range = value
         .get("range")
         .or_else(|| value.get("targetSelectionRange"))?;
-    let position = serde_json::from_value(range["start"].clone()).ok()?;
-    let file = app_signal().with_untracked(|s| {
+    location_at(uri, &range["start"])
+}
+
+fn location_at(uri: &str, start: &Value) -> Option<(WorkspaceFile, Position)> {
+    Some((
+        file_at_uri(uri)?,
+        serde_json::from_value(start.clone()).ok()?,
+    ))
+}
+
+fn file_at_uri(uri: &str) -> Option<WorkspaceFile> {
+    let path = lsp::uri_path(uri).ok()?;
+    app_signal().with_untracked(|s| {
         s.workspace_files
             .iter()
             .find(|file| Path::new(&file.abs_path) == path)
             .cloned()
-    })?;
-    Some((file, position))
+    })
 }
 
 fn goto(file: WorkspaceFile, position: Position) {
@@ -568,7 +621,7 @@ fn goto(file: WorkspaceFile, position: Position) {
         .with_untracked(|s| {
             s.code_tabs
                 .iter()
-                .find(|tab| tab.file.abs_path == file.abs_path)
+                .find(|tab| tab.revision.is_empty() && tab.file.abs_path == file.abs_path)
                 .map(|tab| tab.text.clone())
         })
         .or_else(|| std::fs::read_to_string(&file.abs_path).ok())
@@ -643,7 +696,9 @@ fn handle(request: Pending, message: Value) -> Result<()> {
                     }
                 }));
             }
-            if !rows.is_empty() {
+            if rows.is_empty() {
+                state::show_toast("info", "没有可用的补全");
+            } else {
                 state::show_popup_menu(rows);
             }
         }
@@ -652,16 +707,27 @@ fn handle(request: Pending, message: Value) -> Result<()> {
                 .as_array()
                 .cloned()
                 .unwrap_or_else(|| vec![result.clone()]);
-            let rows = result
+            let locations = result
                 .iter()
                 .filter_map(location)
                 .take(70)
+                .collect::<Vec<_>>();
+            if let (Operation::Definition, [(file, position)]) =
+                (request.operation, locations.as_slice())
+            {
+                goto(file.clone(), *position);
+                return Ok(());
+            }
+            let rows = locations
+                .into_iter()
                 .map(|(file, position)| {
                     MenuItem::new(format!("{}:{}", file.rel_path, position.line + 1))
                         .on_select(move || goto(file.clone(), position))
                 })
                 .collect::<Vec<_>>();
-            if !rows.is_empty() {
+            if rows.is_empty() {
+                state::show_toast("info", "当前工作区没有可跳转的结果");
+            } else {
                 state::show_popup_menu(rows);
             }
         }
@@ -690,7 +756,9 @@ fn handle(request: Pending, message: Value) -> Result<()> {
                     }))
                 })
                 .collect::<Vec<_>>();
-            if !rows.is_empty() {
+            if rows.is_empty() {
+                state::show_toast("info", "没有可用的快速修复");
+            } else {
                 state::show_popup_menu(rows);
             }
         }
@@ -719,44 +787,54 @@ fn handle(request: Pending, message: Value) -> Result<()> {
 }
 
 fn problems() {
-    let rows = global::<Diagnostics>().with_untracked(|markers| {
-        markers
-            .0
-            .iter()
-            .flat_map(|(uri, items)| {
-                items.iter().map(move |item| {
-                    let path = lsp::uri_path(uri)
-                        .ok()
-                        .and_then(|path| {
-                            path.file_name()
-                                .and_then(|name| name.to_str())
-                                .map(str::to_owned)
-                        })
-                        .unwrap_or_default();
-                    let line = item["range"]["start"]["line"].as_u64().unwrap_or_default() + 1;
-                    format!(
-                        "{path}:{line} · {}",
-                        item["message"].as_str().unwrap_or_default()
-                    )
-                })
-            })
-            .collect::<Vec<_>>()
+    let mut details = Vec::new();
+    let mut needs_details = false;
+    let mut rows = Vec::new();
+    global::<Diagnostics>().with_untracked(|markers| {
+        for (uri, items) in &markers.0 {
+            let Some(file) = file_at_uri(uri) else {
+                continue;
+            };
+            for item in items {
+                let Ok(position) =
+                    serde_json::from_value::<Position>(item["range"]["start"].clone())
+                else {
+                    continue;
+                };
+                let message = item["message"].as_str().unwrap_or_default();
+                let mut lines = message.lines();
+                let first = lines.next().unwrap_or_default();
+                let prefix = format!("{}:{} · ", file.rel_path, position.line + 1);
+                details.push(format!("{prefix}{message}"));
+                if rows.len() >= 100 {
+                    needs_details = true;
+                    continue;
+                }
+                needs_details |= lines.next().is_some();
+                let file = file.clone();
+                rows.push(
+                    MenuItem::new(format!("{prefix}{first}"))
+                        .on_select(move || goto(file.clone(), position)),
+                );
+            }
+        }
     });
-    super::git_advanced::report(
-        "问题".into(),
-        if rows.is_empty() {
-            "当前没有诊断".into()
-        } else {
-            rows.join("\n")
-        },
-    );
+    if rows.is_empty() {
+        state::show_toast("info", "当前没有诊断");
+    } else {
+        if needs_details {
+            let report = details.join("\n");
+            rows.push(MenuItem::separator());
+            rows.push(MenuItem::new("查看完整诊断…").on_select(move || {
+                super::git_advanced::report("问题".into(), report.clone());
+            }));
+        }
+        state::show_popup_menu(rows);
+    }
 }
 
-pub(super) fn menu() -> MenuItem {
-    MenuItem::submenu("语言服务", actions())
-}
-
-fn actions() -> Vec<MenuItem> {
+pub(super) fn menu(tab_id: String, position: EditorPosition) -> MenuItem {
+    let target = MenuTarget { tab_id, position };
     let active = enabled();
     let mut items = vec![
         MenuItem::new("启用语言服务")
@@ -770,29 +848,34 @@ fn actions() -> Vec<MenuItem> {
     ];
     if active {
         items.extend([
-            MenuItem::new("补全").on_select(|| request(Operation::Completion)),
-            MenuItem::new("悬停信息").on_select(|| request(Operation::Hover)),
-            MenuItem::new("转到定义").on_select(|| request(Operation::Definition)),
-            MenuItem::new("查找引用").on_select(|| request(Operation::References)),
-            MenuItem::new("快速修复").on_select(|| request(Operation::Actions)),
-            MenuItem::new("格式化文件").on_select(|| request(Operation::Format)),
+            target.item("补全", Operation::Completion),
+            target.item("悬停信息", Operation::Hover),
+            target.item("转到定义", Operation::Definition),
+            target.item("查找引用", Operation::References),
+            target.item("快速修复", Operation::Actions),
+            target.item("格式化文件", Operation::Format),
             MenuItem::new("问题").on_select(problems),
-            MenuItem::new("内联提示").on_select(|| request(Operation::Hints)),
-            MenuItem::new("重命名符号…").on_select(|| {
-                super::git_prompt::open("重命名符号", String::new(), |name| {
-                    ensure!(!name.is_empty(), "输入新名称");
-                    query(Operation::Rename, Some(name.to_owned()))
-                });
+            target.item("内联提示", Operation::Hints),
+            MenuItem::new("重命名符号…").on_select({
+                let target = target.clone();
+                move || {
+                    let target = target.clone();
+                    super::git_prompt::open("重命名符号", String::new(), move |name| {
+                        ensure!(!name.is_empty(), "输入新名称");
+                        query(&target, Operation::Rename, Some(name.to_owned()))
+                    });
+                }
             }),
-            MenuItem::new("配置当前语言服务器…").on_select(configure),
+            MenuItem::new("配置当前语言服务器…").on_select(move || configure(&target)),
         ]);
     }
-    items
+    MenuItem::submenu("语言服务", items)
 }
 
-fn configure() {
-    let Some((lang, default)) =
-        active_tab().and_then(|tab| lsp::server(Path::new(&tab.file.abs_path)))
+fn configure(target: &MenuTarget) {
+    let Some((lang, default)) = target
+        .tab()
+        .and_then(|tab| lsp::server(Path::new(&tab.file.abs_path)))
     else {
         state::show_toast("warn", "请打开支持的源代码文件");
         return;

@@ -1,4 +1,5 @@
 mod blame_view;
+mod diff_blame;
 pub(crate) mod branch_matrix;
 pub mod bookmarks;
 pub mod code_editor;
@@ -25,9 +26,11 @@ pub(crate) mod navigation_picker;
 mod split_code_view;
 pub(crate) mod revision_picker;
 pub mod diff_view;
+mod editor_find;
 pub mod editor_area;
 pub mod editor_tools;
 mod git_forest;
+pub(crate) use git_forest::repository_history_changed;
 mod git_graph;
 pub mod git_pane;
 pub mod icons;
@@ -59,7 +62,7 @@ use crate::state::{
     init_workspace, jump_diff_hunk, jump_from_diff_to_source, locate_current_in_project_tree,
     move_change_selection, move_commit_diff_file, navigate_back, navigate_forward,
     open_commit_diff, open_find_bar, open_goto_line_modal,
-    open_working_diff, refresh_workspace_async, save_active_document, stage_selected_change_sync,
+    open_working_diff, refresh_workspace_async, save_active_document, stage_selected_change,
     toggle_selected_change_checkbox,
 };
 use crate::theme;
@@ -77,7 +80,8 @@ fn setup_hidden_title_bar() {
 /// NSH 先派发根快捷键再匹配应用菜单快捷键，因此 `setup_shortcuts` 在 Modal 下的早退
 /// 不足以阻止原生菜单项（含鼠标激活与陈旧菜单事件）穿透；此处以运行时焦点再兜底一次。
 fn modal_owns_focus() -> bool {
-    app_signal().with_untracked(|s| s.focus_zone == FocusZone::Modal)
+    crate::history_runtime::is_open()
+        || app_signal().with_untracked(|s| s.focus_zone == FocusZone::Modal)
 }
 
 /// 将应用级菜单命令（导航/Git/关闭标签）包装为模态弹窗持有焦点时直接丢弃，
@@ -87,6 +91,32 @@ fn guard_app_command(f: impl Fn() + 'static) -> impl Fn() + 'static {
         if !modal_owns_focus() {
             f();
         }
+    }
+}
+
+fn document_undo_focus(s: &state::AppState) -> Option<FocusZone> {
+    match (s.editor_tab, s.focus_zone) {
+        (EditorTabKind::File, FocusZone::CodeEditor) => Some(FocusZone::CodeEditor),
+        (EditorTabKind::WorkingDiff, zone)
+            if (zone == FocusZone::WorkingDiffNew
+                || (zone == FocusZone::WorkingDiffOld && s.cfg.diff_single_column))
+                && s.working_diff.as_ref().is_some_and(|diff| diff.editor_editable()) => Some(zone),
+        _ => None,
+    }
+}
+
+fn undo_document(redo: bool) {
+    if modal_owns_focus() || state::text_input_focus_signal().with_untracked(|focus| focus.focused) {
+        return;
+    }
+    match app_signal().with_untracked(document_undo_focus) {
+        Some(FocusZone::CodeEditor) => crate::code_split_runtime::undo(redo),
+        Some(zone) => {
+            if let Some(editor) = state::active_editor_api(zone) {
+                editor.run(if redo { EditorCommand::Redo } else { EditorCommand::Undo });
+            }
+        }
+        None => {}
     }
 }
 
@@ -118,8 +148,12 @@ fn bind_action(
             continue;
         }
         let handler = handler.clone();
-        on_key_with(key, options, move |key| handler(key));
+        bind_application_key(key, options, move |key| handler(key));
     }
+}
+
+fn bind_application_key(key: &str, options: KeyOptions, handler: impl Fn(&str) + 'static) {
+    on_key_with_priority(key, options, 1, handler);
 }
 
 fn menu_binding(item: MenuItem, keymap: &crate::keymap::Keymap, action: &str) -> MenuItem {
@@ -130,7 +164,7 @@ fn menu_binding(item: MenuItem, keymap: &crate::keymap::Keymap, action: &str) ->
     }
 }
 
-fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo: bool, keymap: &crate::keymap::Keymap) -> Vec<MenuItem> {
+fn build_application_menu(text_input_focused: bool, modal_open: bool, document_undo: bool, keymap: &crate::keymap::Keymap) -> Vec<MenuItem> {
     let copy_item = if text_input_focused {
         // 焦点位于原生 <input>（筛选框、查找/替换框、转到行/文件框）时，使用标准 responder copy:，绝不劫持输入框 ⌘C
         MenuItem::role(MenuRole::Copy)
@@ -159,13 +193,13 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, code_undo:
         MenuItem::submenu(
             "编辑",
             [
-                if code_undo {
+                if document_undo {
                     menu_binding(MenuItem::new("撤销"), keymap, "undo")
-                        .on_select(guard_app_command(|| crate::code_split_runtime::undo(false)))
+                        .on_select(|| undo_document(false))
                 } else { MenuItem::role(MenuRole::Undo) },
-                if code_undo {
+                if document_undo {
                     menu_binding(MenuItem::new("重做"), keymap, "redo")
-                        .on_select(guard_app_command(|| crate::code_split_runtime::undo(true)))
+                        .on_select(|| undo_document(true))
                 } else { MenuItem::role(MenuRole::Redo) },
                 MenuItem::separator(),
                 MenuItem::role(MenuRole::Cut),
@@ -273,14 +307,13 @@ fn setup_application_menu() {
     effect(move || {
         let input_focused = state::text_input_focus_signal().with(|f| f.focused);
         let modal_open = modal_memo.get();
-        let code_undo = !input_focused
-            && app_signal().with(|s| s.focus_zone == FocusZone::CodeEditor);
+        let document_undo = !input_focused && app_signal().with(|s| document_undo_focus(s).is_some());
         let keys = keymap.get();
-        let mode = (input_focused, modal_open, code_undo, keys.clone());
+        let mode = (input_focused, modal_open, document_undo, keys.clone());
         let changed = last_mode.with(|prior| prior.as_ref() != Some(&mode));
         if changed {
             last_mode.replace(Some(mode));
-            set_application_menu(build_application_menu(input_focused, modal_open, code_undo, &keys));
+            set_application_menu(build_application_menu(input_focused, modal_open, document_undo, &keys));
         }
     });
 }
@@ -333,9 +366,7 @@ fn toggle_rail_tool_window(tab: LeftTab) {
     }
 }
 
-/// 绑定全局及焦点感知 IDEA 快捷键。
-/// 通过订阅 `focus_zone` 变化在 `effect` 中重绑，确保后注册优先级覆盖 NSH `Editor` 内置冲突键位
-/// （如 `mod+l`, `mod+[`, `mod+]`, `mod+d`, `cmd+down`）。
+/// 绑定全局和各焦点区域的快捷键。
 fn setup_shortcuts() {
     let always = KeyOptions {
         when: When::Always,
@@ -348,6 +379,23 @@ fn setup_shortcuts() {
 
     let keymap_memo = keymap_memo();
     let zone_memo = computed(|| app_signal().with(|s| s.focus_zone));
+    let modal_focus = computed(move || {
+        zone_memo.get() == FocusZone::Modal || crate::history_runtime::is_open()
+    });
+    let text_input_focused = computed(|| state::text_input_focus_signal().with(|f| f.focused));
+    effect(move || {
+        let zone = zone_memo.get();
+        if matches!(zone, FocusZone::ProjectTree | FocusZone::CommitTree | FocusZone::GitFiles) {
+            after_answer(move || {
+                let editor = app_signal().with_untracked(|s| {
+                    (s.focus_zone == zone).then(|| state::editor_focus_zone(s))
+                });
+                if let Some(api) = editor.and_then(state::active_editor_api) {
+                    api.blur();
+                }
+            });
+        }
+    });
     let tab_memo = computed(|| app_signal().with(|s| s.editor_tab));
     let workspace_search_open = computed(content_search::is_open);
     let multiline_search = computed(content_search::query_is_multiline);
@@ -357,70 +405,27 @@ fn setup_shortcuts() {
     let index_review_open = computed(index_review::is_open);
     let conflict_workbench_open = computed(conflict_workbench::is_open);
     let commit_message_focused = computed(commit_form::has_focus);
-    let dismissable_memo = computed(|| {
+    let lsp_enabled = computed(language_tools::enabled);
+    let dismissable_memo = computed(move || {
+        if modal_focus.get() {
+            return true;
+        }
         app_signal().with(|s| {
-            s.focus_zone == FocusZone::Modal
-                || s.save_conflict.is_some()
+            s.save_conflict.is_some()
                 || s.dirty_close.is_some()
                 || s.goto_line_open
                 || s.picker_open.is_some()
                 || s.stash_modal_open
-                || s.diff_find_open
-                || s.code_find_open
+                || s.active_find_open()
         })
     });
-    effect(move || {
-        // 在 focus_zone / editor_tab / 输入框聚焦 / 弹窗状态切换或 Editor 触发重绑后重注全局键位，
-        // 确保覆盖 Editor::bind_keys 的内置冲突键位（如 mod+l），同时严守弹窗隔离与文本编辑器按词移动。
-        let zone = zone_memo.get();
-        let tab = tab_memo.get();
-        let text_input_focused = state::text_input_focus_signal().with(|f| f.focused);
-        let has_dismissable = dismissable_memo.get();
-        let _rebind_rev = state::shortcut_rebind_signal().with(|r| r.rev);
-        let keys = keymap_memo.get();
 
-        // 模态弹窗打开时由弹窗独占键盘（对齐基线 main.go:401 overlayOpen）：仅响应 Escape 关闭，绝不穿透触发后台快捷键！
-        if zone == FocusZone::Modal {
-            on_key_with("escape", always, |_| {
-                state::close_active_modal();
-            });
-            if index_review_open.get() {
-                bind_action(&keys, "save", always, |_| index_review::save_active());
-            }
-            if conflict_workbench_open.get() {
-                use crate::conflict_text::ConflictChoice;
-                bind_action(&keys, "save", always, |_| conflict_workbench::save());
-                on_key_with("alt+left", always, |_| conflict_workbench::move_hunk(-1));
-                on_key_with("alt+right", always, |_| conflict_workbench::move_hunk(1));
-                on_key_with("alt+1", always, |_| conflict_workbench::choose(ConflictChoice::Ours));
-                on_key_with("alt+2", always, |_| conflict_workbench::choose(ConflictChoice::Theirs));
-                on_key_with("alt+3", always, |_| conflict_workbench::choose(ConflictChoice::BothOursFirst));
-                on_key_with("mod+enter", always, |_| conflict_workbench::continue_if_ready());
-            }
-            if revision_open.get() {
-                on_key_with("up", always, |_| revision_picker::move_selection(-1));
-                on_key_with("down", always, |_| revision_picker::move_selection(1));
-                on_key_with("enter", always, |_| revision_picker::accept());
-            }
-            if navigation_open.get() {
-                on_key_with("up", always, |_| navigation_picker::move_selection(-1));
-                on_key_with("down", always, |_| navigation_picker::move_selection(1));
-                if switcher_open.get() {
-                    on_key_with("enter", always, |_| navigation_picker::accept());
-                    bind_action(&keys, "switcher", always, |key| navigation_picker::start_or_move_switcher(key.contains("shift+")));
-                }
-            }
-            if workspace_search_open.get() {
-                if multiline_search.get() {
-                    on_key_with("mod+enter", always, |_| content_search::activate_selected());
-                } else {
-                    on_key_with("up", always, |_| content_search::move_selection(-1));
-                    on_key_with("down", always, |_| content_search::move_selection(1));
-                }
-            }
+    // Keep workspace bindings mounted as focus moves between editors and tool windows.
+    effect(move || {
+        if modal_focus.get() {
             return;
         }
-
+        let keys = keymap_memo.get();
         bind_action(&keys, "recentFiles", always, |_| navigation_picker::open(navigation_picker::Mode::RecentFiles));
         bind_action(&keys, "actions", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
         bind_action(&keys, "switcher", always, |key| navigation_picker::start_or_move_switcher(key.contains("shift+")));
@@ -431,30 +436,12 @@ fn setup_shortcuts() {
         bind_action(&keys, "zoomIn", always, |_| settings::zoom(0.1));
         bind_action(&keys, "zoomOut", always, |_| settings::zoom(-0.1));
         bind_action(&keys, "zoomReset", always, |_| settings::zoom(0.0));
-        if !text_input_focused {
-            bind_action(&keys, "branchMatrix", always, |_| branch_matrix::open());
-        }
         bind_action(&keys, "gitCommit", not_editing, |_| commit_form::focus());
-        if commit_message_focused.get() {
-            on_key_with("mod+enter", always, |_| commit_form::submit());
-        }
-        if !text_input_focused {
-            bind_action(&keys, "rollback", always, |_| git_review::rollback_current());
-        }
         bind_action(&keys, "pull", not_editing, |_| sync_dialog::start_all(crate::git_remotes::RemoteAction::Pull));
         bind_action(&keys, "push", not_editing, |_| sync_dialog::start_all(crate::git_remotes::RemoteAction::Push));
         bind_action(&keys, "searchEverywhere", always, |_| navigation_picker::open(navigation_picker::Mode::Everywhere));
         bind_action(&keys, "previousTab", always, |_| navigation_picker::cycle_tabs(-1));
         bind_action(&keys, "nextTab", always, |_| navigation_picker::cycle_tabs(1));
-        if zone == FocusZone::CodeEditor && !text_input_focused {
-            bind_action(&keys, "nextOccurrence", always, |_| {
-                if let Some(editor) = state::active_editor_api(FocusZone::CodeEditor) {
-                    editor.run(nsh_base::EditorCommand::SelectNextOccurrence);
-                }
-            });
-            bind_action(&keys, "undo", always, |_| crate::code_split_runtime::undo(false));
-            bind_action(&keys, "redo", always, |_| crate::code_split_runtime::undo(true));
-        }
         bind_action(&keys, "closeTab", always, |_| {
             close_active_tab();
         });
@@ -521,81 +508,13 @@ fn setup_shortcuts() {
         bind_action(&keys, "selectIn", always, |_| {
             locate_current_in_project_tree();
         });
-        let diff_focus = matches!(
-            zone,
-            FocusZone::WorkingDiffOld | FocusZone::WorkingDiffNew | FocusZone::CommitDiffOld | FocusZone::CommitDiffNew
-        );
-        for key in keys.keys("jumpToSource") {
-            if key != "cmd+down" || diff_focus {
-                on_key_with(key, always, |_| jump_from_diff_to_source());
-            }
+        for key in keys.keys("jumpToSource").iter().filter(|key| *key != "cmd+down") {
+            bind_application_key(key, always, |_| jump_from_diff_to_source());
         }
-        // ⌥←/⌥→ 在源码中移动光标，在 Diff 中切换文件。
-        if !text_input_focused && tab == EditorTabKind::File && zone == FocusZone::CodeEditor {
-            let repeat = KeyOptions {
-                repeat: true,
-                for_focus: true,
-                ..always
-            };
-            for (key, command) in [
-                ("alt+left", EditorCommand::MoveWordLeft),
-                ("alt+right", EditorCommand::MoveWordRight),
-            ] {
-                on_key_with(key, repeat, move |_| {
-                    if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
-                        api.run(command);
-                    }
-                });
-            }
-        }
-
-        // Diff 专用导航（F7/⇧F7 跳块、⌥←/⌥→ 切文件）仅在非 <input> 且当前为 Diff 视图时注册，
-        // 绝不劫持 CodeEditor 或任何 <input> 内的 ⌥←/⌥→ 按词移动（对齐基线 main.go:431 + review_buffers.go:234）。
-        if !text_input_focused
-            && matches!(tab, EditorTabKind::WorkingDiff | EditorTabKind::CommitDiff)
-            && zone != FocusZone::CodeEditor
-        {
-            bind_action(&keys, "nextDifference", always, |_| {
-                jump_diff_hunk(1);
-            });
-            bind_action(&keys, "previousDifference", always, |_| {
-                jump_diff_hunk(-1);
-            });
-            bind_action(&keys, "previousDiffFile", always, |_| {
-                let cur_tab = app_signal().with_untracked(|s| s.editor_tab);
-                match cur_tab {
-                    EditorTabKind::CommitDiff => {
-                        move_commit_diff_file(-1);
-                    }
-                    EditorTabKind::WorkingDiff => {
-                        move_change_selection(-1, true);
-                    }
-                    _ => {}
-                }
-            });
-            bind_action(&keys, "nextDiffFile", always, |_| {
-                let cur_tab = app_signal().with_untracked(|s| s.editor_tab);
-                match cur_tab {
-                    EditorTabKind::CommitDiff => {
-                        move_commit_diff_file(1);
-                    }
-                    EditorTabKind::WorkingDiff => {
-                        move_change_selection(1, true);
-                    }
-                    _ => {}
-                }
-            });
-        }
-
-        // 工具窗口快捷键：⌘0 Commit、⌘1 Project、⌘9 Git
-        // 对齐基线 review_toolwindow.go：当面板已打开但焦点在编辑器/Diff 时，按 ⌘0/⌘1 先切焦点到对应树并保留编辑器，仅当焦点已在对应树内再按才折叠。
         bind_action(&keys, "commitWindow", always, |_| focus_tool_window(LeftTab::Commit, true));
         bind_action(&keys, "project", always, |_| focus_tool_window(LeftTab::Project, true));
         bind_action(&keys, "maniWindow", always, |_| mani_panel::toggle());
         bind_action(&keys, "terminalWindow", always, |_| terminal_panel::toggle());
-        if zone == FocusZone::CodeEditor {
-            bind_action(&keys, "breakpoint", always, |_| debug_panel::active_line_breakpoint());
-        }
         bind_action(&keys, "gitWindow", always, |_| {
             workbench::hide();
             content_search::hide_find_panel();
@@ -604,15 +523,10 @@ fn setup_shortcuts() {
             });
         });
 
-        if zone == FocusZone::GitFiles && !text_input_focused {
-            let repeat = KeyOptions { repeat: true, ..not_editing };
-            on_key_with("up", repeat, |_| git_pane::move_selection(-1));
-            on_key_with("down", repeat, |_| git_pane::move_selection(1));
-        }
-
         // 树焦点快捷键（Commit 树 / Project 树 / Git 提交文件树）
-        bind_action(&keys, "compareOrDiff", always, move |_| {
-            match zone {
+        bind_action(&keys, "compareOrDiff", always, |_| {
+            let current_zone = app_signal().with_untracked(|s| s.focus_zone);
+            match current_zone {
                 FocusZone::CommitTree => {
                     let sel = app_signal().with_untracked(|s| s.change_selection.clone());
                     if let Some(it) = sel {
@@ -639,77 +553,249 @@ fn setup_shortcuts() {
                 _ => {}
             }
         });
+    });
 
-        if matches!(
-            zone,
-            FocusZone::CommitTree | FocusZone::ProjectTree | FocusZone::GitFiles
-        ) {
-            bind_action(&keys, "copy", not_editing, |_| {
-                copy_for_current_focus();
-            });
-            on_key_with("enter", not_editing, move |_| match zone {
-                FocusZone::CommitTree => {
-                    if let Some(sel) = app_signal().with_untracked(|s| s.change_selection.clone()) {
-                        open_working_diff(sel.file, sel.staged, true);
+    effect(move || {
+        if !modal_focus.get() {
+            return;
+        }
+        let keys = keymap_memo.get();
+        if index_review_open.get() {
+            bind_action(&keys, "save", always, |_| index_review::save_active());
+        }
+        if conflict_workbench_open.get() {
+            use crate::conflict_text::ConflictChoice;
+            bind_action(&keys, "save", always, |_| conflict_workbench::save());
+            bind_application_key("alt+left", always, |_| conflict_workbench::move_hunk(-1));
+            bind_application_key("alt+right", always, |_| conflict_workbench::move_hunk(1));
+            bind_application_key("alt+1", always, |_| conflict_workbench::choose(ConflictChoice::Ours));
+            bind_application_key("alt+2", always, |_| conflict_workbench::choose(ConflictChoice::Theirs));
+            bind_application_key("alt+3", always, |_| conflict_workbench::choose(ConflictChoice::BothOursFirst));
+            bind_application_key("mod+enter", always, |_| conflict_workbench::continue_if_ready());
+        }
+        if revision_open.get() {
+            bind_application_key("up", always, |_| revision_picker::move_selection(-1));
+            bind_application_key("down", always, |_| revision_picker::move_selection(1));
+            bind_application_key("enter", always, |_| revision_picker::accept());
+        }
+        if navigation_open.get() {
+            bind_application_key("up", always, |_| navigation_picker::move_selection(-1));
+            bind_application_key("down", always, |_| navigation_picker::move_selection(1));
+            if switcher_open.get() {
+                bind_application_key("enter", always, |_| navigation_picker::accept());
+                bind_action(&keys, "switcher", always, |key| navigation_picker::start_or_move_switcher(key.contains("shift+")));
+            }
+        }
+        if workspace_search_open.get() {
+            if multiline_search.get() {
+                bind_application_key("mod+enter", always, |_| content_search::activate_selected());
+            } else {
+                bind_application_key("up", always, |_| content_search::move_selection(-1));
+                bind_application_key("down", always, |_| content_search::move_selection(1));
+            }
+        }
+    });
+
+    let workspace_non_text_focus = computed(move || !modal_focus.get() && !text_input_focused.get());
+    effect(move || {
+        if workspace_non_text_focus.get() {
+            let keys = keymap_memo.get();
+            bind_action(&keys, "branchMatrix", always, |_| branch_matrix::open());
+            bind_action(&keys, "rollback", always, |_| git_review::rollback_current());
+        }
+    });
+    let commit_submit = computed(move || !modal_focus.get() && commit_message_focused.get());
+    effect(move || {
+        if commit_submit.get() {
+            bind_application_key("mod+enter", always, |_| commit_form::submit());
+        }
+    });
+
+    let source_focus = computed(move || zone_memo.get() == FocusZone::CodeEditor);
+    effect(move || {
+        if source_focus.get() {
+            bind_action(&keymap_memo.get(), "breakpoint", always, |_| debug_panel::active_line_breakpoint());
+        }
+    });
+    let source_editing_enabled = computed(move || source_focus.get() && !text_input_focused.get());
+    let undo_enabled = computed(move || {
+        !modal_focus.get() && !text_input_focused.get()
+            && app_signal().with(|s| document_undo_focus(s).is_some())
+    });
+    effect(move || {
+        if undo_enabled.get() {
+            let keys = keymap_memo.get();
+            let options = KeyOptions { repeat: true, for_focus: true, ..always };
+            bind_action(&keys, "undo", options, |_| undo_document(false));
+            bind_action(&keys, "redo", options, |_| undo_document(true));
+        }
+    });
+    effect(move || {
+        if !source_editing_enabled.get() {
+            return;
+        }
+        let keys = keymap_memo.get();
+        bind_action(&keys, "nextOccurrence", always, |_| {
+            if let Some(editor) = state::active_editor_api(FocusZone::CodeEditor) {
+                editor.run(nsh_base::EditorCommand::SelectNextOccurrence);
+            }
+        });
+        if tab_memo.get() == EditorTabKind::File {
+            if lsp_enabled.get() {
+                bind_action(&keys, "findReferences", always, |_| language_tools::find_references());
+                bind_action(&keys, "quickFixes", always, |_| language_tools::quick_fixes());
+            }
+            let repeat = KeyOptions {
+                repeat: true,
+                for_focus: true,
+                ..always
+            };
+            for (key, command) in [
+                ("alt+left", EditorCommand::MoveWordLeft),
+                ("alt+right", EditorCommand::MoveWordRight),
+            ] {
+                bind_application_key(key, repeat, move |_| {
+                    if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
+                        api.run(command);
                     }
+                });
+            }
+        }
+    });
+
+    let diff_focus = computed(move || matches!(
+        zone_memo.get(),
+        FocusZone::WorkingDiffOld | FocusZone::WorkingDiffNew | FocusZone::CommitDiffOld | FocusZone::CommitDiffNew
+    ));
+    effect(move || {
+        if diff_focus.get() && keymap_memo.get().keys("jumpToSource").iter().any(|key| key == "cmd+down") {
+            bind_application_key("cmd+down", always, |_| jump_from_diff_to_source());
+        }
+    });
+
+    // Option-arrow follows the active Diff. It continues moving by words in a text input.
+    let diff_navigation_enabled = computed(move || {
+        workspace_non_text_focus.get()
+            && !source_focus.get()
+            && matches!(tab_memo.get(), EditorTabKind::WorkingDiff | EditorTabKind::CommitDiff)
+    });
+    effect(move || {
+        if !diff_navigation_enabled.get() {
+            return;
+        }
+        let keys = keymap_memo.get();
+        bind_action(&keys, "nextDifference", always, |_| {
+            jump_diff_hunk(1);
+        });
+        bind_action(&keys, "previousDifference", always, |_| {
+            jump_diff_hunk(-1);
+        });
+        bind_action(&keys, "previousDiffFile", always, |_| {
+            let cur_tab = app_signal().with_untracked(|s| s.editor_tab);
+            match cur_tab {
+                EditorTabKind::CommitDiff => {
+                    move_commit_diff_file(-1);
                 }
-                FocusZone::ProjectTree => {
-                    if let Some(wf) =
-                        app_signal().with_untracked(|s| s.project_selected_file.clone())
-                    {
-                        state::open_code_file(wf, None, true);
-                    }
-                }
-                FocusZone::GitFiles => {
-                    let pair = app_signal().with_untracked(|s| {
-                        s.selected_commit
-                            .clone()
-                            .zip(s.selected_commit_file.clone())
-                    });
-                    if let Some((c, f)) = pair {
-                        open_commit_diff(c, f, true);
-                    }
+                EditorTabKind::WorkingDiff => {
+                    move_change_selection(-1, true);
                 }
                 _ => {}
-            });
+            }
+        });
+        bind_action(&keys, "nextDiffFile", always, |_| {
+            let cur_tab = app_signal().with_untracked(|s| s.editor_tab);
+            match cur_tab {
+                EditorTabKind::CommitDiff => {
+                    move_commit_diff_file(1);
+                }
+                EditorTabKind::WorkingDiff => {
+                    move_change_selection(1, true);
+                }
+                _ => {}
+            }
+        });
+    });
+
+    let tree_focus = computed(move || match zone_memo.get() {
+        zone @ (FocusZone::CommitTree | FocusZone::ProjectTree | FocusZone::GitFiles) => Some(zone),
+        _ => None,
+    });
+    effect(move || {
+        let Some(zone) = tree_focus.get() else {
+            return;
+        };
+        let keys = keymap_memo.get();
+        if zone == FocusZone::GitFiles && !text_input_focused.get() {
+            let repeat = KeyOptions { repeat: true, ..not_editing };
+            bind_application_key("up", repeat, |_| git_pane::move_selection(-1));
+            bind_application_key("down", repeat, |_| git_pane::move_selection(1));
         }
+        bind_action(&keys, "copy", not_editing, |_| {
+            copy_for_current_focus();
+        });
+        bind_application_key("enter", not_editing, move |_| match zone {
+            FocusZone::CommitTree => {
+                if let Some(sel) = app_signal().with_untracked(|s| s.change_selection.clone()) {
+                    open_working_diff(sel.file, sel.staged, true);
+                }
+            }
+            FocusZone::ProjectTree => {
+                if let Some(wf) =
+                    app_signal().with_untracked(|s| s.project_selected_file.clone())
+                {
+                    state::open_code_file(wf, None, true);
+                }
+            }
+            FocusZone::GitFiles => {
+                let pair = app_signal().with_untracked(|s| {
+                    s.selected_commit
+                        .clone()
+                        .zip(s.selected_commit_file.clone())
+                });
+                if let Some((c, f)) = pair {
+                    open_commit_diff(c, f, true);
+                }
+            }
+            _ => {}
+        });
 
         if zone == FocusZone::CommitTree {
-            on_key_with("up", not_editing, |_| {
+            bind_application_key("up", not_editing, |_| {
                 move_change_selection(-1, false);
             });
-            on_key_with("down", not_editing, |_| {
+            bind_application_key("down", not_editing, |_| {
                 move_change_selection(1, false);
             });
-            on_key_with("space", not_editing, |_| {
+            bind_application_key("space", not_editing, |_| {
                 toggle_selected_change_checkbox();
             });
-            on_key_with("s", not_editing, |_| {
-                stage_selected_change_sync(true);
+            bind_application_key("s", not_editing, |_| {
+                stage_selected_change(true);
             });
-            on_key_with("u", not_editing, |_| {
-                stage_selected_change_sync(false);
+            bind_application_key("u", not_editing, |_| {
+                stage_selected_change(false);
             });
         }
 
         if zone == FocusZone::ProjectTree {
-            on_key_with("up", not_editing, |_| {
+            bind_application_key("up", not_editing, |_| {
                 state::move_project_selection(-1);
             });
-            on_key_with("down", not_editing, |_| {
+            bind_application_key("down", not_editing, |_| {
                 state::move_project_selection(1);
             });
-            on_key_with("right", not_editing, |_| {
+            bind_application_key("right", not_editing, |_| {
                 state::toggle_project_selected_dir(true);
             });
-            on_key_with("left", not_editing, |_| {
+            bind_application_key("left", not_editing, |_| {
                 state::toggle_project_selected_dir(false);
             });
         }
+    });
 
-        // Escape 仅在存在弹窗或查找条时拦截关闭并恢复焦点；平时透传给 Editor 清除多选区
-        if has_dismissable {
-            on_key_with("escape", always, |_| {
+    effect(move || {
+        if dismissable_memo.get() {
+            bind_application_key("escape", always, |_| {
                 state::close_active_modal();
             });
         }
@@ -1003,7 +1089,15 @@ fn left_rail() -> impl IntoElement {
     })
 }
 
-fn tooltip_label(label: String, p: theme::Palette) -> AnyElement {
+fn reveal_selected_row(row: ElementRef) {
+    after_answer(move || {
+        row.reveal(nsh_core::RevealOptions::default()
+            .vertical(nsh_core::ScrollAlignment::Nearest)
+            .animated(false));
+    });
+}
+
+fn tooltip_label(label: String, p: theme::Palette) -> nsh_core::element::View {
     view()
         .test_id("toolbar-tooltip")
         .px(px(8.0))
@@ -1013,12 +1107,12 @@ fn tooltip_label(label: String, p: theme::Palette) -> AnyElement {
         .border_color(p.border)
         .bg(p.surface)
         .child(text(label).text_size(px(11.0)).text_color(p.text_primary))
-        .into_element()
 }
 
 fn status_bar() -> impl IntoElement {
     dynamic(move || {
         let p = current_palette();
+        let loading_diff = state::diff_read_pending();
         let (ws_display, cursor_text) = app_signal().with(|s| {
             let ws = display_path(&s.cfg.workspace_path);
             let cur = match s.editor_tab {
@@ -1063,6 +1157,10 @@ fn status_bar() -> impl IntoElement {
                     .flex_row()
                     .items_center()
                     .flex_none()
+                    .when(loading_diff, |row| {
+                        row.child(text("正在读取审阅内容…").test_id("diff-read-status")
+                            .px(px(6.0)).text_size(px(11.0)).text_color(p.text_muted))
+                    })
                     .child(cursor_text.map(|pos_txt| {
                         view()
                             .test_id("status-cursor-pos")
@@ -1118,6 +1216,7 @@ fn toast_layer() -> impl IntoElement {
             )
             .child(
                 view()
+                    .label("关闭提示")
                     .cursor(Cursor::Pointer)
                     .on_press(|| app_signal().update(|s| s.toast = None))
                     .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),

@@ -41,7 +41,9 @@ fn switch_workspace(path: &Path) -> Result<()> {
         )
     });
     ensure!(!busy, "请等待当前 Git 操作结束");
+    ensure!(!super::github_panel::submitting(), "请等待 GitHub 提交完成");
     ensure!(!dirty, "请先保存当前工作区的未保存编辑");
+    super::github_panel::close_active();
     crate::session_runtime::save_current_workspace();
     app_signal().update(|s| {
         let mut cfg = s.cfg.clone();
@@ -63,6 +65,10 @@ fn show_result(outcome: Result<()>) {
     if let Err(err) = outcome {
         state::show_toast("warn", err.to_string());
     }
+}
+
+pub(super) fn open_in_this_window(path: &Path) {
+    show_result(switch_workspace(path));
 }
 
 fn change_workspace_in_new_window(path: &Path) {
@@ -147,19 +153,29 @@ fn import_repository() {
 
 pub(super) fn open() {
     let (workspace, recent, visible, hidden) = app_signal().with_untracked(|s| {
+        let bindings = s.cfg.repository_id_bindings.get(&s.cfg.workspace_path);
+        let hidden = s.cfg.hidden_repos.iter().map(|id| {
+            let label = s.hidden_repo_labels.get(id).cloned().or_else(|| {
+                let (path, _) = bindings?.iter().find(|(_, bound_id)| *bound_id == id)?;
+                let path = Path::new(path);
+                let label_path = path.strip_prefix(&s.cfg.workspace_path).ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .unwrap_or(path);
+                Some(crate::paths::display_path(&label_path.to_string_lossy()))
+            });
+            (id.clone(), label.unwrap_or_else(|| id.clone()))
+        }).collect::<Vec<_>>();
         (
             s.cfg.workspace_path.clone(),
             s.cfg.recent_workspaces.clone(),
             s.repos.clone(),
-            s.cfg.hidden_repos.clone(),
+            hidden,
         )
     });
     let ready = !workspace.is_empty();
     let mut items = vec![
         MenuItem::new("打开工作区…").on_select(|| {
-            choose_folder("打开工作区", |path| {
-                show_result(switch_workspace(&path))
-            });
+            choose_folder("打开工作区", |path| open_in_this_window(&path));
         }),
         MenuItem::new("在新窗口打开工作区…").on_select(|| {
             choose_folder("在新窗口打开工作区", |path| {
@@ -181,7 +197,7 @@ pub(super) fn open() {
                     crate::paths::display_path(&path),
                     [
                         MenuItem::new("打开")
-                            .on_select(move || show_result(switch_workspace(Path::new(&path)))),
+                            .on_select(move || open_in_this_window(Path::new(&path))),
                         MenuItem::new("在新窗口打开")
                             .on_select(move || change_workspace_in_new_window(Path::new(&other))),
                     ],
@@ -209,7 +225,7 @@ pub(super) fn open() {
         items.push(MenuItem::submenu(
             "隐藏仓库",
             visible.into_iter().map(|repo| {
-                MenuItem::new(repo.name).on_select(move || {
+                MenuItem::new(repo.label().to_owned()).on_select(move || {
                     app_signal().update(|s| {
                         if !s.cfg.is_repo_hidden(&repo.id) {
                             s.cfg.hidden_repos.push(repo.id.clone());
@@ -224,8 +240,8 @@ pub(super) fn open() {
     if !hidden.is_empty() {
         items.push(MenuItem::submenu(
             "恢复隐藏仓库",
-            hidden.into_iter().map(|id| {
-                MenuItem::new(id.clone()).on_select(move || {
+            hidden.into_iter().map(|(id, label)| {
+                MenuItem::new(label).on_select(move || {
                     app_signal().update(|s| s.cfg.hidden_repos.retain(|item| item != &id));
                     state::save_config_quiet();
                     state::refresh_workspace_async(None);

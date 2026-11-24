@@ -109,7 +109,7 @@ fn run(operations: Vec<(RepoInfo, Option<BranchTarget>)>) {
                             }
                         }),
                 };
-                results.push((repo.name, result));
+                results.push((repo.label().to_owned(), result));
             }
             results
         },
@@ -267,7 +267,7 @@ fn matrix_rows() -> impl IntoElement {
                             .items_center()
                             .gap(px(8.0))
                             .child(
-                                text(format!("{} · {}", row.repo.name, row.current))
+                                text(format!("{} · {}", row.repo.label(), row.current))
                                     .text_color(p.text_primary),
                             )
                             .child(action(
@@ -281,7 +281,7 @@ fn matrix_rows() -> impl IntoElement {
                     Ok(branches) => {
                         for branch in branches {
                             if !branch.name.to_lowercase().contains(&query)
-                                && !row.repo.name.to_lowercase().contains(&query)
+                                && !row.repo.label().to_lowercase().contains(&query)
                             {
                                 continue;
                             }

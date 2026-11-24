@@ -70,6 +70,82 @@ fn init_sample_repo(dir: &Path) {
 }
 
 #[test]
+fn git_whole_file_staging_is_literal_before_the_first_commit() {
+    let temp = TempDirGuard::new("stage-unborn");
+    let repo = temp.path();
+    init_sample_repo(repo);
+    let selected = "report[1].txt";
+    let other = "report1.txt";
+    fs::write(repo.join(selected), "chosen\n").unwrap();
+    fs::write(repo.join(other), "already staged\n").unwrap();
+    git_cmd(repo, &["add", "--", other]);
+
+    let target = [selected.to_owned()];
+    let cached = || git::run_git_string(repo, &["diff", "--cached", "--name-only"]).unwrap();
+    git::stage_or_unstage_files(repo.to_str().unwrap(), &target, true).unwrap();
+    assert_eq!(cached().lines().count(), 2);
+    git::stage_or_unstage_files(repo.to_str().unwrap(), &target, false).unwrap();
+    assert_eq!(cached(), "report1.txt\n");
+    assert_eq!(fs::read_to_string(repo.join(selected)).unwrap(), "chosen\n");
+    assert_eq!(fs::read_to_string(repo.join(other)).unwrap(), "already staged\n");
+}
+
+#[test]
+fn git_review_distinguishes_absent_entries_and_intent_to_add() {
+    let temp = TempDirGuard::new("review-absent-git-entries");
+    let root = temp.path();
+    init_sample_repo(root);
+    let path = "sample.txt";
+    let text = "actual file text\n";
+    fs::write(root.join(path), text).unwrap();
+    let repos = git::discover_workspace_repos(root.to_str().unwrap(), &[]);
+    let diff = |staged| {
+        let status = git::inspect_repo(&repos[0]);
+        let file = status.files.iter().find(|file| file.path == path).unwrap();
+        git::read_review_change(file, staged).unwrap()
+    };
+
+    git_cmd(root, &["add", "-N", path]);
+    let intent = diff(false);
+    assert!(intent.old_text.is_empty());
+    assert_eq!(intent.new_text, text);
+    assert!(intent.editable);
+
+    git_cmd(root, &["add", path]);
+    let initial = diff(true);
+    assert!(initial.old_text.is_empty());
+    assert_eq!(initial.new_text, text);
+
+    git_cmd(root, &["commit", "-m", "Initial version"]);
+    git_cmd(root, &["rm", path]);
+    let deletion = diff(true);
+    assert_eq!(deletion.old_text, text);
+    assert!(deletion.new_text.is_empty());
+}
+
+#[test]
+fn git_status_preserves_unborn_detached_and_upstream_counts() {
+    let temp = TempDirGuard::new("status-branch-cases");
+    let root = temp.path();
+    init_sample_repo(root);
+    let repos = git::discover_workspace_repos(root.to_str().unwrap(), &[]);
+    let status = || git::inspect_repo(&repos[0]);
+    assert_eq!(status().branch, "main");
+    git_cmd(root, &["commit", "--allow-empty", "-m", "First commit"]);
+    git_cmd(root, &["remote", "add", "origin", "."]);
+    git_cmd(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    git_cmd(root, &["branch", "--set-upstream-to=origin/main"]);
+    git_cmd(root, &["commit", "--allow-empty", "-m", "Local change"]);
+    let tracking = status();
+    assert_eq!((tracking.branch.as_str(), tracking.upstream.as_str()), ("main", "origin/main"));
+    assert_eq!((tracking.ahead, tracking.behind), (1, 0));
+    git_cmd(root, &["checkout", "--detach", "HEAD^"]);
+    let detached = status();
+    assert!(detached.detached);
+    assert_eq!(detached.branch, "HEAD");
+}
+
+#[test]
 fn config_compatibility_preserves_unknown_fields_and_defaults() {
     let tmp = TempDirGuard::new("cfg");
     let path = tmp.path().join("config.json");
@@ -243,7 +319,7 @@ fn git_multi_repo_mani_status_unicode_spaces_and_rename() {
     assert!(renamed.staged);
 
     // 暂存重命名 Diff 必须使用 orig_path 读取 HEAD 旧版本！
-    let staged_diff = git::read_review_change(renamed, true);
+    let staged_diff = git::read_review_change(renamed, true).unwrap();
     assert_eq!(staged_diff.old_path, "old_name.go");
     assert_eq!(staged_diff.new_path, "new_name.go");
     assert!(staged_diff.old_text.contains("var x = 1"));
@@ -352,6 +428,11 @@ fn git_checked_save_keeps_crlf_permissions_rejects_deleted_and_records_history()
 #[test]
 fn git_read_worktree_rejects_over_2mib_and_binary() {
     let tmp = TempDirGuard::new("limits");
+    let empty = tmp.path().join("empty.txt");
+    fs::write(&empty, "").unwrap();
+    let r_empty = git::read_review_worktree(&empty);
+    assert!(r_empty.version.exists && r_empty.editable && r_empty.text.is_empty());
+
     let big = tmp.path().join("big.txt");
     let big_bytes = vec![b'a'; git::MAX_REVIEW_BYTES + 16];
     fs::write(&big, &big_bytes).unwrap();
@@ -364,6 +445,17 @@ fn git_read_worktree_rejects_over_2mib_and_binary() {
     let r_bin = git::read_review_worktree(&bin);
     assert!(r_bin.binary);
     assert!(!r_bin.editable);
+
+    #[cfg(unix)]
+    {
+        let link = tmp.path().join("link.txt");
+        std::os::unix::fs::symlink(&empty, &link).unwrap();
+        let r_link = git::read_review_worktree(&link);
+        assert!(r_link.version.exists && !r_link.editable && r_link.text.is_empty());
+        fs::remove_file(&empty).unwrap();
+        let missing = git::read_review_worktree(&link);
+        assert!(!missing.version.exists && !missing.editable);
+    }
 }
 
 #[test]
@@ -446,6 +538,7 @@ fn watcher_classifies_multi_repo_hints_and_ignores_build_dirs() {
     );
     assert!(hint.worktree_changed);
     assert!(hint.git_meta_changed);
+    assert!(hint.history_repo_ids.is_empty());
     assert!(hint.repo_ids.contains("svc-a"));
     assert!(hint.repo_ids.contains("svc-b"));
 
@@ -461,6 +554,50 @@ fn watcher_classifies_multi_repo_hints_and_ignores_build_dirs() {
     assert!(h_nested.worktree_changed);
     assert_eq!(h_nested.changed_paths.len(), 1);
     assert!(h_nested.changed_paths[0].ends_with("agent.txt"));
+}
+
+#[test]
+fn watcher_routes_linked_worktree_metadata_to_the_right_repositories() {
+    let temp = TempDirGuard::new("linked-watch");
+    let primary = temp.path().join("build/primary");
+    let workspace = temp.path().join("worktrees");
+    let first = workspace.join("first");
+    let second = workspace.join("second");
+    init_sample_repo(&primary);
+    git_cmd(&primary, &["commit", "--allow-empty", "-m", "Initial history"]);
+    for linked in [&first, &second] {
+        git_cmd(&primary, &["worktree", "add", "--detach", linked.to_str().unwrap()]);
+    }
+    let repos = git::discover_workspace_repos(workspace.to_str().unwrap(), &[]);
+    let common = primary.join(".git");
+    let first_git_dir = git::run_git_string(&first, &["rev-parse", "--absolute-git-dir"]).unwrap();
+    let first_git_dir = Path::new(first_git_dir.trim_end());
+    let git_hint = |paths: &[PathBuf]| classify_watch_hints(&workspace, &repos, paths);
+
+    let private = git_hint(&[first_git_dir.join("HEAD"), first_git_dir.join("index")]);
+    assert!(!private.worktree_changed);
+    assert!(private.git_meta_changed);
+    assert_eq!(private.repo_ids, ["first".to_owned()].into());
+    assert_eq!(private.history_repo_ids, ["first".to_owned()].into());
+
+    for reference in ["refs/heads/build/branch", "refs/tags/archive.tmp", "packed-refs", "reftable/tables.list"] {
+        let shared = git_hint(&[common.join(reference)]);
+        assert!(!shared.worktree_changed);
+        assert!(shared.git_meta_changed);
+        assert_eq!(shared.repo_ids, ["first".to_owned(), "second".to_owned()].into());
+        assert_eq!(shared.history_repo_ids, shared.repo_ids);
+    }
+
+    let index_only = git_hint(&[first_git_dir.join("index")]);
+    assert!(index_only.git_meta_changed);
+    assert!(index_only.history_repo_ids.is_empty());
+
+    assert!(git_hint(&[
+        common.join("index"),
+        common.join("objects/ab/new-object"),
+        first_git_dir.join("index.lock"),
+        primary.join("README.md"),
+    ]).is_empty());
 }
 
 #[test]
@@ -605,13 +742,13 @@ fn git_large_outputs_over_64kib_and_near_2mib_tracked_diff() {
         .iter()
         .find(|f| f.path == "big_tracked.txt")
         .expect("big_tracked.txt modified");
-    let diff = git::read_review_change(cf, false);
+    let diff = git::read_review_change(cf, false).unwrap();
     assert!(
         t0.elapsed().as_secs_f64() < 5.0,
         "read_review_change >64KiB should never hit 20s pipe deadlock, took {:?}",
         t0.elapsed()
     );
-    assert!(!diff.too_large && !diff.binary);
+    assert!(diff.can_compare_text());
     assert_eq!(diff.old_text.len(), big_v1.len());
     assert_eq!(diff.new_text.len(), big_v2.len());
     assert!(diff.old_text.contains("line_15000:"));

@@ -8,13 +8,13 @@ use crate::git::{ChangedFile, RepoStatus, WorkspaceFile};
 use crate::paths::{basename, display_path};
 use crate::state::{
     self, FocusZone, LeftTab, app_signal, click_change_row, current_palette, open_code_file,
-    open_working_diff, set_group_checked, stage_selected_change_sync,
+    open_working_diff, set_group_checked, stage_files_action,
     tri_state_for_keys,
 };
 use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::icons::{self, *};
 
-use super::left_tool_window::{ToolWindow, button};
+use super::left_tool_window::{ToolWindow, button, tree_scroll};
 
 #[derive(Default)]
 struct ChangeDirNode {
@@ -337,11 +337,15 @@ fn open_narrow_overflow_menu() {
 
 pub fn commit_pane() -> impl IntoElement {
     let tool = ToolWindow::new(LeftTab::Commit);
-    let change_rows = scroll()
-        .test_id("changes-tree-rows")
-        .flex_none()
-        .h_full()
-        .min_w(relative(1.0));
+    let selected_row = element_ref();
+    let selected_file = computed(|| app_signal().with(|s| {
+        s.change_selection.as_ref().map(|item| (item.file.key(), item.staged))
+    }));
+    effect(move || {
+        if selected_file.get().is_some() {
+            super::reveal_selected_row(selected_row);
+        }
+    });
     let selected_keys = computed(|| app_signal().with(|s| {
         s.statuses.iter()
             .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)).map(ChangedFile::key))
@@ -441,11 +445,10 @@ pub fn commit_pane() -> impl IntoElement {
         )
         // 双分区变更列表
         .child(
-            scroll()
-                .horizontal()
-                .test_id("changes-tree-scroll")
-                .flex_1()
-                .child(change_rows.child(dynamic(move || {
+            tree_scroll(
+                "changes-tree-scroll",
+                "changes-tree-rows",
+                dynamic(move || {
                     let p = current_palette();
                     let snapshot = app_signal().with(|s| {
                         (
@@ -543,6 +546,7 @@ pub fn commit_pane() -> impl IntoElement {
                                 &collapsed_repos,
                                 &collapsed_dirs,
                                 tree_focused,
+                                selected_row,
                                 p,
                             )
                             .into_element(),
@@ -561,6 +565,7 @@ pub fn commit_pane() -> impl IntoElement {
                                 &collapsed_repos,
                                 &collapsed_dirs,
                                 tree_focused,
+                                selected_row,
                                 p,
                             )
                             .into_element(),
@@ -568,7 +573,8 @@ pub fn commit_pane() -> impl IntoElement {
                     }
 
                     view().flex_col().py(px(4.0)).children(sections).into_element()
-                }))),
+                }),
+            ),
         )
         .child(super::commit_form::form())
     )
@@ -586,6 +592,7 @@ fn render_section(
     collapsed_repos: &std::collections::HashSet<String>,
     collapsed_dirs: &std::collections::HashSet<String>,
     tree_focused: bool,
+    selected_row: ElementRef,
     p: Palette,
 ) -> impl IntoElement {
     let section_keys: Vec<String> = repo_groups
@@ -702,7 +709,7 @@ fn render_section(
                                 ),
                         )
                         .child(
-                            text(st.repo.name.clone())
+                            text(st.repo.label().to_owned())
                                 .flex_none()
                                 .text_size(px(11.5))
                                 .font_weight(FontWeight::MEDIUM)
@@ -728,6 +735,7 @@ fn render_section(
                                 selection,
                                 checked_set,
                                 tree_focused,
+                                selected_row,
                                 p,
                             )
                             .into_element(),
@@ -746,6 +754,7 @@ fn render_section(
                         checked_set,
                         collapsed_dirs,
                         tree_focused,
+                        selected_row,
                         p,
                         &mut children,
                     );
@@ -769,6 +778,7 @@ fn render_change_dir_children(
     checked_set: &std::collections::HashSet<String>,
     collapsed_dirs: &std::collections::HashSet<String>,
     tree_focused: bool,
+    selected_row: ElementRef,
     p: Palette,
     out: &mut Vec<AnyElement>,
 ) {
@@ -901,6 +911,7 @@ fn render_change_dir_children(
                 checked_set,
                 collapsed_dirs,
                 tree_focused,
+                selected_row,
                 p,
                 out,
             );
@@ -917,6 +928,7 @@ fn render_change_dir_children(
                 selection,
                 checked_set,
                 tree_focused,
+                selected_row,
                 p,
             )
             .into_element(),
@@ -933,6 +945,7 @@ fn render_change_file_row(
     selection: &Option<state::ChangeSelection>,
     checked_set: &std::collections::HashSet<String>,
     tree_focused: bool,
+    selected_row: ElementRef,
     p: Palette,
 ) -> impl IntoElement {
     let key = cf.key();
@@ -977,6 +990,7 @@ fn render_change_file_row(
 
     view()
         .test_id(&test_id_val)
+        .when(is_selected, |row| row.element_ref(&selected_row))
         .h(px(24.0))
         .pl(px(indent))
         .pr(px(8.0))
@@ -1011,6 +1025,7 @@ fn render_change_file_row(
             };
             let f_diff = f.clone();
             let f_open = f.clone();
+            let f_stage = f.clone();
             let mut items = vec![
                 MenuItem::new("查看差异")
                     .shortcut("mod+d")
@@ -1030,7 +1045,7 @@ fn render_change_file_row(
                     );
                 }),
                 MenuItem::new(if is_staged { "取消暂存" } else { "暂存" }).on_select(move || {
-                    stage_selected_change_sync(!is_staged);
+                    stage_files_action(vec![f_stage.clone()], !is_staged);
                 }),
                 {
                     let file = f.clone();
@@ -1046,8 +1061,9 @@ fn render_change_file_row(
             ];
             if f.conflict {
                 let repo = std::path::PathBuf::from(&f.repo_path);
+                let path = f.path.clone();
                 items.insert(0, MenuItem::new("解决冲突…").on_select(move || {
-                    super::conflict_workbench::open(super::conflict_workbench::Source::Repo(repo.clone()));
+                    super::conflict_workbench::open_file(repo.clone(), path.clone());
                 }));
             }
             items.extend(build_location_menu_items(

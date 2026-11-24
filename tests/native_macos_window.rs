@@ -29,13 +29,14 @@ mod macos {
     use nsh_platform_macos as platform;
     use platform::objc2::{MainThreadMarker, MainThreadOnly, Message, rc::Retained, sel};
     use platform::objc2_app_kit::{
-        NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
+        NSAccessibility, NSAccessibilityElement, NSApplication, NSApplicationActivationPolicy, NSBackingStoreType,
         NSBitmapImageFileType, NSBitmapImageRepPropertyKey, NSEvent, NSEventModifierFlags,
-        NSEventType, NSMenuItem, NSPasteboard, NSPasteboardTypeString, NSView, NSWindow,
+        NSEventType, NSMenuItem, NSPanel, NSPasteboard, NSPasteboardTypeString, NSScreen, NSView, NSWindow,
         NSWindowStyleMask,
     };
     use platform::objc2_foundation::{
-        NSDate, NSDictionary, NSPoint, NSProcessInfo, NSRect, NSRunLoop, NSSize, NSString,
+        NSDate, NSDictionary, NSIntersectionRect, NSNumber, NSPoint, NSProcessInfo, NSRect, NSRunLoop,
+        NSSize, NSString,
     };
 
     fn pasteboard_available() -> bool {
@@ -205,42 +206,111 @@ mod macos {
         send_click_at(window,center_in_window(target),clicks);
     }
 
+    fn send_wheel(window: &NSWindow, input_surface: &NSView, point: NSPoint) {
+        dispatch_wheel(window, input_surface, point);
+        pump(400);
+    }
+
+    fn dispatch_wheel(window: &NSWindow, input_surface: &NSView, point: NSPoint) {
+        dispatch_wheel_delta(window, input_surface, point, 0, 12);
+    }
+
+    fn dispatch_wheel_delta(window: &NSWindow, input_surface: &NSView, point: NSPoint, dx: i32, dy: i32) {
+        use std::ffi::c_void;
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGEventCreateScrollWheelEvent2(source: *const c_void, units: u32, wheels: u32,
+                wheel1: i32, wheel2: i32, wheel3: i32) -> *mut c_void;
+            fn CGEventSetLocation(event: *mut c_void, location: NSPoint);
+            fn CGEventSetTimestamp(event: *mut c_void, stamp: u64);
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFRelease(value: *const c_void);
+        }
+        // Windowless NSEvents use screen coordinates. Inject a point that the
+        // input surface reads as window-relative, as NSH's scripted wheel does.
+        let height = NSScreen::screens(MainThreadMarker::from(window)).firstObject()
+            .expect("screen for native test").frame().size.height;
+        let event: Option<Retained<NSEvent>> = unsafe {
+            let cg = CGEventCreateScrollWheelEvent2(std::ptr::null(), 1, 2, -dy, -dx, 0);
+            assert!(!cg.is_null());
+            CGEventSetLocation(cg, NSPoint::new(point.x, height - point.y));
+            CGEventSetTimestamp(cg, (NSProcessInfo::processInfo().systemUptime() * 1e9) as u64);
+            let event = platform::objc2::msg_send![platform::objc2::class!(NSEvent), eventWithCGEvent: cg];
+            CFRelease(cg);
+            event
+        };
+        let event = event.expect("synthesized wheel event");
+        let location = event.locationInWindow();
+        assert!((location.x - point.x).abs() < 1.0 && (location.y - point.y).abs() < 1.0);
+        assert!(dx == 0 || event.scrollingDeltaX().signum() == -f64::from(dx).signum());
+        assert!(dy == 0 || event.scrollingDeltaY().signum() == -f64::from(dy).signum());
+        input_surface.scrollWheel(&event);
+    }
+
+    fn move_pointer(window: &NSWindow, input_surface: &NSView, point: NSPoint) {
+        let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::MouseMoved, point, NSEventModifierFlags::empty(),
+            NSProcessInfo::processInfo().systemUptime(), window.windowNumber(), None, 0, 0, 0.0,
+        ).unwrap();
+        input_surface.mouseMoved(&event);
+    }
+
+    fn left_button_event(window: &NSWindow, pt: NSPoint, clicks: isize, down: bool) -> Retained<NSEvent> {
+        let kind = if down { NSEventType::LeftMouseDown } else { NSEventType::LeftMouseUp };
+        NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            kind,
+            pt,
+            NSEventModifierFlags::empty(),
+            NSProcessInfo::processInfo().systemUptime(),
+            window.windowNumber(),
+            None,
+            0,
+            clicks,
+            if down { 1.0 } else { 0.0 },
+        )
+        .expect("left mouse event")
+    }
+
+    fn send_left_button(window: &NSWindow, pt: NSPoint, clicks: isize, down: bool) {
+        window.sendEvent(&left_button_event(window, pt, clicks, down));
+    }
+
     fn send_click_at(window: &NSWindow, pt: NSPoint, clicks: isize) {
         for c in 1..=clicks {
-            let ts = NSProcessInfo::processInfo().systemUptime();
-            let down = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                NSEventType::LeftMouseDown,
-                pt,
-                NSEventModifierFlags::empty(),
-                ts,
-                window.windowNumber(),
-                None,
-                0,
-                c,
-                1.0,
-            )
-            .expect("mouse down event");
-            let up = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                NSEventType::LeftMouseUp,
-                pt,
-                NSEventModifierFlags::empty(),
-                ts + 0.01,
-                window.windowNumber(),
-                None,
-                0,
-                c,
-                0.0,
-            )
-            .expect("mouse up event");
-            window.sendEvent(&down);
+            send_left_button(window, pt, c, true);
             pump(25);
-            window.sendEvent(&up);
+            send_left_button(window, pt, c, false);
             pump(40);
         }
         pump(120);
     }
 
     fn choose_diff_context_item(window: &NSWindow, editor: &NSView, label: &'static str) {
+        choose_native_menu_item(label, || {
+            let bounds = editor.bounds();
+            let y = if editor.isFlipped() {
+                9.0
+            } else {
+                bounds.size.height - 9.0
+            };
+            let point = editor.convertPoint_toView(
+                NSPoint::new(bounds.origin.x + 96.0, bounds.origin.y + y),
+                None,
+            );
+            for (kind, pressure) in [(NSEventType::RightMouseDown, 1.0), (NSEventType::RightMouseUp, 0.0)] {
+                let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                    kind, point, NSEventModifierFlags::empty(), NSProcessInfo::processInfo().systemUptime(),
+                    window.windowNumber(), None, 0, 1, pressure,
+                ).unwrap();
+                window.sendEvent(&event);
+                pump(60);
+            }
+        });
+    }
+
+    fn choose_native_menu_item(label: &'static str, open_menu: impl FnOnce()) {
         use std::ptr::NonNull;
         use std::sync::{
             Arc,
@@ -249,6 +319,15 @@ mod macos {
 
         use platform::objc2_app_kit::{NSMenu, NSMenuDidBeginTrackingNotification};
         use platform::objc2_foundation::{NSNotification, NSNotificationCenter};
+
+        fn choose(menu: &NSMenu, title: &NSString) -> bool {
+            let index = menu.indexOfItemWithTitle(title);
+            if index >= 0 {
+                menu.performActionForItemAtIndex(index);
+                return true;
+            }
+            menu.itemArray().iter().filter_map(|item| item.submenu()).any(|child| choose(&child, title))
+        }
 
         let chosen = Arc::new(AtomicBool::new(false));
         let did_choose = chosen.clone();
@@ -259,9 +338,7 @@ mod macos {
             else {
                 return;
             };
-            let index = menu.indexOfItemWithTitle(&NSString::from_str(label));
-            if index >= 0 {
-                menu.performActionForItemAtIndex(index);
+            if choose(&menu, &NSString::from_str(label)) {
                 did_choose.store(true, Ordering::Relaxed);
             }
             let app = NSApplication::sharedApplication(MainThreadMarker::new().unwrap());
@@ -281,26 +358,9 @@ mod macos {
                 &handle_menu,
             )
         };
-        let bounds = editor.bounds();
-        let y = if editor.isFlipped() {
-            9.0
-        } else {
-            bounds.size.height - 9.0
-        };
-        let point = editor.convertPoint_toView(
-            NSPoint::new(bounds.origin.x + 96.0, bounds.origin.y + y),
-            None,
-        );
-        for (kind, pressure) in [(NSEventType::RightMouseDown, 1.0), (NSEventType::RightMouseUp, 0.0)] {
-            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                kind, point, NSEventModifierFlags::empty(), NSProcessInfo::processInfo().systemUptime(),
-                window.windowNumber(), None, 0, 1, pressure,
-            ).unwrap();
-            window.sendEvent(&event);
-            pump(60);
-        }
+        open_menu();
         unsafe { center.removeObserver((*observer).as_ref()) };
-        assert!(chosen.load(Ordering::Relaxed), "missing Diff menu item {label}");
+        assert!(chosen.load(Ordering::Relaxed), "missing menu item {label}");
     }
 
     fn make_key_event(
@@ -374,20 +434,11 @@ mod macos {
     fn save_view_png(view: &NSView, out_path: &Path) {
         pump(180);
         let bounds = view.bounds();
-        let rep = view
-            .bitmapImageRepForCachingDisplayInRect(bounds)
-            .expect("bitmapImageRepForCachingDisplayInRect");
-        view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
-        let props =
-            NSDictionary::<NSBitmapImageRepPropertyKey, platform::objc2::runtime::AnyObject>::new();
-        let data = unsafe {
-            rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)
-        }
-        .expect("PNG encode");
+        let data = snapshot_png(view, bounds);
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent).unwrap();
         }
-        fs::write(out_path, data.to_vec()).expect("write PNG");
+        fs::write(out_path, &data).expect("write PNG");
         println!(
             "SCREENSHOT saved={} bytes={} bounds={}x{}",
             out_path.display(),
@@ -395,6 +446,19 @@ mod macos {
             bounds.size.width,
             bounds.size.height
         );
+    }
+
+    fn snapshot_png(view: &NSView, bounds: NSRect) -> Vec<u8> {
+        let rep = view
+            .bitmapImageRepForCachingDisplayInRect(bounds)
+            .expect("bitmapImageRepForCachingDisplayInRect");
+        view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+        let props =
+            NSDictionary::<NSBitmapImageRepPropertyKey, platform::objc2::runtime::AnyObject>::new();
+        unsafe {
+            rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &props)
+        }
+        .expect("PNG encode").to_vec()
     }
 
     fn copy_dir_all(src: &Path, dst: &Path) {
@@ -605,6 +669,19 @@ mod macos {
         use sha2::Digest;
         println!("FILE_SHA256 {:x}", sha2::Sha256::digest(fs::read(repo.join("batch3-ticket.txt")).unwrap()));
         click(row);
+        send_key(app, window, "s", "s", 1, empty);
+        wait("change-row-staged-batch3-ticket.txt");
+        let staged = git_run(repo, &["show", ":batch3-ticket.txt"]);
+        assert!(staged.contains("edited first") && staged.contains("edited last"));
+        click("change-row-staged-batch3-ticket.txt");
+        send_key(app, window, "u", "u", 32, empty);
+        wait(row);
+        let staged = git_run(repo, &["show", ":batch3-ticket.txt"]);
+        assert!(!staged.contains("edited first") && !staged.contains("edited last"));
+        assert!(fs::read_to_string(repo.join("batch3-ticket.txt")).unwrap().contains("edited last"));
+        println!("BATCH3_NATIVE_WHOLE_FILE_STAGING ok");
+
+        click(row);
         send_key(app, window, "d", "d", 2, command);
         let editor = "working-diff-new-editor";
         wait(editor);
@@ -725,6 +802,17 @@ mod macos {
             wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
             send_click(window, &view_with_id(root, id).unwrap(), 1);
         };
+        if std::env::var_os("NEMOROUS_NATIVE_DESKTOP_PATH").is_some() {
+            click("rail-run-btn");
+            click("run-start");
+            wait_until("Homebrew tool started from a desktop PATH", Duration::from_secs(6), || {
+                view_with_id(root, "workbench-run-output").is_some_and(|view| a11y_contains(&view, "ripgrep "))
+            });
+            wait_until("Homebrew tool exited successfully", Duration::from_secs(6), || a11y_contains(root, "退出码 0"));
+            save_window_png(window, &evidence.join("native-desktop-path.png"));
+            println!("NATIVE_DESKTOP_PATH PASS");
+            return;
+        }
         click("rail-terminal-btn");
         click("terminal-screen");
         let command = "echo PTY > terminal-proof";
@@ -811,7 +899,7 @@ mod macos {
         click("code-git-history-btn");
         wait_until("file history opened", Duration::from_secs(6), || {
             view_with_id(root, "git-file-history").is_some()
-                && view_with_id(root, "git-panel-options").is_some()
+                && view_with_id(root, "git-file-view-options").is_some()
         });
         assert!(!a11y_contains(root, "已加载 1 个提交"));
         save_window_png(window, &evidence.join("source-and-history.png"));
@@ -836,22 +924,45 @@ mod macos {
         let hover = |id: &str| {
             wait(id);
             let target = view_with_id(root, id).unwrap();
-            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                NSEventType::MouseMoved, center_in_window(&target), NSEventModifierFlags::empty(),
-                NSProcessInfo::processInfo().systemUptime(), window.windowNumber(), None, 0, 0, 0.0,
-            ).unwrap();
-            input_surface.mouseMoved(&event);
+            move_pointer(window, &input_surface, center_in_window(&target));
             pump(120);
         };
-        let command = NSEventModifierFlags::Command;
+        verify_left_tool_windows(window, root, evidence, width, click, hover, |label, code| {
+            send_key(app, window, label, label, code, NSEventModifierFlags::Command);
+        });
+    }
+
+    fn write_left_tool_files(repo: &Path) {
+        for (name, text) in [
+            ("src/nested/tracked.txt", "first\nbase\nlast\n"),
+            ("src/nested/deeper/leaf.txt", "leaf\n"),
+            ("docs/nested/guide.md", "guide\n"),
+        ] {
+            let path = repo.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+    }
+
+    fn verify_left_tool_windows(
+        window: &NSWindow,
+        root: &NSView,
+        evidence: &Path,
+        width: f32,
+        click: impl Fn(&str),
+        hover: impl Fn(&str),
+        command: impl Fn(&str, u16),
+    ) {
+        let wait = |id: &str| wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
         wait("changes-header-title-row");
         wait("change-row-unstaged-src/nested/tracked.txt");
         assert!((view_with_id(root, "commit-pane").unwrap().bounds().size.width - f64::from(width)).abs() < 2.0);
         if width < 150.0 {
             wait("changes-toolbar-more");
+            hover("changes-tree-scroll");
             wait("changes-hide");
             save_window_png(window, &evidence.join("commit-narrow.png"));
-            send_key(app, window, "1", "1", 18, command);
+            command("1", 18);
             wait("project-options-button");
             wait("project-hide");
             wait("project-workspace-root");
@@ -859,8 +970,11 @@ mod macos {
             save_window_png(window, &evidence.join("project-narrow.png"));
         } else {
             click("change-row-unstaged-src/nested/tracked.txt");
-            send_key(app, window, "d", "d", 2, command);
-            wait("working-diff-new-editor");
+            command("d", 2);
+            wait_until("tracked.txt working Diff", Duration::from_secs(6), || {
+                view_with_id(root, "working-diff-new-editor")
+                    .is_some_and(|editor| a11y_contains(&editor, "working edit"))
+            });
             hover("working-diff-new-editor");
             assert!(view_with_id(root, "changes-title-actions").is_none());
             let tree = view_with_id(root, "changes-tree-scroll").unwrap().frame();
@@ -872,16 +986,26 @@ mod macos {
             assert!(view_with_id(root, "changes-title-actions").is_none());
             wait("changes-refresh-btn");
             wait("changes-rollback-btn");
-            send_key(app, window, "0", "0", 29, command);
-            wait("changes-title-actions");
+            command("0", 29);
+            wait_until("Commit title actions after Command-0", Duration::from_secs(6), || {
+                view_with_id(root, "changes-title-actions").is_some()
+            });
+            let diff_width = view_with_id(root, "working-diff-new-editor").unwrap().bounds().size.width;
             click("changes-hide");
-            wait("working-diff-new-editor");
-            send_key(app, window, "0", "0", 29, command);
-            wait("changes-title-actions");
+            pump(100);
+            save_window_png(window, &evidence.join("commit-after-hide.png"));
+            wait_until("Commit tool window hidden", Duration::from_secs(6), || {
+                view_with_id(root, "working-diff-new-editor")
+                    .is_some_and(|editor| editor.bounds().size.width > diff_width + f64::from(width) * 0.25)
+            });
+            command("0", 29);
+            wait_until("Commit title actions after reopening", Duration::from_secs(6), || {
+                view_with_id(root, "changes-title-actions").is_some()
+            });
 
             click("diff-jump-source-btn");
             wait("code-editor-view");
-            send_key(app, window, "1", "1", 18, command);
+            command("1", 18);
             click("editor-tab-file-src/nested/tracked.txt");
             hover("code-editor-view");
             assert!(view_with_id(root, "project-title-actions").is_none());
@@ -894,12 +1018,18 @@ mod macos {
             wait("project-file-src/nested/deeper/leaf.txt");
             assert!(view_with_id(root, "project-file-docs/nested/guide.md").is_none());
             click("project-collapse-all");
-            assert!(view_with_id(root, "project-file-src/nested/tracked.txt").is_none());
+            wait_until("Project tree collapsed", Duration::from_secs(6), || {
+                view_with_id(root, "project-file-src/nested/tracked.txt").is_none()
+            });
             click("project-locate-current");
             wait("project-file-src/nested/tracked.txt");
             save_window_png(window, &evidence.join("project-350.png"));
+            let code_width = view_with_id(root, "code-editor-view").unwrap().bounds().size.width;
             click("project-hide");
-            wait("code-editor-view");
+            wait_until("Project tool window hidden", Duration::from_secs(6), || {
+                view_with_id(root, "code-editor-view")
+                    .is_some_and(|editor| editor.bounds().size.width > code_width + f64::from(width) * 0.5)
+            });
             click("rail-project-btn");
             wait("project-file-src/nested/tracked.txt");
         }
@@ -953,6 +1083,16 @@ mod macos {
         click("diff-layout-toggle");
         wait("working-diff-unified-editor");
         save_window_png(window, &evidence.join("diff-single.png"));
+        if std::env::var_os("NEMOROUS_NATIVE_DIFF_INLINE").is_some() {
+            for (label, mode) in [("按词", "word"), ("按字符", "char"), ("关闭", "none")] {
+                choose_native_menu_item(label, || click("diff-options-btn"));
+                wait_until(mode, Duration::from_secs(4), || {
+                    nemorous::config::load_from(config).is_ok_and(|cfg| cfg.diff_inline_mode == mode)
+                });
+                save_view_png(&view_with_id(root, "working-diff-unified-editor").unwrap(),
+                    &evidence.join(format!("diff-inline-{mode}.png")));
+            }
+        }
         println!("NATIVE_DARCULA PASS");
     }
 
@@ -1001,6 +1141,7 @@ mod macos {
             &["config", "user.name", "Nemorous QA"],
             &["config", "user.email", "native@example.invalid"],
             &["config", "commit.gpgsign", "false"],
+            &["config", "gc.auto", "0"],
         ] {
             git_run(repo, args);
         }
@@ -1009,7 +1150,12 @@ mod macos {
             fs::create_dir_all(&path).unwrap();
             fs::write(path.join("application.yml"), "review: off\n").unwrap();
         }
-        git_run(repo, &["add", "config"]);
+        let review_lines = |word| (1..=140)
+            .map(|n| format!("{word} {n:03} {}\n", "review".repeat(19)))
+            .collect::<String>();
+        let review_file = repo.join("review-lines.txt");
+        fs::write(&review_file, review_lines("baseline")).unwrap();
+        git_run(repo, &["add", "config", "review-lines.txt"]);
         git_run(repo, &["commit", "-m", "Set up review configuration"]);
         for index in 1..=96 {
             git_run(repo, &["commit", "--quiet", "--allow-empty", "-m", &format!("Checkpoint {index:02}")]);
@@ -1026,6 +1172,7 @@ mod macos {
         git_run(repo, &["commit", "-m", "Describe the review workflow"]);
         git_run(repo, &["merge", "--no-ff", "-m", "Merge agent review", "agent/review"]);
         fs::write(repo.join("README.md"), "# Review fixture\nLocal notes\n").unwrap();
+        fs::write(review_file, review_lines("working")).unwrap();
     }
 
     fn resident_bytes() -> u64 {
@@ -1038,8 +1185,39 @@ mod macos {
         unsafe { info.assume_init() }.pti_resident_size
     }
 
-    fn git_log_review(app: &NSApplication, window: &NSWindow, root: &NSView, evidence: &Path) {
-        let wait = |id| {
+    fn setup_scope_read_gate(gate: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = gate.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let wrapper = bin.join("git");
+        fs::write(&wrapper, r#"#!/bin/sh
+case " $* " in
+  *" ls-tree "*" review-lines.txt ")
+    gate="$NEMOROUS_NATIVE_SCOPE_GATE"
+    if [ -f "$gate/hold" ] && mkdir "$gate/reading" 2>/dev/null; then
+      count=0
+      while [ -f "$gate/hold" ] && [ "$count" -lt 230 ]; do
+        sleep 0.02
+        count=$((count + 1))
+      done
+    fi
+    ;;
+esac
+exec /usr/bin/git "$@"
+"#).unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let paths = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap();
+        // Set up the subprocess fixture before starting the app and its workers.
+        unsafe {
+            std::env::set_var("PATH", paths);
+            std::env::set_var("NEMOROUS_NATIVE_SCOPE_GATE", gate);
+        }
+    }
+
+    fn git_log_review(app: &NSApplication, window: &NSWindow, root: &NSView, repo: &Path, evidence: &Path, scope_gate: &Path) {
+        let wait = |id: &str| {
             wait_until(id, Duration::from_secs(6), || view_with_id(root, id).is_some());
             view_with_id(root, id).unwrap()
         };
@@ -1049,14 +1227,51 @@ mod macos {
         let before = resident_bytes();
         send_key(app, window, "9", "9", 25, command);
         let pane = wait("git-bottom-pane");
-        let file = wait("git-commit-file-config/development/application.yml");
+        wait("git-log-view-options");
+        wait("git-file-view-options");
+        wait("git-commit-file-config/development/application.yml");
         wait("git-commit-file-config/production/application.yml");
+        git_run(repo, &["tag", "native-external-refresh.tmp"]);
+        wait_until("external tag in Git log with unchanged HEAD", Duration::from_secs(6), || {
+            a11y_contains(&pane, "tag: native-external-refresh.tmp")
+        });
+        git_run(repo, &["commit", "--allow-empty", "-m", "External revision for automatic Git log"]);
+        wait_until("external commit appears in open Git log", Duration::from_secs(6), || {
+            a11y_contains(&pane, "External revision for automatic Git log")
+        });
+        wait("git-commit-file-config/production/application.yml");
+        println!("NATIVE_GIT_LOG_EXTERNAL_REFS_REFRESH PASS");
+        let choose_view_option = |id, label| {
+            choose_native_menu_item(label, || send_click(window, &wait(id), 1));
+        };
+        let tag_is_visible = || a11y_contains(&pane, "tag: native-external-refresh.tmp");
+        choose_view_option("git-log-view-options", "显示分支和标签");
+        wait_until("Git log refs hidden", Duration::from_secs(6), || !tag_is_visible());
+        choose_view_option("git-log-view-options", "显示分支和标签");
+        wait_until("Git log refs restored", Duration::from_secs(6), tag_is_visible);
+        choose_view_option("git-file-view-options", "按目录分组");
+        wait("git-file-directory-config/development");
+        wait("git-file-directory-config/production");
+        choose_view_option("git-file-view-options", "按目录分组");
+        wait_until("Git log files displayed without directory groups", Duration::from_secs(6), || {
+            view_with_id(root, "git-file-directory-config/development").is_none()
+        });
+        wait("git-commit-details");
+        choose_view_option("git-file-view-options", "显示提交详情");
+        wait_until("Git commit details hidden", Duration::from_secs(6), || {
+            view_with_id(root, "git-commit-details").is_none()
+        });
+        wait("git-commit-file-config/development/application.yml");
+        wait("git-commit-file-config/production/application.yml");
+        choose_view_option("git-file-view-options", "显示提交详情");
+        wait("git-commit-details");
+        println!("NATIVE_GIT_LOG_VIEW_OPTIONS PASS");
         assert!(view_with_id(root, "git-commit-file-README.md").is_none());
         pump(500);
         let after = resident_bytes();
         save_view_png(&pane, &evidence.join("git-log.png"));
 
-        send_click(window, &file, 1);
+        send_click(window, &wait("git-commit-file-config/development/application.yml"), 1);
         assert!(view_with_id(root, "commit-diff-pane").is_none());
         send_key(app, window, "d", "d", 2, command);
         wait("commit-diff-pane");
@@ -1064,14 +1279,1125 @@ mod macos {
         let with_diff = resident_bytes();
         save_window_png(window, &evidence.join("git-log-diff.png"));
         println!("NATIVE_GIT_LOG PASS rss_bytes closed={before} opened={after} with_diff={with_diff}");
+
+        send_click(window, &wait("diff-next-file"), 1);
+        wait_until("next committed file", Duration::from_secs(6), || {
+            view_with_id(root, "commit-diff-pane")
+                .is_some_and(|pane| a11y_contains(&pane, "config/production/application.yml"))
+        });
+        send_click(window, &wait("diff-prev-file"), 1);
+        wait_until("previous committed file", Duration::from_secs(6), || {
+            view_with_id(root, "commit-diff-pane")
+                .is_some_and(|pane| a11y_contains(&pane, "config/development/application.yml"))
+        });
+        println!("NATIVE_COMMIT_DIFF_FILE_NAVIGATION PASS");
+
+        for _ in 0..6 {
+            send_key(app, window, "[", "[", 33, command);
+            wait_until("Back reopened the previous commit Diff", Duration::from_secs(6), || {
+                view_with_id(root, "commit-diff-pane")
+                    .is_some_and(|pane| a11y_contains(&pane, "config/production/application.yml"))
+            });
+            send_key(app, window, "]", "]", 30, command);
+            wait_until("Forward reopened the original commit Diff", Duration::from_secs(6), || {
+                view_with_id(root, "commit-diff-pane")
+                    .is_some_and(|pane| a11y_contains(&pane, "config/development/application.yml"))
+            });
+        }
+        println!("NATIVE_DIFF_HISTORY_NAVIGATION PASS");
+
+        send_key(app, window, "O", "O", 31, command | NSEventModifierFlags::Shift);
+        wait("review-picker-input");
+        send_key(app, window, "[", "[", 33, command);
+        wait("review-picker-input");
+        assert!(a11y_contains(&wait("commit-diff-pane"), "config/development/application.yml"));
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+        wait_until("file picker closed", Duration::from_secs(6), || {
+            view_with_id(root, "review-picker-input").is_none()
+        });
+        println!("NATIVE_FILE_PICKER_SHORTCUT_SCOPE PASS");
+
+        let revision_row = wait("git-commit-file-config/development/application.yml");
+        choose_diff_context_item(window, &revision_row, "打开仓库版本");
+        wait_until("repository version opened read-only", Duration::from_secs(6), || {
+            view_with_id(root, "code-editor-view").is_some_and(|editor| a11y_contains(&editor, "review: true"))
+                && a11y_contains(root, "为只读视图")
+        });
+        send_key(app, window, "[", "[", 33, command);
+        wait("commit-diff-pane");
+        send_key(app, window, "]", "]", 30, command);
+        wait_until("Forward reopened the same repository version", Duration::from_secs(6), || {
+            view_with_id(root, "code-editor-view").is_some_and(|editor| a11y_contains(&editor, "review: true"))
+                && a11y_contains(root, "为只读视图")
+        });
+        println!("NATIVE_REPOSITORY_REVISION_HISTORY PASS");
+
+        send_key(app, window, "9", "9", 25, command);
+        send_click(window, &wait("change-row-unstaged-review-lines.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        let old = wait("working-diff-old-editor");
+        let new = wait("working-diff-new-editor");
+        choose_view_option("diff-options-btn", "同步滚动");
+        let surface = root.subviews().firstObject().expect("AppKit input surface");
+        let at = center_in_window(&old);
+        let move_pointer = |at| move_pointer(window, &surface, at);
+        let mut top = old.bounds();
+        if !old.isFlipped() {
+            top.origin.y += top.size.height - 80.0;
+        }
+        top.size.height = 80.0;
+        top.size.width -= 22.0;
+        send_click(window, &wait("diff-old-pane-bar"), 1);
+        let still_at_top = snapshot_png(&old, top);
+        move_pointer(at);
+        send_key(app, window, "", "", 121, NSEventModifierFlags::empty());
+        wait_until("Page Down moved the Diff viewport", Duration::from_secs(4), || {
+            snapshot_png(&old, top) != still_at_top
+        });
+        pump(260);
+        assert!(view_with_id(root, "diff-blame-tooltip").is_none(), "Page Down left a waiting tooltip");
+        send_key(app, window, "", "", 126, command);
+        println!("NATIVE_DIFF_ATTRIBUTION_PENDING_SCROLL PASS");
+
+        move_pointer(NSPoint::new(at.x + 8.0, at.y));
+        let tooltip = wait("diff-blame-tooltip");
+        assert!(a11y_contains(&tooltip, "Nemorous QA"));
+        save_window_png(window, &evidence.join("diff-attribution.png"));
+        let before = snapshot_png(&old, top);
+        let mut new_top = new.bounds();
+        if !new.isFlipped() {
+            new_top.origin.y += new_top.size.height - 80.0;
+        }
+        new_top.size.height = 80.0;
+        new_top.size.width -= 22.0;
+        let new_before = snapshot_png(&new, new_top);
+        send_wheel(window, &surface, at);
+        assert!(view_with_id(root, "diff-blame-tooltip").is_none(), "attribution remained after scrolling");
+        let scrolled = snapshot_png(&old, top);
+        assert!(before != scrolled, "the wheel did not move the diff viewport");
+        assert_ne!(snapshot_png(&new, new_top), new_before, "the companion Diff did not scroll");
+        println!("NATIVE_DIFF_SYNCHRONIZED_SCROLL PASS");
+        save_window_png(window, &evidence.join("diff-attribution-after-scroll.png"));
+        move_pointer(NSPoint::new(at.x + 12.0, at.y));
+        assert!(a11y_contains(&wait("diff-blame-tooltip"), "Nemorous QA"));
+        println!("NATIVE_DIFF_ATTRIBUTION PASS");
+        choose_view_option("diff-options-btn", "同步滚动");
+
+        send_click(window, &wait("diff-jump-source-btn"), 1);
+        let source = wait("code-editor-view");
+        choose_diff_context_item(window, &source, "显示整文件 Git Blame");
+        wait("blame-line-1");
+        let last_visible_blame_line = || {
+            let mut ids = Vec::new();
+            dump_ids(root, &mut ids);
+            ids.iter().filter_map(|id| id.strip_prefix("blame-line-")?.parse::<usize>().ok()).max()
+        };
+        let before_wheel = last_visible_blame_line().unwrap();
+        send_wheel(window, &surface, center_in_window(&source));
+        wait_until("scrolled-out source attribution removed", Duration::from_secs(4), || {
+            view_with_id(root, "blame-line-1").is_none()
+        });
+        wait_until("new source attribution entered the viewport", Duration::from_secs(4), || {
+            last_visible_blame_line().filter(|line| *line > before_wheel).is_some_and(|line| {
+                view_with_id(root, &format!("blame-line-{line}"))
+                    .is_some_and(|entry| a11y_contains(&entry, "未提交的本地修改"))
+            })
+        });
+        save_window_png(window, &evidence.join("source-attribution-after-scroll.png"));
+        println!("NATIVE_SOURCE_ATTRIBUTION PASS");
+
+        let diff_tab = wait("editor-tab-working-diff");
+        move_pointer(center_in_window(&diff_tab));
+        send_click(window, &diff_tab, 1);
+        let restored = wait("working-diff-old-editor");
+        wait_until("Diff viewport restored after leaving for source", Duration::from_secs(4), || {
+            snapshot_png(&restored, top) == scrolled
+        });
+        println!("NATIVE_DIFF_VIEWPORT_RESTORED PASS");
+
+        send_click(window, &wait("diff-jump-source-btn"), 1);
+        let source = wait("code-editor-view");
+        let original = repo.join("review-lines.txt");
+        let moved = repo.join("review-lines-moved.txt");
+        let content = fs::read_to_string(&original).unwrap();
+        let first_line = content.lines().next().unwrap();
+        fs::rename(&original, &moved).unwrap();
+        let notice = wait("code-disk-state");
+        assert!(a11y_contains(&notice, "磁盘文件已移动或删除"));
+        assert!(a11y_contains(&source, first_line));
+        fs::rename(&moved, &original).unwrap();
+        wait_until("disk notice cleared after restoring the path", Duration::from_secs(6), || {
+            view_with_id(root, "code-disk-state").is_none()
+        });
+        println!("NATIVE_OPEN_SOURCE_DISK_STATE PASS");
+
+        send_click(window, &wait("editor-tab-working-diff"), 1);
+        wait("working-diff-new-editor");
+        fs::rename(&original, &moved).unwrap();
+        fs::create_dir(&original).unwrap();
+        wait_until("working Diff shows disk read failure", Duration::from_secs(6), || {
+            view_with_id(root, "diff-disk-state")
+                .is_some_and(|notice| a11y_contains(&notice, "磁盘文件暂不可读"))
+        });
+        assert!(a11y_contains(&wait("working-diff-new-editor"), first_line));
+        fs::remove_dir(&original).unwrap();
+        wait_until("working Diff shows a deleted file", Duration::from_secs(6), || {
+            view_with_id(root, "diff-disk-state")
+                .is_some_and(|notice| a11y_contains(&notice, "磁盘文件已移动或删除"))
+        });
+        assert!(!a11y_contains(&wait("working-diff-new-editor"), first_line));
+        fs::rename(&moved, &original).unwrap();
+        wait_until("working Diff recovers after restoring the path", Duration::from_secs(6), || {
+            view_with_id(root, "diff-disk-state").is_none()
+                && view_with_id(root, "working-diff-new-editor")
+                    .is_some_and(|editor| a11y_contains(&editor, first_line))
+        });
+        println!("NATIVE_OPEN_WORKTREE_DIFF_DISK_STATE PASS");
+
+        let blob = git_run(repo, &["rev-parse", "--verify", ":review-lines.txt"]);
+        let object_dir = git_run(repo, &["rev-parse", "--path-format=absolute", "--git-path", "objects"]);
+        let loose_blob = Path::new(&object_dir).join(&blob[..2]).join(&blob[2..]);
+        let backup = evidence.join("review-test-backup");
+        let baseline_start = first_line.replacen("working", "baseline", 1);
+        let refresh = || send_key(app, window, "y", "y", 16, command | NSEventModifierFlags::Option);
+        fs::rename(&loose_blob, &backup).unwrap();
+        refresh();
+        wait_until("working Diff shows Git baseline failure", Duration::from_secs(6), || {
+            view_with_id(root, "diff-disk-state")
+                .is_some_and(|notice| a11y_contains(&notice, "Git 比较基准暂不可读"))
+        });
+        assert!(a11y_contains(&wait("working-diff-old-editor"), &baseline_start));
+        assert!(a11y_contains(&wait("working-diff-new-editor"), first_line));
+        fs::rename(&backup, &loose_blob).unwrap();
+        refresh();
+        wait_until("working Diff recovers its Git baseline", Duration::from_secs(6), || {
+            view_with_id(root, "diff-disk-state").is_none()
+        });
+        println!("NATIVE_WORKTREE_DIFF_GIT_BASELINE_RECOVERY PASS");
+
+        send_click(window, &wait("working-diff-new-editor"), 1);
+        send_key(app, window, "x", "x", 7, NSEventModifierFlags::empty());
+        wait("diff-dirty-badge");
+        let binary = evidence.join("review-fixture-binary");
+        fs::write(&binary, b"\0binary staged version\n").unwrap();
+        let binary_blob = git_run(repo, &["hash-object", "-w", binary.to_str().unwrap()]);
+        let stage = |oid: &str| {
+            git_run(repo, &["update-index", "--cacheinfo", "100644", oid, "review-lines.txt"]);
+        };
+        stage(&binary_blob);
+        wait_until("worktree draft stays visible with a binary Git baseline", Duration::from_secs(6), || {
+            view_with_id(root, "diff-disk-state")
+                .is_some_and(|notice| a11y_contains(&notice, "Git 比较基准为二进制或非 UTF-8 文件"))
+        });
+        wait("working-diff-new-editor");
+        assert!(a11y_contains(&wait("diff-old-pane-header"), "上次有效版本"));
+        assert!(view_with_id(root, "diff-stat-added").is_none());
+        assert_eq!(fs::read_to_string(&original).unwrap(), content);
+        send_key(app, window, "s", "s", 1, command);
+        wait("diff-blocked-notice");
+        assert_ne!(fs::read_to_string(&original).unwrap(), content);
+        assert_eq!(git_run(repo, &["rev-parse", ":review-lines.txt"]), binary_blob);
+        stage(&blob);
+        wait("working-diff-new-editor");
+        println!("NATIVE_WORKTREE_DIFF_DRAFT_WITH_BINARY_BASELINE PASS");
+
+        let old_pane = wait("working-diff-old-editor");
+        let old_point = center_in_window(&old_pane);
+        move_pointer(old_point);
+        assert!(a11y_contains(&wait("diff-blame-tooltip"), "Nemorous QA"));
+        let previous_head = git_run(repo, &["rev-parse", "HEAD"]);
+        let same_tree = git_run(repo, &["rev-parse", "HEAD^{tree}"]);
+        let new_head = git_run(repo, &[
+            "-c", "user.name=Alternate Author", "commit-tree", &same_tree, "-m", "Separate history",
+        ]);
+        git_run(repo, &["update-ref", "HEAD", &new_head, &previous_head]);
+        wait_until("old attribution hidden after HEAD changed", Duration::from_secs(6), || {
+            view_with_id(root, "diff-blame-tooltip").is_none()
+        });
+        move_pointer(NSPoint::new(old_point.x + 12.0, old_point.y));
+        wait_until("moving within the word showed the new HEAD attribution", Duration::from_secs(6), || {
+            view_with_id(root, "diff-blame-tooltip")
+                .is_some_and(|tooltip| a11y_contains(&tooltip, "Alternate Author"))
+        });
+        assert_eq!(git_run(repo, &["rev-parse", ":review-lines.txt"]), blob);
+        println!("NATIVE_WORKTREE_DIFF_ATTRIBUTION_FOLLOWS_HEAD PASS");
+
+        if repo.join(".git").is_file() {
+            let bytes = fs::read(&original).unwrap();
+            // Updating symbolic HEAD above changed a shared ref. Detaching here
+            // changes only the worktree's private HEAD file.
+            git_run(repo, &["update-ref", "--no-deref", "HEAD", &previous_head]);
+            wait_until("private worktree HEAD invalidated the tooltip", Duration::from_secs(6), || {
+                view_with_id(root, "diff-blame-tooltip").is_none()
+            });
+            move_pointer(NSPoint::new(old_point.x + 24.0, old_point.y));
+            wait_until("private worktree HEAD restored the previous attribution", Duration::from_secs(6), || {
+                view_with_id(root, "diff-blame-tooltip")
+                    .is_some_and(|tooltip| a11y_contains(&tooltip, "Nemorous QA"))
+            });
+            assert_eq!(fs::read(&original).unwrap(), bytes);
+            assert_eq!(git_run(repo, &["rev-parse", ":review-lines.txt"]), blob);
+            println!("NATIVE_LINKED_WORKTREE_PRIVATE_HEAD PASS");
+        }
+
+        let staged_fixture = evidence.join("review-fixture-staged-text");
+        fs::write(&staged_fixture, content.replace("working", "staged")).unwrap();
+        let staged_blob = git_run(repo, &["hash-object", "-w", staged_fixture.to_str().unwrap()]);
+        stage(&staged_blob);
+        wait("change-row-staged-review-lines.txt");
+        wait_until("working Diff displays the new staged text", Duration::from_secs(6), || {
+            view_with_id(root, "working-diff-old-editor")
+                .is_some_and(|view| a11y_contains(&view, "staged"))
+        });
+
+        let hold = scope_gate.join("hold");
+        fs::write(&hold, "").unwrap();
+        send_click(window, &wait("diff-scope-staged"), 1);
+        wait_until("staged Diff is waiting for Git", Duration::from_secs(4), || {
+            scope_gate.join("reading").is_dir()
+        });
+        let toggle = wait("diff-layout-toggle");
+        let point = center_in_window(&toggle);
+        send_left_button(window, point, 1, true);
+        pump(25);
+        fs::remove_file(hold).unwrap();
+        wait_until("staged Diff installed with the mouse down", Duration::from_secs(6), || {
+            view_with_id(root, "diff-old-pane-bar").is_some_and(|view| a11y_contains(&view, "HEAD"))
+        });
+        assert!(std::ptr::eq(&*toggle, &*wait("diff-layout-toggle")));
+        send_left_button(window, point, 1, false);
+        let unified = wait("working-diff-unified-editor");
+        assert!(a11y_contains(&unified, "+ staged"));
+        assert_eq!(git_run(repo, &["rev-parse", ":review-lines.txt"]), staged_blob);
+        println!("NATIVE_DIFF_LAYOUT_DURING_SCOPE_SWITCH PASS");
+
+        let filename = "layout-viewport.txt";
+        let baseline = (1..=240).map(|line| format!("baseline {line:03}\n")).collect::<String>();
+        fs::write(repo.join(filename), &baseline).unwrap();
+        git_run(repo, &["add", filename]);
+        git_run(repo, &["commit", "--only", "-m", "Add layout viewport fixture", "--", filename]);
+        let layout_commit = git_run(repo, &["rev-parse", "--short", "HEAD"]);
+        fs::write(
+            repo.join(filename),
+            baseline.replace("baseline 140", "FIRST_LAYOUT_CHANGE").replace("baseline 220", "LATE_LAYOUT_CHANGE"),
+        ).unwrap();
+        send_click(window, &wait("change-row-unstaged-layout-viewport.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        let wait_for_marker = |id, marker| {
+            wait_until(marker, Duration::from_secs(6), || {
+                view_with_id(root, id).is_some_and(|editor| a11y_contains(&editor, marker))
+            });
+        };
+        wait_for_marker("working-diff-unified-editor", "+ FIRST_LAYOUT_CHANGE");
+        send_click(window, &wait("diff-next-hunk"), 1);
+        wait_for_marker("working-diff-unified-editor", "+ LATE_LAYOUT_CHANGE");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        wait_for_marker("working-diff-new-editor", "LATE_LAYOUT_CHANGE");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        wait_for_marker("working-diff-unified-editor", "+ LATE_LAYOUT_CHANGE");
+        println!("NATIVE_DIFF_LAYOUT_RETAINS_LATE_HUNK PASS");
+
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        send_click(window, &wait("working-diff-new-editor"), 1);
+        let path = repo.join(filename);
+        let original_bytes = fs::read(&path).unwrap();
+        send_key(app, window, "x", "x", 7, NSEventModifierFlags::empty());
+        wait("diff-dirty-badge");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        wait("working-diff-unified-editor");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        send_click(window, &wait("working-diff-new-editor"), 1);
+        let wait_clean = || {
+            wait_until("native Diff undo removes the draft", Duration::from_secs(6), || {
+                view_with_id(root, "diff-dirty-badge").is_none()
+            });
+        };
+        send_key(app, window, "z", "z", 6, command);
+        wait_clean();
+        send_key(app, window, "Z", "z", 6, command | NSEventModifierFlags::Shift);
+        wait("diff-dirty-badge");
+        send_key(app, window, "z", "z", 6, command);
+        wait_clean();
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        println!("NATIVE_DIFF_LAYOUT_PRESERVES_UNDO_AND_REDO PASS");
+
+        send_key(app, window, "x", "x", 7, NSEventModifierFlags::empty());
+        wait("diff-dirty-badge");
+        let other = repo.join("README.md");
+        let other_bytes = fs::read(&other).unwrap();
+        send_click(window, &wait("change-row-unstaged-README.md"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        wait_until("other worktree Diff", Duration::from_secs(6), || {
+            view_with_id(root, "working-diff-pane")
+                .is_some_and(|pane| a11y_contains(&pane, "工作区 · README.md"))
+        });
+        let saved_bytes = fs::read(&path).unwrap();
+        assert_ne!(saved_bytes, original_bytes, "switching should save the first file");
+        send_click(window, &wait("working-diff-new-editor"), 1);
+        send_key(app, window, "z", "z", 6, command);
+        assert!(view_with_id(root, "diff-dirty-badge").is_none());
+        assert_eq!(fs::read(&other).unwrap(), other_bytes);
+
+        send_key(app, window, "[", "[", 33, command);
+        wait_until("original worktree Diff", Duration::from_secs(6), || {
+            view_with_id(root, "working-diff-pane")
+                .is_some_and(|pane| a11y_contains(&pane, &format!("工作区 · {filename}")))
+        });
+        send_click(window, &wait("working-diff-new-editor"), 1);
+        send_key(app, window, "z", "z", 6, command);
+        wait("diff-dirty-badge");
+        assert_eq!(fs::read(&path).unwrap(), saved_bytes);
+        send_key(app, window, "Z", "z", 6, command | NSEventModifierFlags::Shift);
+        wait_clean();
+        send_key(app, window, "z", "z", 6, command);
+        wait("diff-dirty-badge");
+        send_key(app, window, "s", "s", 1, command);
+        wait_clean();
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        println!("NATIVE_DIFF_FILE_SWITCH_PRESERVES_UNDO_AND_REDO PASS");
+
+        for single in [false, true] {
+            send_click(window, &wait("working-diff-new-editor"), 1);
+            send_key(app, window, "x", "x", 7, NSEventModifierFlags::empty());
+            wait_until("initial Diff edit", Duration::from_secs(6), || {
+                view_with_id(root, "diff-dirty-badge").is_some()
+            });
+            let diff_editor = if single {
+                send_click(window, &wait("diff-layout-toggle"), 1);
+                wait("working-diff-unified-editor");
+                "working-diff-unified-editor"
+            } else {
+                "working-diff-new-editor"
+            };
+            send_key(app, window, "\u{F707}", "\u{F707}", 118, NSEventModifierFlags::Function);
+            wait("code-editor-view");
+            wait("code-dirty-badge");
+            send_key(app, window, "z", "z", 6, command);
+            wait_until("source undoes the Diff edit", Duration::from_secs(6), || {
+                view_with_id(root, "code-dirty-badge").is_none()
+            });
+            send_key(app, window, "[", "[", 33, command);
+            wait_until(&format!("return to {diff_editor}"), Duration::from_secs(6), || {
+                view_with_id(root, diff_editor).is_some()
+            });
+            wait_clean();
+            let editor = wait(diff_editor);
+            wait_until(&format!("focus in {diff_editor}"), Duration::from_secs(6), || {
+                window.firstResponder()
+                    .and_then(|responder| responder.downcast::<NSView>().ok())
+                    .is_some_and(|responder| responder.isDescendantOf(&editor))
+            });
+            send_key(app, window, "Z", "z", 6, command | NSEventModifierFlags::Shift);
+            wait_until(&format!("redo in {diff_editor}"), Duration::from_secs(6), || {
+                view_with_id(root, "diff-dirty-badge").is_some()
+            });
+            send_key(app, window, "z", "z", 6, command);
+            wait_clean();
+            assert_eq!(fs::read(&path).unwrap(), original_bytes);
+            println!("NATIVE_RETURN_TO_DIFF_RETAINS_KEYBOARD_FOCUS single={single} PASS");
+        }
+        println!("NATIVE_DIFF_AND_SOURCE_SHARE_UNDO_AND_REDO PASS");
+
+        send_click(window, &wait("change-row-unstaged-layout-viewport.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        wait_for_marker("working-diff-unified-editor", "+ FIRST_LAYOUT_CHANGE");
+        let goto_late_change = || {
+            send_key(app, window, "l", "l", 37, command);
+            send_click(window, &wait("goto-line-input"), 1);
+            for (digit, code) in [("2", 19), ("2", 19), ("0", 29)] {
+                send_key(app, window, digit, digit, code, NSEventModifierFlags::empty());
+            }
+            send_key(app, window, "\r", "\r", 36, NSEventModifierFlags::empty());
+            wait_for_marker("status-cursor-pos", "220:1");
+            wait_for_marker("diff-hunk-counter", "2/2");
+        };
+        goto_late_change();
+        send_click(window, &wait("diff-prev-hunk"), 1);
+        wait_for_marker("working-diff-unified-editor", "+ FIRST_LAYOUT_CHANGE");
+        goto_late_change();
+        send_key(app, window, "z", "z", 6, command | NSEventModifierFlags::Option);
+        wait("diff-dirty-badge");
+        wait_for_marker("diff-hunk-counter", "1/1");
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        send_key(app, window, "z", "z", 6, command);
+        wait_clean();
+        wait_for_marker("diff-hunk-counter", "2");
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        println!("NATIVE_DIFF_CARET_NAVIGATION_AND_BLOCK_ROLLBACK PASS");
+
+        let line_fixture = "line-staging.txt";
+        let line_path = repo.join(line_fixture);
+        let old_lines = "old A\nold B\ncontext\nlast\n";
+        let working_lines = "new A\nnew B\ncontext\nlast\n";
+        fs::write(&line_path, old_lines).unwrap();
+        git_run(repo, &["add", line_fixture]);
+        git_run(repo, &["commit", "--only", "-m", "Add line staging fixture", "--", line_fixture]);
+        fs::write(&line_path, working_lines).unwrap();
+        send_click(window, &wait("change-row-unstaged-line-staging.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        wait_for_marker("working-diff-unified-editor", "+ new B");
+        let unified = wait("working-diff-unified-editor");
+        choose_diff_context_item(window, &unified, "暂存选中行");
+        wait("change-row-staged-line-staging.txt");
+        assert_eq!(git_run(repo, &["show", ":line-staging.txt"]), "new A\nold B\ncontext\nlast");
+        assert_eq!(fs::read_to_string(&line_path).unwrap(), working_lines);
+
+        send_click(window, &wait("diff-scope-staged"), 1);
+        wait_until("staged line in unified Diff", Duration::from_secs(6), || {
+            view_with_id(root, "working-diff-unified-editor").is_some_and(|editor| {
+                a11y_contains(&editor, "+ new A") && !a11y_contains(&editor, "+ new B")
+            })
+        });
+        choose_diff_context_item(window, &wait("working-diff-unified-editor"), "取消暂存选中行");
+        wait_until("line is unstaged", Duration::from_secs(6), || {
+            view_with_id(root, "change-row-staged-line-staging.txt").is_none()
+        });
+        assert_eq!(git_run(repo, &["show", ":line-staging.txt"]), old_lines.trim_end());
+        assert_eq!(fs::read_to_string(&line_path).unwrap(), working_lines);
+        println!("NATIVE_UNIFIED_DIFF_STAGE_AND_UNSTAGE_LINE PASS");
+
+        send_click(window, &wait("change-row-unstaged-layout-viewport.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        wait_for_marker("working-diff-unified-editor", "+ FIRST_LAYOUT_CHANGE");
+        send_key(app, window, "\u{F707}", "\u{F707}", 118, NSEventModifierFlags::Function);
+        let editor = wait("code-editor-view");
+        choose_diff_context_item(window, &editor, "与修订版本比较…");
+        send_click(window, &wait(&format!("file-revision-{layout_commit}")), 2);
+        wait_for_marker("comparison-right-editor", "FIRST_LAYOUT_CHANGE");
+        wait_for_marker("comparison-change-count", "1/2");
+        send_key(app, window, "\u{F70A}", "\u{F70A}", 98, NSEventModifierFlags::Function);
+        wait_for_marker("comparison-right-editor", "LATE_LAYOUT_CHANGE");
+        wait_for_marker("comparison-change-count", "2/2");
+        println!("NATIVE_REVISION_COMPARISON_LATE_CHANGES PASS");
+
+        send_key(app, window, "f", "f", 3, command);
+        move_pointer(center_in_window(&wait("diff-find-input")));
+        for (key, keycode) in [("l", 37), ("a", 0), ("t", 17), ("e", 14)] {
+            send_key(app, window, key, key, keycode, NSEventModifierFlags::empty());
+        }
+        wait_for_marker("diff-find-matches", "1 个结果");
+        send_key(app, window, "g", "g", 5, command);
+        wait_for_marker("diff-find-matches", "1/1");
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+        wait_until("comparison search bar closed", Duration::from_secs(6), || view_with_id(root, "diff-find-bar").is_none());
+        send_key(app, window, "\u{F70A}", "\u{F70A}", 98, NSEventModifierFlags::Function | NSEventModifierFlags::Shift);
+        wait_for_marker("comparison-change-count", "1/2");
+        println!("NATIVE_REVISION_COMPARISON_FIND PASS");
+
+        send_key(app, window, "w", "w", 13, command);
+        wait("code-editor-view");
+        let repo_id = nemorous::git::discover_workspace_repos(repo.to_str().unwrap(), &[])
+            .into_iter().find(|entry| entry.is_root).unwrap().id;
+        let snapshot = nemorous::local_history::LocalHistoryStore::default_store()
+            .record(&repo_id, filename, "Snapshot for late changes", baseline.as_bytes())
+            .unwrap();
+        send_click(window, &wait("code-history-btn"), 1);
+        if let Some(snapshot) = snapshot {
+            send_click(window, &wait(&format!("local-history-entry-{}", snapshot.id)), 1);
+        }
+        wait_for_marker("local-history-current", "FIRST_LAYOUT_CHANGE");
+        wait_for_marker("local-history-change-count", "1 / 2");
+        send_key(app, window, "\u{F70A}", "\u{F70A}", 98, NSEventModifierFlags::Function);
+        wait_for_marker("local-history-current", "LATE_LAYOUT_CHANGE");
+        wait_for_marker("local-history-change-count", "2 / 2");
+        send_key(app, window, "\u{F70A}", "\u{F70A}", 98, NSEventModifierFlags::Function | NSEventModifierFlags::Shift);
+        wait_for_marker("local-history-change-count", "1 / 2");
+        wait_for_marker("local-history-current", "FIRST_LAYOUT_CHANGE");
+        println!("NATIVE_LOCAL_HISTORY_LATE_CHANGES PASS");
+
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+        let tail_file = "native-tail.txt";
+        let tail_path = repo.join(tail_file);
+        let short = baseline.replace("baseline 240\n", "tail 🐈");
+        let long = short.replace("baseline 140", "NATIVE_EARLIER_CHANGE") + "\nNATIVE_APPENDED_TAIL\n";
+        fs::write(&tail_path, &short).unwrap();
+        git_run(repo, &["add", tail_file]);
+        git_run(repo, &["commit", "--only", "-m", "Add tail navigation fixture", "--", tail_file]);
+        fs::write(&tail_path, &long).unwrap();
+        send_click(window, &wait("change-row-unstaged-native-tail.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        wait_for_marker("working-diff-unified-editor", "+ NATIVE_EARLIER_CHANGE");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        wait_for_marker("working-diff-new-editor", "NATIVE_EARLIER_CHANGE");
+        choose_view_option("diff-options-btn", "忽略首尾空白");
+        send_click(window, &wait("diff-old-pane-bar"), 1);
+        send_key(app, window, "\u{F70A}", "\u{F70A}", 98, NSEventModifierFlags::Function);
+        wait_for_marker("working-diff-new-editor", "NATIVE_APPENDED_TAIL");
+        wait_for_marker("diff-hunk-counter", "2/2");
+        wait_for_marker("status-cursor-pos", "240:8");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        wait_for_marker("working-diff-unified-editor", "+ NATIVE_APPENDED_TAIL");
+        wait_for_marker("diff-hunk-counter", "2/2");
+        send_click(window, &wait("diff-layout-toggle"), 1);
+        wait_for_marker("working-diff-new-editor", "NATIVE_APPENDED_TAIL");
+        wait_for_marker("diff-hunk-counter", "2/2");
+        send_key(app, window, "\u{F70A}", "\u{F70A}", 98, NSEventModifierFlags::Function | NSEventModifierFlags::Shift);
+        wait_for_marker("working-diff-new-editor", "NATIVE_EARLIER_CHANGE");
+        wait_for_marker("diff-hunk-counter", "1/2");
+        assert_eq!(fs::read_to_string(&tail_path).unwrap(), long);
+        println!("NATIVE_SPLIT_DIFF_TAIL_HUNK PASS");
+
+        send_key(app, window, "\u{F707}", "\u{F707}", 118, NSEventModifierFlags::Function);
+        let source = wait("code-editor-view");
+        fs::write(repo.join("a-native-scope.txt"), "NATIVE_SCOPE_FIRST\n").unwrap();
+        fs::write(repo.join("z-native-scope.txt"), "NATIVE_SCOPE_LAST\n").unwrap();
+        git_run(repo, &["add", "a-native-scope.txt", tail_file, "z-native-scope.txt"]);
+        git_run(repo, &["commit", "--only", "-m", "Review three files in native history", "--", "a-native-scope.txt", tail_file, "z-native-scope.txt"]);
+        let history_commit = git_run(repo, &["rev-parse", "--short", "HEAD"]);
+        choose_diff_context_item(window, &source, "查看文件历史");
+        wait("git-file-history");
+        send_click(window, &wait(&format!("git-commit-row-{history_commit}")), 1);
+        wait("git-commit-file-native-tail.txt");
+        choose_view_option("git-file-view-options", "显示所有受影响的文件");
+        send_click(window, &wait("git-commit-file-a-native-scope.txt"), 1);
+        send_key(app, window, "d", "d", 2, command);
+        wait_for_marker("commit-diff-new-editor", "NATIVE_SCOPE_FIRST");
+        choose_view_option("git-file-view-options", "显示所有受影响的文件");
+        wait_until("file history shows only the tracked file", Duration::from_secs(6), || {
+            view_with_id(root, "git-commit-file-a-native-scope.txt").is_none()
+                && view_with_id(root, "git-commit-file-native-tail.txt").is_some()
+        });
+        send_click(window, &wait("diff-next-file"), 1);
+        wait_for_marker("commit-diff-new-editor", "NATIVE_EARLIER_CHANGE");
+        send_click(window, &wait("diff-next-file"), 1);
+        wait_for_marker("commit-diff-new-editor", "NATIVE_SCOPE_LAST");
+        send_click(window, &wait("git-show-diff"), 1);
+        wait_for_marker("commit-diff-new-editor", "NATIVE_EARLIER_CHANGE");
+        println!("NATIVE_FILE_HISTORY_SCOPE_NAVIGATION PASS");
+
+        send_key(app, window, "f", "f", 3, command);
+        wait("diff-find-input");
+        for (key, keycode) in [("n", 45), ("a", 0), ("t", 17)] {
+            send_key(app, window, key, key, keycode, NSEventModifierFlags::empty());
+        }
+        wait_for_marker("diff-find-matches", "2 个结果");
+        send_click(window, &wait("diff-find-case"), 1);
+        wait_for_marker("diff-find-matches", "0 个结果");
+        send_key(app, window, "f", "f", 3, command);
+        for (upper, lower, keycode) in [("N", "n", 45), ("A", "a", 0), ("T", "t", 17)] {
+            send_key(app, window, upper, lower, keycode, NSEventModifierFlags::Shift);
+        }
+        wait_for_marker("diff-find-matches", "2 个结果");
+        move_pointer(center_in_window(&wait("diff-find-input")));
+        wait_until("search option tooltip hidden", Duration::from_secs(6), || view_with_id(root, "toolbar-tooltip").is_none());
+        send_key(app, window, "\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+        wait_until("Diff search bar closed", Duration::from_secs(6), || view_with_id(root, "diff-find-bar").is_none());
+        println!("NATIVE_DIFF_FIND_KEYBOARD_AND_MODE PASS");
+    }
+
+    fn crisp_screen_number(screen: &NSScreen) -> Option<u32> {
+        let number = screen.deviceDescription().objectForKey(&NSString::from_str("NSScreenNumber"))?;
+        Some(number.downcast::<NSNumber>().ok()?.unsignedIntValue())
+    }
+
+    const CRISP_FIRST_AUTHOR_DATE: &str = "2024-03-04T09:12:00+00:00";
+    const CRISP_SECOND_AUTHOR_DATE: &str = "2025-06-07T16:43:00+00:00";
+    const CRISP_SECOND_SUBJECT: &str =
+        "Crisp later rows keep their full commit subject visible when the Git log is narrow";
+    const CRISP_TOOL_LONG_NAME: &str = "000-very-long-filename-for-checking-horizontal-scrolling-in-project-and-local-changes-with-a-distinct-ending.txt";
+
+    fn check_crisp_tool_scroll(
+        window: &NSWindow,
+        root: &NSView,
+        input: &NSView,
+        evidence: &Path,
+        viewport: &str,
+        header: &str,
+        row: &str,
+    ) {
+        wait_until(row, Duration::from_secs(6), || view_with_id(root, row).is_some());
+        let viewport_view = view_with_id(root, viewport).unwrap();
+        let header = view_with_id(root, header).unwrap();
+        let point = center_in_window(&viewport_view);
+        let header_before = center_in_window(&header);
+        let scrollbar = viewport_view.accessibilityHorizontalScrollBar()
+            .and_then(|bar| bar.downcast::<NSAccessibilityElement>().ok())
+            .expect("horizontal accessibility scrollbar");
+        // NSH paints wheel changes before it commits AppKit's NSView geometry.
+        let offset = || {
+            scrollbar.accessibilityValue()
+                .and_then(|value| value.downcast::<NSNumber>().ok())
+                .expect("horizontal scrollbar position")
+                .doubleValue()
+        };
+        let row_y = || view_with_id(root, row).map(|view| center_in_window(&view).y);
+        dispatch_wheel_delta(window, input, point, -140, 0);
+        wait_until("sidebar starts at the filename beginning", Duration::from_secs(3), || offset() <= 0.01);
+        let initial_y = row_y().unwrap();
+        dispatch_wheel_delta(window, input, point, 140, 0);
+        wait_until("sidebar scrolled to the filename ending", Duration::from_secs(3), || offset() >= 0.99);
+        assert!((row_y().unwrap() - initial_y).abs() < 1.0);
+        assert_eq!(center_in_window(&header), header_before);
+        save_window_png(window, &evidence.join(format!("{viewport}-end.png")));
+        dispatch_wheel_delta(window, input, point, -140, 0);
+        wait_until("sidebar returned to the start", Duration::from_secs(3), || offset() <= 0.01);
+        save_window_png(window, &evidence.join(format!("{viewport}-start.png")));
+    }
+
+    fn check_crisp_diff_attribution(
+        window: &NSWindow,
+        root: &NSView,
+        input: &NSView,
+        fixture: &Path,
+        is_commit: bool,
+    ) {
+        let (editor_id, name, wheel_steps) = if is_commit {
+            ("commit-diff-unified-editor", "commit-attribution", [36, 36, 36])
+        } else {
+            ("working-diff-old-editor", "diff-attribution", [12, 12, 12])
+        };
+        let tip = "diff-blame-tooltip";
+        wait_until(editor_id, Duration::from_secs(8), || view_with_id(root, editor_id).is_some());
+        let editor = view_with_id(root, editor_id).unwrap();
+        let mut sample = editor.bounds();
+        if !editor.isFlipped() {
+            sample.origin.y += sample.size.height - 110.0;
+        }
+        sample.size.height = 110.0;
+        sample.size.width -= 22.0;
+        let point = editor.convertPoint_toView(NSPoint::new(
+            sample.origin.x + 148.0,
+            sample.origin.y + 55.0,
+        ), None);
+
+        let check_tip = |author, date, subject, point: NSPoint| {
+            let date = chrono::DateTime::parse_from_rfc3339(date).unwrap()
+                .with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M");
+            let title = format!("{author} · {date}");
+            wait_until(&title, Duration::from_secs(5), || view_with_id(root, tip).is_some());
+            let hint = view_with_id(root, tip).unwrap();
+            assert!(a11y_contains(&hint, &title), "expected {title}, got {}", view_a11y_text(&hint));
+            assert!(a11y_contains(&hint, subject), "missing commit subject {subject}");
+            assert!((center_in_window(&hint).y - point.y).abs() < 80.0, "attribution detached from hovered row");
+        };
+
+        move_pointer(window, input, point);
+        check_tip("Crisp First Author", CRISP_FIRST_AUTHOR_DATE, "Crisp initial rows", point);
+        save_window_png(window, &fixture.join(format!("{name}-before-wheel.png")));
+        let before = snapshot_png(&editor, sample);
+        dispatch_wheel(window, input, point);
+        wait_until("the first wheel tick moved the viewport", Duration::from_millis(800), || {
+            if snapshot_png(&editor, sample) == before {
+                return false;
+            }
+            assert!(view_with_id(root, tip).is_none(), "the first scrolled frame retained attribution");
+            true
+        });
+        for dy in wheel_steps {
+            dispatch_wheel_delta(window, input, point, 0, dy);
+            pump(70);
+            assert!(view_with_id(root, tip).is_none(), "attribution returned during scrolling");
+        }
+        move_pointer(window, input, point);
+        pump(550);
+        assert!(view_with_id(root, tip).is_none(), "attribution returned under the stationary pointer");
+        save_window_png(window, &fixture.join(format!("{name}-after-wheel.png")));
+
+        let moved = NSPoint::new(point.x + 8.0, point.y);
+        move_pointer(window, input, moved);
+        check_tip("Crisp Second Author", CRISP_SECOND_AUTHOR_DATE, CRISP_SECOND_SUBJECT, moved);
+        save_window_png(window, &fixture.join(format!("{name}-after-hover.png")));
+    }
+
+    fn run_on_crisp(root_dir: &Path) {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGDisplayVendorNumber(display: u32) -> u32;
+            fn CGDisplayIsActive(display: u32) -> u32;
+            fn CGDisplayIsMain(display: u32) -> u32;
+            fn CGDisplayIsInMirrorSet(display: u32) -> u32;
+        }
+
+        let mtm = MainThreadMarker::new().expect("must run on main thread");
+        let offscreen_diagnostics = std::env::var_os("NEMOROUS_CRISP_OFFSCREEN_DIAGNOSTICS").is_some();
+        let (screen, number) = NSScreen::screens(mtm).iter().find_map(|screen| {
+            let number = crisp_screen_number(&screen)?;
+            // Crisp stamps its virtual display descriptors with this vendor ID.
+            let eligible = unsafe {
+                CGDisplayVendorNumber(number) == 0xEEEE
+                    && (offscreen_diagnostics || CGDisplayIsActive(number) != 0)
+                    && CGDisplayIsMain(number) == 0
+                    && CGDisplayIsInMirrorSet(number) == 0
+            };
+            eligible.then_some((screen, number))
+        }).expect("an active extended Crisp virtual display is required");
+        let area = screen.visibleFrame();
+        let size = NSSize::new(1280.0, 800.0);
+        assert!(area.size.width >= size.width + 40.0 && area.size.height >= size.height + 80.0);
+
+        // NSH can catch a panic on its engine thread and keep rendering.
+        let runtime_panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let record_panic = runtime_panicked.clone();
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            record_panic.store(true, std::sync::atomic::Ordering::Relaxed);
+            previous_hook(info);
+        }));
+
+        let fixture = root_dir.join(format!("build/tmp-ab/native-crisp-{}", std::process::id()));
+        let repo = fixture.join("repo");
+        let linked = std::env::var_os("NEMOROUS_NATIVE_LINKED_WORKTREE").is_some();
+        let tool_width = std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
+            .map(|width| width.parse::<f32>().expect("left tool window width"));
+        let primary = if linked { fixture.join("primary") } else { repo.clone() };
+        let path = repo.join("history.txt");
+        let attribution_file = "attribution.txt";
+        let committed_file = "committed-attribution.txt";
+        fs::create_dir_all(&primary).unwrap();
+        let baseline: String = (1..=250).map(|line| format!("baseline {line:03}\n")).collect();
+        let modified = baseline.replace("baseline 115", "CRISP_FIRST_CHANGE").replace("baseline 225", "CRISP_LAST_CHANGE");
+        fs::write(primary.join("history.txt"), &baseline).unwrap();
+        let attribution_before: String = (1..=150).map(|line| format!("Original attribution line {line:03}\n")).collect();
+        let attribution_after: String = (1..=150).map(|line| {
+            let label = if line < 19 { "Original" } else { "Reviewed" };
+            format!("{label} attribution line {line:03}\n")
+        }).collect();
+        fs::write(primary.join(attribution_file), attribution_before).unwrap();
+        // No shared lines in this file. The top of its unified Diff is all
+        // deletions and the bottom is all additions, even with the log open.
+        let committed_before: String = (1..=40).map(|line| format!("Parent revision line {line:03}\n")).collect();
+        let committed_after: String = (1..=120).map(|line| format!("Selected revision line {line:03}\n")).collect();
+        fs::write(primary.join(committed_file), committed_before).unwrap();
+        if tool_width.is_some() {
+            write_left_tool_files(&primary);
+        }
+        git_run(&primary, &["init", "-b", "main"]);
+        git_run(&primary, &["add", "."]);
+        git_run(&primary, &["-c", "user.name=Crisp First Author", "-c", "user.email=first@example.invalid", "-c", "commit.gpgsign=false", "commit", "--date", CRISP_FIRST_AUTHOR_DATE, "-m", "Crisp initial rows"]);
+        fs::write(primary.join(attribution_file), &attribution_after).unwrap();
+        fs::write(primary.join(committed_file), committed_after).unwrap();
+        git_run(&primary, &["-c", "user.name=Crisp Second Author", "-c", "user.email=second@example.invalid", "-c", "commit.gpgsign=false", "commit", "--date", CRISP_SECOND_AUTHOR_DATE, "-m", CRISP_SECOND_SUBJECT, "--", attribution_file, committed_file]);
+        let second_commit = git_run(&primary, &["rev-parse", "--short", "HEAD"]);
+        let first_commit = git_run(&primary, &["rev-parse", "--short", "HEAD^"]);
+        if linked {
+            git_run(&primary, &["worktree", "add", "-b", "crisp-review", repo.to_str().unwrap(), "HEAD"]);
+        }
+        fs::write(&path, &modified).unwrap();
+        let attribution_working = attribution_after
+            .replace("Original attribution line 003", "Uncommitted attribution line 003")
+            .replace("Reviewed attribution line", "Working attribution line");
+        fs::write(repo.join(attribution_file), attribution_working).unwrap();
+        let config = fixture.join("config.json");
+        let mut settings = serde_json::json!({
+            "workspace_path": repo.to_string_lossy(),
+            "theme": "darcula",
+            "change_diff_preview": false,
+            "diff_single_column": false,
+            "auto_update": false
+        });
+        if let Some(width) = tool_width {
+            fs::write(repo.join("src/nested/tracked.txt"), "first\nworking edit\nlast\n").unwrap();
+            settings["commit_left_width"] = width.into();
+            settings["code_left_width"] = width.into();
+            settings["changes_flat"] = true.into();
+        }
+        fs::write(&config, settings.to_string()).unwrap();
+        // Override configuration before mounting the test app and its workers.
+        unsafe {
+            std::env::set_var("NEMOROUS_CONFIG", &config);
+            std::env::set_var("NEMOROUS_WORKSPACE", &repo);
+        }
+        let root_repo = nemorous::git::discover_workspace_repos(repo.to_str().unwrap(), &[])
+            .into_iter().find(|entry| entry.is_root).unwrap();
+        let snapshot = nemorous::local_history::LocalHistoryStore::default_store()
+            .record(&root_repo.id, "history.txt", "Crisp history snapshot", baseline.as_bytes())
+            .unwrap().expect("record a distinct baseline snapshot");
+        let snapshot_row = format!("local-history-entry-{}", snapshot.id);
+
+        let app = NSApplication::sharedApplication(mtm);
+        assert!(app.setActivationPolicy(NSApplicationActivationPolicy::Accessory));
+        app.finishLaunching();
+        assert!(!app.isActive(), "the Crisp test app must remain in the background");
+        let window = NSPanel::initWithContentRect_styleMask_backing_defer(
+            NSPanel::alloc(mtm),
+            NSRect::new(NSPoint::new(area.origin.x + 20.0, area.origin.y + 20.0), size),
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::NonactivatingPanel,
+            NSBackingStoreType::Buffered,
+            false,
+        );
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setBecomesKeyOnlyIfNeeded(true);
+        window.setHidesOnDeactivate(false);
+        window.setTitle(&NSString::from_str("Nemorous Crisp 测试"));
+        window.setFrameOrigin(NSPoint::new(area.origin.x + 20.0, area.origin.y + 20.0));
+
+        let check_window = || {
+            assert!(!app.isActive() && !window.isKeyWindow(), "background test changed keyboard focus");
+            assert!(unsafe { (offscreen_diagnostics || CGDisplayIsActive(number) != 0) && CGDisplayIsMain(number) == 0 && CGDisplayIsInMirrorSet(number) == 0 });
+            if offscreen_diagnostics {
+                assert!(!window.isVisible(), "offscreen diagnostic became visible");
+            }
+            assert_eq!(window.screen().as_deref().and_then(crisp_screen_number), Some(number));
+            let frame = window.frame();
+            assert!(frame.origin.x >= area.origin.x && frame.origin.y >= area.origin.y);
+            assert!(frame.origin.x + frame.size.width <= area.origin.x + area.size.width);
+            assert!(frame.origin.y + frame.size.height <= area.origin.y + area.size.height);
+        };
+        check_window();
+
+        let mut options = platform::AppOptions::default();
+        options.title = "Nemorous Crisp Test".to_owned();
+        options.size = (1280, 800);
+        let surface = platform::AppView::new(mtm, options);
+        window.setContentView(Some(&surface.view()));
+        assert!(surface.suppress_background_test_cursor());
+        surface.load(platform::App::Rust(platform::Root::of::<nemorous::App>()));
+        check_window();
+        if !offscreen_diagnostics {
+            window.orderFrontRegardless();
+        }
+        check_window();
+        let root = surface.view();
+        let input_surface = root.subviews().firstObject().expect("AppKit input surface");
+        let click = |id: &str, count| {
+            wait_until(id, Duration::from_secs(12), || view_with_id(&root, id).is_some());
+            check_window();
+            let target = view_with_id(&root, id).unwrap();
+            // A non-clipping NSView can report more than its own bounds as visible.
+            let target_area = NSIntersectionRect(target.bounds(), target.visibleRect());
+            let mut visible = target.convertRect_toView(target_area, None);
+            let viewport = if id.starts_with("change-row-") {
+                view_with_id(&root, "changes-tree-scroll")
+            } else if id.starts_with("project-file-") || id.starts_with("project-dir-") {
+                view_with_id(&root, "project-tree-scroll")
+            } else {
+                None
+            };
+            if let Some(viewport) = viewport {
+                let clip = viewport.convertRect_toView(viewport.bounds(), None);
+                visible = NSIntersectionRect(visible, clip);
+            }
+            assert!(visible.size.width > 0.0 && visible.size.height > 0.0, "{id} is clipped");
+            let point = NSPoint::new(
+                visible.origin.x + visible.size.width * 0.5,
+                visible.origin.y + visible.size.height * 0.5,
+            );
+            for clicks in 1..=count {
+                input_surface.mouseDown(&left_button_event(&window, point, clicks, true));
+                pump(25);
+                input_surface.mouseUp(&left_button_event(&window, point, clicks, false));
+                pump(40);
+            }
+            check_window();
+        };
+        let expect = |id: &str, text: &str| {
+            wait_until(&format!("{id} shows {text}"), Duration::from_secs(8), || {
+                view_with_id(&root, id).is_some_and(|view| a11y_contains(&view, text))
+            });
+            check_window();
+        };
+        let key = |chars: &str, ignoring: &str, code, modifiers| {
+            check_window();
+            let chars = NSString::from_str(chars);
+            let ignoring = NSString::from_str(ignoring);
+            let now = NSProcessInfo::processInfo().systemUptime();
+            for (kind, offset) in [(NSEventType::KeyDown, 0.0), (NSEventType::KeyUp, 0.01)] {
+                let event = make_key_event(&window, kind, modifiers, now + offset, &chars, &ignoring, code);
+                let handled = surface.dispatch_background_test_key(&event);
+                if kind == NSEventType::KeyDown {
+                    assert!(handled, "Crisp local key-down dispatch failed for {code}");
+                }
+            }
+            pump(60);
+            check_window();
+        };
+        let clean = |id| {
+            wait_until(&format!("{id} removed"), Duration::from_secs(6), || view_with_id(&root, id).is_none());
+        };
+        let editor_has_responder = |id| {
+            view_with_id(&root, id).is_some_and(|editor| {
+                window.firstResponder()
+                    .and_then(|responder| responder.downcast::<NSView>().ok())
+                    .is_some_and(|responder| responder.isDescendantOf(&editor))
+            })
+        };
+
+        if let Some(width) = tool_width {
+            let hover = |id: &str| {
+                wait_until(id, Duration::from_secs(6), || view_with_id(&root, id).is_some());
+                check_window();
+                move_pointer(&window, &input_surface, center_in_window(&view_with_id(&root, id).unwrap()));
+                pump(120);
+                check_window();
+            };
+            let command = |label: &str, code: u16| key(label, label, code, NSEventModifierFlags::Command);
+            verify_left_tool_windows(&window, &root, &fixture, width, |id| click(id, 1), hover, command);
+            fs::write(repo.join(CRISP_TOOL_LONG_NAME), "long filename\n").unwrap();
+            command("0", 29);
+            click("changes-refresh-btn", 1);
+            check_crisp_tool_scroll(&window, &root, &input_surface, &fixture,
+                "changes-tree-scroll", "changes-header-title-row", &format!("change-row-unstaged-{CRISP_TOOL_LONG_NAME}"));
+            check_window();
+            command("1", 18);
+            check_crisp_tool_scroll(&window, &root, &input_surface, &fixture,
+                "project-tree-scroll", "project-header-title-row", &format!("project-file-{CRISP_TOOL_LONG_NAME}"));
+            check_window();
+            window.close();
+            assert!(!app.isActive());
+            assert!(!runtime_panicked.load(std::sync::atomic::Ordering::Relaxed), "Crisp runtime panicked");
+            println!("NATIVE_CRISP_BACKGROUND_LEFT_TOOLS PASS display={number} width={width} offscreen={offscreen_diagnostics}");
+            return;
+        }
+
+        click("change-row-unstaged-attribution.txt", 2);
+        check_window();
+        check_crisp_diff_attribution(&window, &root, &input_surface, &fixture, false);
+        check_window();
+        println!("NATIVE_CRISP_BACKGROUND_DIFF_ATTRIBUTION PASS display={number} linked={linked}");
+
+        // Open the commit in unified mode so no split viewport has to be
+        // mapped to the selected revision's first added row.
+        click("diff-layout-toggle", 1);
+        key("9", "9", 25, NSEventModifierFlags::Command);
+        click(&format!("git-commit-row-{second_commit}"), 1);
+        click(&format!("git-commit-file-{committed_file}"), 2);
+        expect("commit-diff-unified-editor", "- Parent revision line 001");
+        check_crisp_diff_attribution(&window, &root, &input_surface, &fixture, true);
+        for (hash, date) in [(&first_commit, CRISP_FIRST_AUTHOR_DATE), (&second_commit, CRISP_SECOND_AUTHOR_DATE)] {
+            let local_date = chrono::DateTime::parse_from_rfc3339(date).unwrap()
+                .with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+            expect(&format!("git-commit-row-{hash}"), &local_date);
+        }
+        check_window();
+        println!("NATIVE_CRISP_BACKGROUND_COMMIT_ATTRIBUTION PASS display={number} linked={linked}");
+        click("diff-layout-toggle", 1);
+        key("9", "9", 25, NSEventModifierFlags::Command);
+        clean("git-log-title");
+
+        click("change-row-unstaged-history.txt", 2);
+        // Both files use the same editor IDs while an async Diff read is pending.
+        expect("working-diff-new-editor", "CRISP_FIRST_CHANGE");
+        if linked {
+            let command = NSEventModifierFlags::Command;
+            let diff = "working-diff-new-editor";
+            click(diff, 1);
+            wait_until("Crisp history Diff has its editor responder", Duration::from_secs(6), || editor_has_responder(diff));
+            key("x", "x", 7, NSEventModifierFlags::empty());
+            wait_until("initial Crisp Diff edit", Duration::from_secs(6), || view_with_id(&root, "diff-dirty-badge").is_some());
+            key("s", "s", 1, command);
+            clean("diff-dirty-badge");
+            assert_ne!(fs::read_to_string(&path).unwrap(), modified);
+            click(diff, 1);
+            key("z", "z", 6, command);
+            wait_until("Crisp undo after saving", Duration::from_secs(6), || view_with_id(&root, "diff-dirty-badge").is_some());
+            key("s", "s", 1, command);
+            clean("diff-dirty-badge");
+            assert_eq!(fs::read_to_string(&path).unwrap(), modified);
+
+            for diff in [diff, "working-diff-unified-editor"] {
+                if diff == "working-diff-unified-editor" {
+                    click("diff-layout-toggle", 1);
+                    // The old split editor is gone. Allow a full caret blink
+                    // period so a timer left behind fails this regression.
+                    pump(650);
+                }
+                for attempt in 1..=3 {
+                    click(diff, 1);
+                    key("x", "x", 7, NSEventModifierFlags::empty());
+                    wait_until("Crisp Diff draft", Duration::from_secs(6), || view_with_id(&root, "diff-dirty-badge").is_some());
+                    key("\u{F707}", "\u{F707}", 118, NSEventModifierFlags::Function);
+                    wait_until("Crisp source has the Diff draft", Duration::from_secs(6), || view_with_id(&root, "code-dirty-badge").is_some());
+                    key("z", "z", 6, command);
+                    clean("code-dirty-badge");
+                    key("[", "[", 33, command);
+                    wait_until("Crisp Diff ready for redo", Duration::from_secs(6), || editor_has_responder(diff));
+                    key("Z", "z", 6, command | NSEventModifierFlags::Shift);
+                    wait_until(&format!("Crisp {diff} redo {attempt}"), Duration::from_secs(6), || view_with_id(&root, "diff-dirty-badge").is_some());
+                    key("z", "z", 6, command);
+                    clean("diff-dirty-badge");
+                    assert_eq!(fs::read_to_string(&path).unwrap(), modified);
+                }
+            }
+            println!("NATIVE_CRISP_BACKGROUND_DIFF_REDO PASS display={number} linked={linked}");
+        }
+
+        click("diff-jump-source-btn", 1);
+        click("code-history-btn", 1);
+        click(&snapshot_row, 1);
+        expect("local-history-current", "CRISP_FIRST_CHANGE");
+        expect("local-history-change-count", "1 / 2");
+        click("local-history-hunk-next", 1);
+        expect("local-history-current", "CRISP_LAST_CHANGE");
+        expect("local-history-change-count", "2 / 2");
+        click("local-history-restore-hunk", 1);
+        expect("local-history-modal", "已在编辑器恢复此变更块");
+        expect("local-history-change-count", "1 / 1");
+        assert_eq!(fs::read_to_string(&path).unwrap(), modified);
+        save_window_png(&window, &fixture.join("local-history.png"));
+        println!("NATIVE_CRISP_BACKGROUND_HISTORY PASS display={number}");
+
+        click("local-history-close", 1);
+        clean("local-history-modal");
+        let compact = NSSize::new(640.0, 500.0);
+        window.setContentSize(compact);
+        wait_until("compact Git window size", Duration::from_secs(6), || root.bounds().size == compact);
+        check_window();
+        key("9", "9", 25, NSEventModifierFlags::Command);
+        let row_id = format!("git-commit-row-{second_commit}");
+        expect(&row_id, CRISP_SECOND_SUBJECT);
+        save_window_png(&window, &fixture.join("git-log-compact-before-hover.png"));
+        let row = view_with_id(&root, &row_id).unwrap();
+        let subject = view_with_id(&row, "git-commit-subject").expect("commit subject");
+        let list = view_with_id(&root, "git-commit-list-scroll").expect("commit list");
+        let bounds = |view: &NSView| view.convertRect_toView(view.bounds(), None);
+        wait_until("compact commit list fits the resized window", Duration::from_secs(6), || {
+            let area = bounds(&list);
+            area.origin.x >= 0.0 && area.origin.x + area.size.width <= compact.width
+                && area.origin.y >= 0.0 && area.origin.y + area.size.height <= compact.height
+        });
+        let title = view_with_id(&root, "git-log-title").expect("Git tool window title");
+        move_pointer(&window, &input_surface, center_in_window(&title));
+        pump(30);
+        clean("toolbar-tooltip");
+        let visible = NSIntersectionRect(subject.bounds(), subject.visibleRect());
+        let hit = NSIntersectionRect(subject.convertRect_toView(visible, None), bounds(&list));
+        assert!(hit.size.width > 0.0 && hit.size.height > 0.0, "commit subject is clipped: {hit:?}");
+        let point = NSPoint::new(
+            hit.origin.x + hit.size.width * 0.5,
+            hit.origin.y + hit.size.height * 0.5,
+        );
+        move_pointer(&window, &input_surface, point);
+        let tooltip_matches = || view_with_id(&root, "toolbar-tooltip").is_some_and(|tip| {
+            a11y_contains(&tip, CRISP_SECOND_SUBJECT) && a11y_contains(&tip, &second_commit)
+        });
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !tooltip_matches() && Instant::now() < deadline {
+            pump(15);
+        }
+        if !tooltip_matches() {
+            let tip = view_with_id(&root, "toolbar-tooltip").map(|tip| view_a11y_text(&tip));
+            save_window_png(&window, &fixture.join("git-log-compact-hover-timeout.png"));
+            panic!("compact Git subject tooltip missing: point={point:?}, subject={hit:?}, tooltip={tip:?}");
+        }
+        check_window();
+        save_window_png(&window, &fixture.join("git-log-commit-subject-tooltip.png"));
+        for (id, label) in [
+            ("git-log-view-options", "提交列表视图选项"),
+            ("git-file-view-options", "变更文件视图选项"),
+        ] {
+            wait_until(id, Duration::from_secs(6), || view_with_id(&root, id).is_some());
+            let target = view_with_id(&root, id).unwrap();
+            move_pointer(&window, &input_surface, center_in_window(&target));
+            expect("toolbar-tooltip", label);
+        }
+        save_window_png(&window, &fixture.join("git-log-small-window.png"));
+        check_window();
+        println!("NATIVE_CRISP_BACKGROUND_SMALL_GIT_LOG PASS display={number} linked={linked}");
+        window.close();
+        assert!(!app.isActive());
+        assert!(!runtime_panicked.load(std::sync::atomic::Ordering::Relaxed), "Crisp runtime panicked");
     }
 
     pub fn run() {
         let _ = env_logger::try_init();
         let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if std::env::var_os("NEMOROUS_NATIVE_CRISP").is_some() {
+            return run_on_crisp(&root_dir);
+        }
         let baseline_repo = root_dir.join("build/migration-handoff/baseline/repo");
         let commit_panel = std::env::var_os("NEMOROUS_NATIVE_COMMIT_PANEL").is_some();
         let git_log = std::env::var_os("NEMOROUS_NATIVE_GIT_LOG").is_some();
+        let linked_worktree = git_log && std::env::var_os("NEMOROUS_NATIVE_LINKED_WORKTREE").is_some();
         let left_tools = if commit_panel {
             Some(350.0)
         } else {
@@ -1115,7 +2441,18 @@ mod macos {
             dir
         };
         let repo_copy = work_dir.join("repo");
+        let scope_gate = work_dir.join("diff-scope-gate");
         if git_log {
+            setup_scope_read_gate(&scope_gate);
+        }
+        if linked_worktree {
+            let primary = work_dir.join("primary");
+            git_log_fixture(&primary);
+            git_run(&primary, &["worktree", "add", "-b", "agent/linked", repo_copy.to_str().unwrap(), "HEAD"]);
+            for name in ["README.md", "review-lines.txt"] {
+                fs::copy(primary.join(name), repo_copy.join(name)).unwrap();
+            }
+        } else if git_log {
             git_log_fixture(&repo_copy);
         } else if darcula {
             let base = r#"package demo;
@@ -1174,15 +2511,7 @@ public final class RetryPolicy implements java.io.Serializable {
             );
             fs::write(file, working).unwrap();
         } else if left_tools.is_some() {
-            for (name, text) in [
-                ("src/nested/tracked.txt", "first\nbase\nlast\n"),
-                ("src/nested/deeper/leaf.txt", "leaf\n"),
-                ("docs/nested/guide.md", "guide\n"),
-            ] {
-                let path = repo_copy.join(name);
-                fs::create_dir_all(path.parent().unwrap()).unwrap();
-                fs::write(path, text).unwrap();
-            }
+            write_left_tool_files(&repo_copy);
             git_run(&repo_copy, &["init", "-b", "main"]);
             git_run(&repo_copy, &["add", "."]);
             git_run(&repo_copy, &["-c", "user.name=Nemorous QA", "-c", "user.email=native@example.invalid",
@@ -1268,6 +2597,7 @@ public final class RetryPolicy implements java.io.Serializable {
             cfg_json["theme"] = "darcula".into();
             cfg_json["auto_update"] = false.into();
             cfg_json["git_panel_height"] = 330.0.into();
+            cfg_json["editor_soft_wrap"] = false.into();
         }
         if batch6 {
             cfg_json["auto_update"] = false.into();
@@ -1276,9 +2606,15 @@ public final class RetryPolicy implements java.io.Serializable {
             cfg_json["diff_side_by_side"] = true.into();
         }
         if batch5 {
+            let desktop_path = std::env::var_os("NEMOROUS_NATIVE_DESKTOP_PATH").is_some();
+            let (program, args) = if desktop_path {
+                ("rg", "--version")
+            } else {
+                ("/bin/sh", "-c 'printf NATIVE_RUN_OUTPUT; exit 7'")
+            };
             cfg_json["run_configs"] = serde_json::json!([{
-                "id": "native-run", "name": "Native Run fixture", "kind": "run", "command": "/bin/sh",
-                "args": "-c 'printf NATIVE_RUN_OUTPUT; exit 7'"
+                "id": "native-run", "name": "Native Run fixture", "kind": "run", "command": program,
+                "args": args
             }]);
         }
         fs::write(&cfg_path, serde_json::to_string_pretty(&cfg_json).unwrap()).unwrap();
@@ -1341,7 +2677,8 @@ public final class RetryPolicy implements java.io.Serializable {
 
         let root = surface.view();
         if git_log {
-            git_log_review(&app, &window, &root, &root_dir.join("build/git-log-review"));
+            let evidence = if linked_worktree { "build/linked-worktree-review" } else { "build/git-log-review" };
+            git_log_review(&app, &window, &root, &repo_copy, &root_dir.join(evidence), &scope_gate);
             window.close();
             pump(150);
             return;

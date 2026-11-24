@@ -34,7 +34,11 @@ pub const ICO_EXPAND: &str = r#"<svg viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7
 pub const ICO_EYE: &str = r#"<svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>"#;
 pub const ICO_UNDO: &str = r#"<svg viewBox="0 0 24 24"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10h-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 
-pub fn icon(markup: &'static str, size_px: f32, color: Hsla) -> impl IntoElement {
+pub fn icon(
+    markup: &'static str,
+    size_px: f32,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
     svg(ImageSrc::svg_markup(markup))
         .w(px(size_px))
         .h(px(size_px))

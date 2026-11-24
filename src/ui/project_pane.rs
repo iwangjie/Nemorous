@@ -14,7 +14,7 @@ use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
-use super::left_tool_window::{ToolWindow, button};
+use super::left_tool_window::{ToolWindow, button, tree_scroll};
 
 #[derive(Default)]
 struct ProjectDir {
@@ -128,11 +128,7 @@ pub fn project_pane() -> impl IntoElement {
     let reveal_request = computed(|| app_signal().with(|s| s.project_reveal_request));
     effect(move || {
         if reveal_request.get() != 0 {
-            after_answer(move || {
-                located_row.reveal(nsh_core::RevealOptions::default()
-                    .vertical(nsh_core::ScrollAlignment::Nearest)
-                    .animated(false));
-            });
+            super::reveal_selected_row(located_row);
         }
     });
     let title = text(move || if tool.width.get() < 116.0 { "文件" } else { "文件树" })
@@ -190,10 +186,10 @@ pub fn project_pane() -> impl IntoElement {
                 ),
         )
         .child(
-            scroll()
-                .test_id("project-tree-scroll")
-                .flex_1()
-                .child(dynamic(move || {
+            tree_scroll(
+                "project-tree-scroll",
+                "project-tree-rows",
+                dynamic(move || {
                     let p = current_palette();
                     let snap = app_signal().with(|s| {
                         let mut status_map: HashMap<String, String> = HashMap::new();
@@ -278,6 +274,7 @@ pub fn project_pane() -> impl IntoElement {
                             ))
                             .child(
                                 text(if workspace_name.is_empty() { "工作区".into() } else { workspace_name })
+                                    .flex_none()
                                     .text_size(px(11.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(p.text_primary),
@@ -355,7 +352,8 @@ pub fn project_pane() -> impl IntoElement {
                                         ),
                                 )
                                 .child(
-                                    text(repo.name.clone())
+                                    text(repo.label().to_owned())
+                                        .flex_none()
                                         .text_size(px(11.5))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(p.text_primary)
@@ -384,7 +382,8 @@ pub fn project_pane() -> impl IntoElement {
                     }
 
                     view().flex_col().py(px(4.0)).children(rows).into_element()
-                })),
+                }),
+            ),
         ))
 }
 
@@ -430,6 +429,7 @@ fn render_project_dir(
         out.push(
             view()
                 .test_id(&format!("project-dir-{}", sub.rel_path))
+                .when(selected, |row| row.element_ref(&located_row))
                 .h(px(24.0))
                 .pl(px(indent))
                 .pr(px(8.0))
@@ -507,6 +507,7 @@ fn render_project_dir(
                 .child(icons::icon(ICO_FOLDER, 12.0, folder_col))
                 .child(
                     text(sub.name.clone())
+                        .flex_none()
                         .text_size(px(11.5))
                         .text_color(p.text_primary)
                         .number_of_lines(1u32),
@@ -578,15 +579,19 @@ fn render_project_dir(
                         if extended {
                             if let Some(index) = s.project_compare_keys.iter().position(|existing| existing == &key) {
                                 s.project_compare_keys.remove(index);
+                                s.project_selected_file = s.project_compare_keys.last().and_then(|active| {
+                                    s.workspace_files.iter().find(|file| file.key() == *active).cloned()
+                                });
                             } else {
                                 s.project_compare_keys.push(key.clone());
+                                s.project_selected_file = Some(f.clone());
                             }
                             s.project_located_key = s.project_compare_keys.last().cloned();
                         } else {
                             s.project_compare_keys = vec![key.clone()];
                             s.project_located_key = Some(key);
+                            s.project_selected_file = Some(f.clone());
                         }
-                        s.project_selected_file = Some(f.clone());
                         s.project_selected_dir = None;
                         s.focus_zone = FocusZone::ProjectTree;
                     });
@@ -596,6 +601,16 @@ fn render_project_dir(
                 })
                 .on_context_menu(move |e: &ContextMenuEvent| {
                     let f = wf_cm.clone();
+                    app_signal().update(|s| {
+                        let key = f.key();
+                        if !s.project_compare_keys.contains(&key) {
+                            s.project_compare_keys = vec![key.clone()];
+                        }
+                        s.project_located_key = Some(key);
+                        s.project_selected_file = Some(f.clone());
+                        s.project_selected_dir = None;
+                        s.focus_zone = FocusZone::ProjectTree;
+                    });
                     let f_open = f.clone();
                     let f_preview = f.clone();
                     let mut items = vec![
@@ -635,6 +650,7 @@ fn render_project_dir(
                 .child(icons::icon(ICO_FILE, 11.5, text_col))
                 .child(
                     text(base)
+                        .flex_none()
                         .text_size(px(11.5))
                         .text_color(text_col)
                         .number_of_lines(1u32),

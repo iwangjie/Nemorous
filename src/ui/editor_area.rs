@@ -73,7 +73,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                     .cursor(Cursor::Pointer)
                     .hover(move |s| if active { s } else { s.bg(p.surface2) })
                     .on_press(move |e: &PressEvent| {
-                        crate::code_split_runtime::capture_views();
+                        state::cancel_diff_read();
+                        state::capture_editor_views();
                         state::set_text_input_focused(false);
                         app_signal().update(|s| {
                             crate::code_split_runtime::select_tab_in_model(s, idx);
@@ -161,6 +162,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                     .cursor(Cursor::Pointer)
                     .hover(move |s| if active { s } else { s.bg(p.surface2) })
                     .on_press(|| {
+                        state::cancel_diff_read();
+                        state::capture_editor_views();
                         state::set_text_input_focused(false);
                         app_signal().update(|s| {
                             state::sync_dirty_code_tab_into_working_diff(s);
@@ -237,6 +240,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                     .cursor(Cursor::Pointer)
                     .hover(move |s| if active { s } else { s.bg(p.surface2) })
                     .on_press(|| {
+                        state::cancel_diff_read();
+                        state::capture_editor_views();
                         app_signal().update(|s| {
                             s.editor_tab = EditorTabKind::CommitDiff;
                             let side = s
@@ -343,6 +348,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                                 MenuItem::new(title)
                                     .checked(cur_tab == EditorTabKind::File && i == active_i)
                                     .on_select(move || {
+                                        state::cancel_diff_read();
+                                        state::capture_editor_views();
                                         state::set_text_input_focused(false);
                                         app_signal().update(|s| {
                                             crate::code_split_runtime::select_tab_in_model(s, i);
@@ -358,6 +365,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                                 MenuItem::new(format!("Diff: {name}"))
                                     .checked(cur_tab == EditorTabKind::WorkingDiff)
                                     .on_select(|| {
+                                        state::cancel_diff_read();
+                                        state::capture_editor_views();
                                         state::set_text_input_focused(false);
                                         app_signal().update(|s| {
                                             state::sync_dirty_code_tab_into_working_diff(s);
@@ -384,6 +393,8 @@ pub fn editor_tab_bar() -> impl IntoElement {
                                 MenuItem::new(format!("Diff: {name}"))
                                     .checked(cur_tab == EditorTabKind::CommitDiff)
                                     .on_select(|| {
+                                        state::cancel_diff_read();
+                                        state::capture_editor_views();
                                         state::set_text_input_focused(false);
                                         app_signal().update(|s| {
                                             s.editor_tab = EditorTabKind::CommitDiff;

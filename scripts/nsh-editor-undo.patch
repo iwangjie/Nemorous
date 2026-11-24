@@ -1,0 +1,684 @@
+diff --git a/crates/nsh-base/src/editor/buffer.rs b/crates/nsh-base/src/editor/buffer.rs
+index d451f33..78ffa22 100644
+--- a/crates/nsh-base/src/editor/buffer.rs
++++ b/crates/nsh-base/src/editor/buffer.rs
+@@ -16,7 +16,7 @@ use ropey::Rope;
+
+ use super::{
+     data::EditorPosition,
+-    types::{Point, Selections},
++    types::{Point, Selection, Selections},
+ };
+
+ /// The undo steps kept; older ones are dropped.
+@@ -89,6 +89,73 @@ struct Step {
+     kind: EditKind,
+ }
+
++/// The undo and redo history of an editor at a specific document version.
++pub struct EditorUndoHistory(Buffer);
++
++impl EditorUndoHistory {
++    /// Record one text replacement while the editor view is unmounted.
++    pub fn record_replacement(
++        prior: Option<Self>,
++        before: &str,
++        after: &str,
++        caret: EditorPosition,
++    ) -> Option<Self> {
++        let mut buffer = Self::buffer_for(prior, before);
++        let selections = Selections::single(Selection::caret(buffer.offset_of(caret)));
++        buffer.set_text(after, &selections, &selections);
++        (buffer.can_undo() || buffer.can_redo()).then_some(Self(buffer))
++    }
++
++    /// Adds a source editor's model-driven edit, placing its undo caret at the change.
++    pub fn record_source_replacement(prior: Option<Self>, before: &str, after: &str) -> Option<Self> {
++        const MAX_SOURCE_STEPS: usize = 200;
++        const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
++
++        let mut buffer = Self::buffer_for(prior, before);
++        let caret = Selections::default();
++        let changes = buffer.set_text(after, &caret, &caret);
++        if let Some(change) = changes.first() {
++            let position = Selection::caret(change.range.start);
++            if let Some(step) = buffer.undo.back_mut() {
++                step.before = Selections::single(position);
++                step.after = Selections::single(position);
++            }
++            let step_size = |step: &Step| step.edits.iter().map(|edit| edit.old.len() + edit.new.len()).sum::<usize>();
++            let mut bytes: usize = buffer.undo.iter().map(step_size).sum();
++            while buffer.undo.len() > MAX_SOURCE_STEPS || bytes > MAX_SOURCE_BYTES {
++                if let Some(step) = buffer.undo.pop_front() {
++                    bytes -= step_size(&step);
++                }
++            }
++        }
++        (buffer.can_undo() || buffer.can_redo()).then_some(Self(buffer))
++    }
++
++    /// Undo or redo a step on the exact document version that owns it.
++    pub fn step(&mut self, expected: &str, redo: bool) -> Option<(String, EditorPosition)> {
++        if self.0.rope != expected {
++            self.0.clear_undo_history();
++            return None;
++        }
++        let (_, selections) = if redo { self.0.redo() } else { self.0.undo() }?;
++        Some((self.0.text(), self.0.position(selections.primary().head)))
++    }
++
++    fn buffer_for(prior: Option<Self>, before: &str) -> Buffer {
++        prior.filter(|history| history.0.rope == before)
++            .map_or_else(|| Buffer::new(before), |history| history.0)
++    }
++}
++
++impl fmt::Debug for EditorUndoHistory {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("EditorUndoHistory")
++            .field("undo", &self.0.undo.len())
++            .field("redo", &self.0.redo.len())
++            .finish()
++    }
++}
++
+ /// The text of an editor, with its undo history.
+ pub(crate) struct Buffer {
+     rope: Rope,
+@@ -499,6 +566,33 @@ impl Buffer {
+         !self.redo.is_empty()
+     }
+
++    pub(crate) fn take_undo_history(&mut self) -> Option<EditorUndoHistory> {
++        if !self.can_undo() && !self.can_redo() {
++            return None;
++        }
++        self.break_undo_group();
++        let mut saved = self.snapshot();
++        saved.undo = std::mem::take(&mut self.undo);
++        saved.redo = std::mem::take(&mut self.redo);
++        Some(EditorUndoHistory(saved))
++    }
++
++    pub(crate) fn restore_undo_history(&mut self, history: EditorUndoHistory) -> bool {
++        if self.can_undo() || self.can_redo() || self.rope != history.0.rope {
++            return false;
++        }
++        self.undo = history.0.undo;
++        self.redo = history.0.redo;
++        self.break_undo_group();
++        true
++    }
++
++    pub(crate) fn clear_undo_history(&mut self) {
++        self.undo.clear();
++        self.redo.clear();
++        self.break_undo_group();
++    }
++
+     /// The next edit starts a new undo step (a caret moved away, a pause).
+     pub(crate) fn break_undo_group(&mut self) {
+         self.open = false;
+diff --git a/crates/nsh-base/src/editor/commands.rs b/crates/nsh-base/src/editor/commands.rs
+index ebfc8b6..4a27232 100644
+--- a/crates/nsh-base/src/editor/commands.rs
++++ b/crates/nsh-base/src/editor/commands.rs
+@@ -179,6 +179,20 @@ pub(crate) enum Command {
+     SplitSelectionIntoLines,
+ }
+
++impl Command {
++    pub(crate) fn edits_document(self) -> bool {
++        matches!(self,
++            Self::Backspace | Self::Delete | Self::DeleteWordLeft | Self::DeleteWordRight
++            | Self::DeleteToLineStart | Self::DeleteToLineEnd | Self::DeleteLine
++            | Self::Newline | Self::NewlineBelow | Self::NewlineAbove | Self::Indent | Self::Outdent
++            | Self::ToggleComment | Self::MoveLinesUp | Self::MoveLinesDown
++            | Self::DuplicateLinesUp | Self::DuplicateLinesDown | Self::JoinLines
++            | Self::TransposeChars | Self::Undo | Self::Redo | Self::SortLines { .. }
++            | Self::ChangeCase(_) | Self::TrimTrailingWhitespace | Self::ToggleBlockComment
++        )
++    }
++}
++
+ /// What a command did.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub(crate) enum Outcome {
+diff --git a/crates/nsh-base/src/editor/controller.rs b/crates/nsh-base/src/editor/controller.rs
+index 8b3312d..2ff84f0 100644
+--- a/crates/nsh-base/src/editor/controller.rs
++++ b/crates/nsh-base/src/editor/controller.rs
+@@ -11,13 +11,15 @@ use nsh_core::{element::Os, keymap::When, prelude::*};
+
+ use super::{
+     EditorCommand, EditorContextMenuEvent, EditorEvent, EditorFoldRange, EditorProps,
+-    EditorSelection,
+-    commands::{Case, Command, EditOptions, Outcome},
++    EditorProjection, EditorSelection, EditorUndoHistory,
++    buffer::Buffer,
++    commands::{Case, Command, EditOptions, Editing, Outcome},
+     diagnostics,
+     fold::FoldRange,
+     highlight::{GUESS_CONTEXT, GUESS_DISTANCE, Highlighter, LOOKAHEAD, SLICE, off_thread},
+     keymap,
+     layout::{self, AutoScroll},
++    projection::{Projection, SourceRows},
+     search,
+     select::{ExpandStack, SelectionHistory},
+     state::{Font, State},
+@@ -70,6 +72,7 @@ struct Sink {
+ #[derive(Clone)]
+ pub(crate) struct Ed {
+     pub(crate) st: Rc<RefCell<State>>,
++    projection: Rc<RefCell<Option<Projection>>>,
+     pub(crate) props: EditorProps,
+     pub(crate) cx: Scope<EditorEvent>,
+     /// The text or its layout changed: rows' content and positions.
+@@ -159,6 +162,7 @@ impl Ed {
+         let sel_history = SelectionHistory::new(&state.selections);
+         let ed = Ed {
+             st: Rc::new(RefCell::new(state)),
++            projection: Rc::default(),
+             props,
+             cx,
+             text_rev: signal(0),
+@@ -473,8 +477,97 @@ impl Ed {
+
+     // Running commands.
+
++    pub(crate) fn project_document(
++        &self,
++        source: &str,
++        view: EditorProjection,
++        render: impl Fn(&str, &str) -> Option<EditorProjection> + 'static,
++    ) {
++        *self.projection.borrow_mut() = Some(Projection {
++            source: Buffer::new(source),
++            source_lines: view.source_lines,
++            prefix_columns: view.prefix_columns,
++            render: Rc::new(render),
++        });
++        self.st.borrow_mut().projection_active = true;
++    }
++
++    fn has_projection(&self) -> bool {
++        self.projection.borrow().is_some()
++    }
++
++    fn projected_edit<T>(
++        &self,
++        allow_historical_caret: bool,
++        keep_sink: bool,
++        apply: impl FnOnce(&mut Editing<'_>) -> (T, Outcome),
++    ) -> Option<T> {
++        let (result, outcome, selections, source_change) = {
++            let mut projection = self.projection.borrow_mut();
++            let projection = projection.as_mut()?;
++            let state = self.st.borrow();
++            if state.options.read_only {
++                return None;
++            }
++            let mut selections = projection.source_selections(&state.buffer, &state.selections)
++                .or_else(|| allow_historical_caret.then(|| Selections::single(Selection::caret(0))))?;
++            let before = SourceRows(projection.source.snapshot());
++            let (result, outcome) = apply(&mut Editing {
++                buffer: &mut projection.source,
++                selections: &mut selections,
++                language: state.language,
++                options: &state.options,
++                layout: &before,
++                page_rows: 1,
++            });
++            let source_change = matches!(outcome, Outcome::Edited(_)).then(|| {
++                (projection.render.clone(), before.0.text(), projection.source.text())
++            });
++            (result, outcome, selections, source_change)
++        };
++
++        if let Some((render, before, after)) = source_change {
++            let Some(view) = render(&before, &after) else {
++                if let Some(projection) = self.projection.borrow_mut().as_mut() {
++                    projection.source = Buffer::new(&before);
++                }
++                return None;
++            };
++            let changes = {
++                let mut projection = self.projection.borrow_mut();
++                let projection = projection.as_mut()?;
++                let mut state = self.st.borrow_mut();
++                let previous = state.selections.clone();
++                let changes = state.buffer.set_text(&view.text, &previous, &previous);
++                state.buffer.clear_undo_history();
++                projection.source_lines = view.source_lines;
++                projection.prefix_columns = view.prefix_columns;
++                state.selections = projection.display_selections(&state.buffer, &selections);
++                changes
++            };
++            if !keep_sink {
++                self.empty_sink();
++            }
++            self.after_typing(Outcome::Edited(changes));
++            self.report_folds();
++        } else if outcome == Outcome::Moved {
++            if let Some(projection) = self.projection.borrow().as_ref() {
++                let mut state = self.st.borrow_mut();
++                state.selections = projection.display_selections(&state.buffer, &selections);
++            }
++            self.after(Outcome::Moved);
++        }
++        Some(result)
++    }
++
+     /// Runs `command` at the selections.
+     pub(crate) fn run(&self, command: Command) {
++        if command.edits_document() && self.has_projection() {
++            self.projected_edit(matches!(command, Command::Undo | Command::Redo), false, |editing| {
++                ((), editing.run(command))
++            });
++            return;
++        }
+         let outcome = {
+             let mut st = self.st.borrow_mut();
+             let page = st.page_rows(self.viewport.get_untracked().height);
+@@ -489,6 +582,9 @@ impl Ed {
+         match outcome {
+             Outcome::Nothing => {}
+             Outcome::Moved => {
++                if let Some(projection) = self.projection.borrow_mut().as_mut() {
++                    projection.source.break_undo_group();
++                }
+                 let unfolded = {
+                     let mut st = self.st.borrow_mut();
+                     st.buffer.break_undo_group();
+@@ -711,6 +807,11 @@ impl Ed {
+         if text.is_empty() {
+             return;
+         }
++        if self.has_projection() {
++            self.st.borrow_mut().composition = None;
++            self.projected_edit(false, true, |editing| ((), editing.insert(text)));
++            return;
++        }
+         let outcome = {
+             let mut st = self.st.borrow_mut();
+             st.composition = None;
+@@ -852,6 +953,14 @@ impl Ed {
+
+     /// Text the app inserts (`insert`): plain, at every selection.
+     pub(crate) fn insert_plain(&self, text: &str) {
++        if self.has_projection() {
++            self.projected_edit(false, false, |editing| {
++                let ranges = editing.selections.all().iter()
++                    .map(|selection| (selection.range(), text.to_owned())).collect();
++                ((), editing.replace(ranges))
++            });
++            return;
++        }
+         let outcome = {
+             let mut st = self.st.borrow_mut();
+             let ranges: Vec<_> = st
+@@ -877,6 +986,18 @@ impl Ed {
+     }
+
+     pub(crate) fn cut(&self) {
++        if self.has_projection() {
++            if let Some((text, line_wise)) = self.projected_edit(false, false, |editing| {
++                let (text, line_wise, outcome) = editing.cut();
++                ((text, line_wise), outcome)
++            }) {
++                *self.line_copy.borrow_mut() = line_wise.then(|| text.clone());
++                set_clipboard(text);
++            } else {
++                self.copy();
++            }
++            return;
++        }
+         let (text, line_wise, outcome) = {
+             let mut st = self.st.borrow_mut();
+             st.editing(1, |e| e.cut())
+@@ -889,6 +1010,10 @@ impl Ed {
+     /// Pastes `text` (what the sink reports a paste of).
+     pub(crate) fn paste(&self, text: &str) {
+         let line_wise = self.line_copy.borrow().as_deref() == Some(text);
++        if self.has_projection() {
++            self.projected_edit(false, false, |editing| ((), editing.paste(text, line_wise)));
++            return;
++        }
+         let outcome = {
+             let mut st = self.st.borrow_mut();
+             st.editing(1, |e| e.paste(text, line_wise))
+@@ -1130,11 +1255,56 @@ impl Ed {
+         self.st.borrow().buffer.text()
+     }
+
++    pub(crate) fn source_text(&self) -> String {
++        self.projection.borrow().as_ref().map_or_else(|| self.text(), |p| p.source.text())
++    }
++
++    pub(crate) fn take_undo_history(&self) -> Option<EditorUndoHistory> {
++        if let Some(projection) = self.projection.borrow_mut().as_mut() {
++            projection.source.take_undo_history()
++        } else {
++            self.st.borrow_mut().buffer.take_undo_history()
++        }
++    }
++
++    pub(crate) fn restore_undo_history(&self, history: EditorUndoHistory) -> bool {
++        if let Some(projection) = self.projection.borrow_mut().as_mut() {
++            projection.source.restore_undo_history(history)
++        } else {
++            self.st.borrow_mut().buffer.restore_undo_history(history)
++        }
++    }
++
++    pub(crate) fn set_source_text(&self, text: &str) {
++        if self.has_projection() {
++            self.projected_edit(true, false, |editing| {
++                let before = editing.selections.clone();
++                let changes = editing.buffer.set_text(text, &before, &before);
++                editing.selections.clamp(editing.buffer.len());
++                let outcome = if changes.is_empty() { Outcome::Nothing } else { Outcome::Edited(changes) };
++                ((), outcome)
++            });
++        } else {
++            self.set_text(text);
++        }
++    }
++
+     pub(crate) fn set_text(&self, text: &str) {
++        self.replace_text(text, true);
++    }
++
++    pub(crate) fn reload_text(&self, text: &str) {
++        self.replace_text(text, false);
++    }
++
++    fn replace_text(&self, text: &str, undoable: bool) {
+         let changes = {
+             let mut st = self.st.borrow_mut();
+             let before = st.selections.clone();
+             let changes = st.buffer.set_text(text, &before, &before);
++            if !undoable {
++                st.buffer.clear_undo_history();
++            }
+             st.changed(&changes);
+             changes
+         };
+@@ -1159,11 +1329,15 @@ impl Ed {
+     }
+
+     pub(crate) fn can_undo(&self) -> bool {
+-        self.st.borrow().buffer.can_undo()
++        self.projection.borrow().as_ref().map_or_else(
++            || self.st.borrow().buffer.can_undo(), |projection| projection.source.can_undo(),
++        )
+     }
+
+     pub(crate) fn can_redo(&self) -> bool {
+-        self.st.borrow().buffer.can_redo()
++        self.projection.borrow().as_ref().map_or_else(
++            || self.st.borrow().buffer.can_redo(), |projection| projection.source.can_redo(),
++        )
+     }
+
+     // Search.
+@@ -1196,6 +1370,9 @@ impl Ed {
+     }
+
+     pub(crate) fn replace_current(&self, with: &str) {
++        if self.has_projection() {
++            return;
++        }
+         let outcome = {
+             let mut st = self.st.borrow_mut();
+             let Some(index) = st.current_match() else {
+@@ -1217,6 +1394,9 @@ impl Ed {
+     }
+
+     pub(crate) fn replace_all(&self, with: &str) -> u32 {
++        if self.has_projection() {
++            return 0;
++        }
+         let (count, outcome) = {
+             let mut st = self.st.borrow_mut();
+             let Some(search) = st.search.clone() else {
+diff --git a/crates/nsh-base/src/editor/mod.rs b/crates/nsh-base/src/editor/mod.rs
+index cba5ba6..bd85a0a 100644
+--- a/crates/nsh-base/src/editor/mod.rs
++++ b/crates/nsh-base/src/editor/mod.rs
+@@ -32,6 +32,7 @@ pub(crate) mod languages;
+ pub(crate) mod layout;
+ mod movement;
+ mod parts;
++mod projection;
+ mod search;
+ mod select;
+ pub(crate) mod state;
+@@ -50,6 +51,7 @@ pub use data::{
+     EditorOverviewRulerLane, EditorOverviewRulerMark, EditorPosition, EditorRange, EditorSearch,
+     EditorSearchResult, EditorSelection, EditorToken,
+ };
++pub use buffer::EditorUndoHistory;
+ pub use definition::{EditorCodeActionRequest, EditorDefinitionRequest, EditorDefinitionTrigger};
+ pub use highlighter::{
+     EditorHighlighter, EditorText, EditorTextEdit, EditorTextPoint, EditorTokens,
+@@ -57,6 +59,7 @@ pub use highlighter::{
+ pub use hooks::{EditorBounds, EditorHoverEvent, EditorTextPressEvent};
+ pub use languages::{EditorLanguage, register_highlighter, register_language};
+ pub use layout::EditorScrollBeyond;
++pub use projection::EditorProjection;
+ use nsh_core::prelude::*;
+ pub use parts::{EditorClasses, EditorPart, EditorStyles};
+ pub use touch::EditorRect;
+@@ -509,6 +512,41 @@ pub struct EditorApi {
+ }
+
+ impl EditorApi {
++    /// Move the native undo and redo steps out before replacing this view.
++    pub fn take_undo_history(&self) -> Option<EditorUndoHistory> {
++        self.ed.take_undo_history()
++    }
++
++    /// Install parked steps in a fresh editor of exactly the same text.
++    pub fn restore_undo_history(&self, history: EditorUndoHistory) -> bool {
++        self.ed.restore_undo_history(history)
++    }
++
++    /// Replace the text with a new authoritative version and clear the history.
++    pub fn reload_value(&self, value: String) {
++        self.ed.reload_text(&value);
++    }
++
++    /// Binds this displayed editor to an editable source document.
++    pub fn project_document(
++        &self,
++        source: &str,
++        view: EditorProjection,
++        render: impl Fn(&str, &str) -> Option<EditorProjection> + 'static,
++    ) {
++        self.ed.project_document(source, view, render);
++    }
++
++    /// The underlying document, without the projection's display-only text.
++    pub fn source_value(&self) -> String {
++        self.ed.source_text()
++    }
++
++    /// Replaces the source as one undoable user edit.
++    pub fn set_source_value(&self, text: String) {
++        self.ed.set_source_text(&text);
++    }
++
+     /// Whether the text has line `line`: a ref's command runs at the
+     /// commit and cannot throw, so one given a line past the text does
+     /// nothing and is logged.
+diff --git a/crates/nsh-base/src/editor/projection.rs b/crates/nsh-base/src/editor/projection.rs
+new file mode 100644
+index 0000000..eab1f5c
+--- /dev/null
++++ b/crates/nsh-base/src/editor/projection.rs
+@@ -0,0 +1,128 @@
++//! A view of a source document with extra read-only rows and line prefixes.
++//!
++//! Mutating editor commands run against the source buffer. The displayed
++//! buffer retains its own scrolling, selection, search and copy behavior.
++
++use std::{ops::Range, rc::Rc};
++
++use nsh_core::prelude::{Points, px};
++
++use super::{
++    buffer::Buffer,
++    data::EditorPosition,
++    types::{RowLayout, Selection, Selections},
++};
++
++/// The display text and the source line for each display row. A row with no
++/// source line is read-only. Prefix columns on source rows are display-only.
++pub struct EditorProjection {
++    /// The displayed document, including historical rows and prefixes.
++    pub text: String,
++    /// The zero-based source line for each displayed logical line.
++    pub source_lines: Vec<Option<u32>>,
++    /// The number of UTF-16 columns before the source content starts.
++    pub prefix_columns: u32,
++}
++
++type Render = dyn Fn(&str, &str) -> Option<EditorProjection>;
++
++pub(crate) struct Projection {
++    pub(crate) source: Buffer,
++    pub(crate) source_lines: Vec<Option<u32>>,
++    pub(crate) prefix_columns: u32,
++    pub(crate) render: Rc<Render>,
++}
++
++impl Projection {
++    pub(crate) fn source_selections(
++        &self,
++        display: &Buffer,
++        selections: &Selections,
++    ) -> Option<Selections> {
++        let position = |pos: EditorPosition| {
++            let line = *self.source_lines.get(pos.line as usize)?.as_ref()?;
++            Some(EditorPosition::new(
++                line,
++                pos.column.saturating_sub(self.prefix_columns),
++            ))
++        };
++        let selected = selections
++            .all()
++            .iter()
++            .map(|selection| {
++                let anchor = display.position(selection.anchor);
++                let head = display.position(selection.head);
++                let first = anchor.line.min(head.line) as usize;
++                let last = anchor.line.max(head.line) as usize;
++                if self
++                    .source_lines
++                    .get(first..=last)?
++                    .iter()
++                    .any(Option::is_none)
++                {
++                    return None;
++                }
++                Some(Selection::new(
++                    self.source.offset_of(position(anchor)?),
++                    self.source.offset_of(position(head)?),
++                ))
++            })
++            .collect::<Option<Vec<_>>>()?;
++        Some(Selections::new(selected, selections.primary_index()))
++    }
++
++    pub(crate) fn display_selections(
++        &self,
++        display: &Buffer,
++        selections: &Selections,
++    ) -> Selections {
++        let offset = |pos: EditorPosition| {
++            self.source_lines
++                .iter()
++                .position(|line| *line == Some(pos.line))
++                .map_or(display.len(), |row| {
++                    display.offset_of(EditorPosition::new(
++                        row as u32,
++                        pos.column.saturating_add(self.prefix_columns),
++                    ))
++                })
++        };
++        Selections::new(
++            selections
++                .all()
++                .iter()
++                .map(|selection| {
++                    Selection::new(
++                        offset(self.source.position(selection.anchor)),
++                        offset(self.source.position(selection.head)),
++                    )
++                })
++                .collect(),
++            selections.primary_index(),
++        )
++    }
++}
++
++/// Editing operations in the source use logical rows. Visual navigation goes
++/// through the display buffer and its real, wrapped layout.
++pub(crate) struct SourceRows(pub(crate) Buffer);
++
++impl RowLayout for SourceRows {
++    fn row_count(&self) -> usize {
++        self.0.line_count()
++    }
++
++    fn locate(&self, offset: usize) -> (usize, Points) {
++        let pos = self.0.position(offset);
++        (pos.line as usize, px(pos.column as f32))
++    }
++
++    fn offset_at(&self, row: usize, x: Points) -> usize {
++        self.0
++            .offset_of(EditorPosition::new(row as u32, x.0.max(0.0) as u32))
++    }
++
++    fn row_range(&self, row: usize) -> Range<usize> {
++        self.0.line_start(row)..self.0.line_end(row)
++    }
++}
+diff --git a/crates/nsh-base/src/editor/state.rs b/crates/nsh-base/src/editor/state.rs
+index 071cba4..d5bc443 100644
+--- a/crates/nsh-base/src/editor/state.rs
++++ b/crates/nsh-base/src/editor/state.rs
+@@ -170,6 +170,8 @@ pub(crate) type Rect = Bounds<Points>;
+ /// The editor's state.
+ pub(crate) struct State {
+     pub(crate) buffer: Buffer,
++    /// Only source commands may edit while this buffer shows a projection.
++    pub(crate) projection_active: bool,
+     pub(crate) selections: Selections,
+     pub(crate) display: DisplayMap,
+     pub(crate) highlighter: Option<Highlighter>,
+@@ -233,6 +235,7 @@ impl State {
+         display.rebuild(&buffer);
+         State {
+             buffer,
++            projection_active: false,
+             selections: Selections::default(),
+             display,
+             // Made here where it needs nothing loaded first (its first job
+@@ -281,11 +284,13 @@ impl State {
+     ) -> R {
+         let before = self.buffer.snapshot();
+         let layout = self.display.layout(&before);
++        let mut options = self.options;
++        options.read_only |= self.projection_active;
+         let mut editing = Editing {
+             buffer: &mut self.buffer,
+             selections: &mut self.selections,
+             language: self.language,
+-            options: &self.options,
++            options: &options,
+             layout: &layout,
+             page_rows,
+         };

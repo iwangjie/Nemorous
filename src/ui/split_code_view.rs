@@ -1,4 +1,4 @@
-use nsh_base::{Editor, EditorApi, EditorSearch, EditorSearchResult, EditorSelection, editor};
+use nsh_base::{Editor, EditorApi, EditorSearchResult, EditorSelection, editor};
 use nsh_base::{h_resizable, resizable_panel};
 use nsh_core::prelude::*;
 
@@ -19,6 +19,19 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
     let last_sync = stored((String::new(), u64::MAX));
     let suppress = stored(false);
     let bound = stored(String::new());
+    let find_result = signal(EditorSearchResult::default());
+    let show_find_result = computed(move || app_signal().with(|s| {
+        s.code_find_open && s.editor_tab == state::EditorTabKind::File
+            && s.code_split.as_ref().is_some_and(|split| split.focused == side)
+    }));
+    effect(move || {
+        if show_find_result.get() {
+            let result = find_result.get();
+            if app_signal().with_untracked(|s| s.code_find_matches != result) {
+                app_signal().update(|s| s.code_find_matches = result);
+            }
+        }
+    });
 
     // 只以标签身份和内容版本为键；光标/滚动变化不重装编辑器。
     let sync_key = computed(move || code_split_runtime::pane_key(side));
@@ -205,24 +218,17 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
                 .decorations(move || crate::ui::bookmarks::editor_decorations_for_split(side))
                 .search(move || {
                     app_signal().with(|s| {
-                        (s.code_find_open && !s.code_find_query.is_empty())
-                            .then(|| EditorSearch::new(s.code_find_query.clone()))
+                        (s.code_find_open && !s.code_search.query.is_empty()).then(|| s.code_search.clone())
                     })
                 })
                 .on_search_change(move |result: &EditorSearchResult| {
-                    app_signal().update(|s| {
-                        if s.code_split
-                            .as_ref()
-                            .is_some_and(|split| split.focused == side)
-                        {
-                            s.code_find_matches = (result.count, result.current);
-                        }
-                    });
+                    if find_result.get_untracked() != *result {
+                        find_result.set(result.clone());
+                    }
                 })
                 .on_focus(move || {
                     state::set_text_input_focused(false);
                     code_split_runtime::focus(side);
-                    state::request_shortcut_rebind();
                 })
                 .on_change(move |val: &SharedString| {
                     if change_guard.with(|g| *g) {
@@ -264,8 +270,7 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
                 .on_text_press(|_: &nsh_base::EditorTextPressEvent| super::blame_view::note_text_press())
                 .on_context_menu(move |ev: &nsh_base::EditorContextMenuEvent| {
                     code_split_runtime::focus(side);
-                    let items = super::blame_view::menu_items(ev.position.line + 1);
-                    state::show_popup_menu_at(items, point(ev.x, ev.y));
+                    super::code_editor::show_context_menu(ev);
                 })
                 .into_element(), ed_ref, Some(side)),
         )

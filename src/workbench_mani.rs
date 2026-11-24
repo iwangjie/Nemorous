@@ -146,7 +146,7 @@ pub(crate) fn plan(
                 dir.is_dir() && dir.starts_with(&root),
                 "Mani 项目不在当前工作区"
             );
-            let mut cmd = Command::new("bash");
+            let mut cmd = crate::tool_command::command("bash");
             cmd.args(["-c", &task.cmd])
                 .current_dir(&dir)
                 .env("MANI_PROJECT_NAME", &name)

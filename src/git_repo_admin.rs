@@ -89,7 +89,8 @@ pub(crate) struct AdminSummary {
     pub remotes: Vec<RemoteSummary>,
     pub submodules: Vec<SubmoduleSummary>,
     pub sparse_enabled: bool,
-    pub lfs_installed: bool,
+    pub lfs_available: bool,
+    pub lfs_configured: bool,
     pub signing: SigningSummary,
 }
 
@@ -176,7 +177,8 @@ pub(crate) fn inspect(repo: &Path) -> Result<AdminSummary> {
         git_opt(repo, &["config", "--bool", "core.sparseCheckout"])?.as_deref(),
         Some("true")
     );
-    let lfs_installed =
+    let lfs_available = has_lfs(repo);
+    let lfs_configured =
         git_opt(repo, &["config", "--local", "--get", "filter.lfs.clean"])?.is_some();
 
     let commit_signed = matches!(
@@ -193,7 +195,8 @@ pub(crate) fn inspect(repo: &Path) -> Result<AdminSummary> {
         remotes,
         submodules,
         sparse_enabled,
-        lfs_installed,
+        lfs_available,
+        lfs_configured,
         signing: SigningSummary {
             enabled: commit_signed || tag_signed,
             format: git_opt(repo, &["config", "--local", "--get", "gpg.format"])?,
@@ -343,11 +346,16 @@ fn sparse(repo: &Path, action: &SparseAction) -> Result<String> {
     }
 }
 
+fn has_lfs(repo: &Path) -> bool {
+    run_git_string(repo, &["lfs", "version"]).is_ok()
+}
+
 fn lfs(repo: &Path, action: &LfsAction) -> Result<String> {
+    ensure!(has_lfs(repo), "当前 Git 找不到 Git LFS 命令，请先安装 git-lfs");
     match action {
         LfsAction::InstallLocal => run_git_string(repo, &["lfs", "install", "--local"]),
         LfsAction::Pull => run_git_string(repo, &["lfs", "pull"])
-            .map_err(|_| anyhow::anyhow!("Git LFS 拉取失败，请确认 git-lfs 已安装并检查网络")),
+            .map_err(|_| anyhow::anyhow!("Git LFS 拉取失败，请检查远端访问权限与仓库的 LFS 配置")),
         LfsAction::Track { patterns } => {
             if patterns.is_empty() {
                 bail!("at least one LFS pattern is required");

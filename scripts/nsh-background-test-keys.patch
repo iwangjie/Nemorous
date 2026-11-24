@@ -1,0 +1,103 @@
+diff --git a/crates/nsh-platform-macos/src/app.rs b/crates/nsh-platform-macos/src/app.rs
+index 48a3fc9..5097be7 100644
+--- a/crates/nsh-platform-macos/src/app.rs
++++ b/crates/nsh-platform-macos/src/app.rs
+@@ -21,7 +21,7 @@ use objc2::{
+ };
+ use objc2_app_kit::{
+     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+-    NSApplicationTerminateReply, NSAutoresizingMaskOptions, NSScreen, NSView, NSWindow,
++    NSApplicationTerminateReply, NSAutoresizingMaskOptions, NSEvent, NSEventType, NSScreen, NSView, NSWindow,
+     NSWindowDelegate, NSWindowStyleMask,
+ };
+ use objc2_foundation::{
+@@ -427,6 +427,52 @@ impl AppView {
+         self.container.clone()
+     }
+
++    /// Keep a non-activating test surface from changing the system cursor.
++    #[doc(hidden)]
++    pub fn suppress_background_test_cursor(&self) -> bool {
++        if self.background_test_window().is_none() {
++            return false;
++        }
++        self.surface.input.suppress_system_cursor.set(true);
++        true
++    }
++
++    fn background_test_window(&self) -> Option<Retained<NSWindow>> {
++        let app = NSApplication::sharedApplication(self.surface.mtm);
++        let window = self.container.window()?;
++        (!app.isActive()
++            && !window.isKeyWindow()
++            && window.styleMask().contains(NSWindowStyleMask::NonactivatingPanel))
++            .then_some(window)
++    }
++
++    /// Dispatch a synthetic key to this view in a non-activating test process.
++    #[doc(hidden)]
++    pub fn dispatch_background_test_key(&self, event: &NSEvent) -> bool {
++        let Some(window) = self.background_test_window() else { return false };
++        if window.windowNumber() != event.windowNumber()
++            || !matches!(event.r#type(), NSEventType::KeyDown | NSEventType::KeyUp)
++        {
++            return false;
++        }
++        crate::window::became_key(&self.surface, &window);
++        if crate::keyboard::press(&self.surface, event) {
++            return true;
++        }
++        let Some(responder) = window.firstResponder() else { return false };
++        if !responder.downcast_ref::<NSView>()
++            .is_some_and(|view| view.isDescendantOf(self.surface.root.ns()))
++        {
++            return false;
++        }
++        if event.r#type() == NSEventType::KeyDown {
++            responder.keyDown(event);
++        } else {
++            responder.keyUp(event);
++        }
++        true
++    }
++
+     /// The channel with the apps this view runs (`nsh/host`;
+     /// [`AppOptions::host`]): set their launch parameters
+     /// ([`nsh_engine::HostChannel::set_params`], read when an app starts),
+diff --git a/crates/nsh-platform-macos/src/input.rs b/crates/nsh-platform-macos/src/input.rs
+index 2231748..f67bbfa 100644
+--- a/crates/nsh-platform-macos/src/input.rs
++++ b/crates/nsh-platform-macos/src/input.rs
+@@ -176,6 +176,8 @@ pub(crate) struct Input {
+     /// hosted view's or another app's) — `NSCursor::currentCursor` is
+     /// another object than the one set when the pointer is customized.
+     cursor: Cell<Option<Cursor>>,
++    /// A background test still picks hovered views but leaves the system cursor alone.
++    pub(crate) suppress_system_cursor: Cell<bool>,
+     /// A Control-click (the secondary click) is down: its left-button
+     /// release is the secondary button's (`onMouseUp` reports `right`).
+     control_click: Cell<bool>,
+@@ -673,7 +675,9 @@ fn set_cursor_at(surface: &Surface, x: f32, y: f32, always: bool) {
+         None => Cursor::Default,
+     };
+     if let Some(cursor) = cursor_to_set(always, surface.input.cursor.get(), cursor) {
+-        ns_cursor(cursor).set();
++        if !surface.input.suppress_system_cursor.get() {
++            ns_cursor(cursor).set();
++        }
+         surface.input.cursor.set(Some(cursor));
+     }
+ }
+diff --git a/crates/nsh-platform-macos/src/keyboard.rs b/crates/nsh-platform-macos/src/keyboard.rs
+index c6a2a35..5a448ab 100644
+--- a/crates/nsh-platform-macos/src/keyboard.rs
++++ b/crates/nsh-platform-macos/src/keyboard.rs
+@@ -146,7 +146,7 @@ pub(crate) fn install(surface: &Rc<Surface>) {
+ }
+
+ /// The monitor's decision: whether `event` is consumed.
+-fn press(surface: &Rc<Surface>, event: &NSEvent) -> bool {
++pub(crate) fn press(surface: &Rc<Surface>, event: &NSEvent) -> bool {
+     match event.r#type() {
+         NSEventType::KeyDown => {
+             // The app's shortcuts keep their precedence: a binding that

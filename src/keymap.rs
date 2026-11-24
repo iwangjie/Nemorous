@@ -45,6 +45,8 @@ pub(crate) const ACTIONS: &[Definition] = &[
     action("structure", "文件结构", "编辑器", &["mod+f12"]),
     action("todos", "TODO", "编辑器", &["mod+shift+t"]),
     action("format", "重新格式化代码", "编辑", &["mod+alt+l"]),
+    action("findReferences", "查找引用", "编辑器", &["alt+f7"]),
+    action("quickFixes", "快速修复", "编辑器", &["alt+enter"]),
     action("bookmark", "切换书签", "编辑", &["mod+shift+b"]),
     action("find", "查找", "查找", &["mod+f"]),
     action("replace", "替换", "查找", &["mod+r", "mod+alt+f"]),
@@ -365,6 +367,22 @@ pub(crate) fn reset(cfg: &mut Config, id: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_binding_takes_precedence_over_a_later_editor_binding() {
+        use nsh_core::keymap::{KeyBinding, Keymap as SurfaceKeymap, When};
+
+        let shortcut = Keystroke::parse_with("cmd+[", true).unwrap();
+        let workspace = KeyBinding::new(1, shortcut, When::NotEditing, false).with_priority(1);
+        let editor = KeyBinding::new(2, shortcut, When::Always, false).focus_keys(true);
+        let table = SurfaceKeymap::new(vec![workspace, editor]);
+        assert_eq!(table.find(shortcut, false, false).fired(), Some(1));
+        assert_eq!(table.find(shortcut, true, false).fired(), Some(2));
+
+        let updated = KeyBinding::new(3, shortcut, When::Always, false).focus_keys(true);
+        let table = SurfaceKeymap::new(vec![editor, updated]);
+        assert_eq!(table.find(shortcut, false, false).fired(), Some(3));
+    }
 
     #[test]
     fn resolves_numeric_cocoa_bindings_rejects_alias_conflicts_and_preserves_unknowns() {

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::workbench::{self, button};
 use crate::state::{self, app_signal, current_palette};
-use crate::workbench_process::ChildGroup;
+use crate::workbench_process::{ChildGroup, ProcessDiagnostics, ProcessReport};
 use crate::workbench_protocol::Connection;
 use crate::workbench_run::{RunConfig, split_args};
 
@@ -19,13 +19,14 @@ struct Runtime(Option<Session>);
 
 struct Session {
     connection: Connection,
-    _adapter: Option<ChildGroup>,
+    adapter: Option<(ChildGroup, ProcessDiagnostics)>,
+    failure: Option<(String, Instant)>,
     launch: Value,
     breaks: BTreeMap<PathBuf, Vec<u32>>,
     seq: u64,
     pending: HashMap<u64, (String, Instant)>,
     thread: i64,
-    frame: i64,
+    configuration_done: bool,
 }
 
 #[derive(Clone, Default)]
@@ -37,6 +38,29 @@ struct Debug {
     frames: Vec<Value>,
     variables: Vec<String>,
     console: String,
+}
+
+impl Debug {
+    fn append_output(&mut self, text: &str) {
+        self.console.push_str(text);
+        const LIMIT: usize = 128 * 1024;
+        if self.console.len() > LIMIT {
+            let offset = self.console.ceil_char_boundary(self.console.len() - LIMIT);
+            self.console.drain(..offset);
+        }
+    }
+
+    fn clear_stack(&mut self) {
+        self.frames.clear();
+        self.variables.clear();
+    }
+}
+
+fn adapter_exit(status: std::process::ExitStatus) -> String {
+    let detail = status
+        .code()
+        .map_or_else(|| status.to_string(), |code| format!("退出码 {code}"));
+    format!("调试适配器已退出 · {detail}")
 }
 
 impl Session {
@@ -69,7 +93,7 @@ impl Session {
             object.entry("env").or_insert(json!(config.env));
         }
         let adapter = || -> Result<Command> {
-            let mut command = Command::new(config.adapter.trim());
+            let mut command = crate::tool_command::command(config.adapter.trim());
             command
                 .args(split_args(&config.adapter_args)?)
                 .current_dir(&cwd)
@@ -78,15 +102,17 @@ impl Session {
         };
         let (connection, child) = if config.network.trim() == "tcp" {
             ensure!(!config.address.trim().is_empty(), "DAP 缺少 TCP 地址");
-            let child = if config.adapter.trim().is_empty() {
+            let mut child = if config.adapter.trim().is_empty() {
                 None
             } else {
-                Some(ChildGroup::spawn(
+                let mut child = ChildGroup::spawn(
                     adapter()?
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
-                        .stderr(Stdio::null()),
-                )?)
+                        .stderr(Stdio::piped()),
+                )?;
+                let diagnostics = ProcessDiagnostics::capture(&mut child)?;
+                Some((child, diagnostics))
             };
             let deadline = Instant::now() + Duration::from_secs(3);
             let connection = loop {
@@ -95,29 +121,83 @@ impl Session {
                     Err(error) if child.is_none() || Instant::now() >= deadline => {
                         return Err(error);
                     }
-                    Err(_) => std::thread::sleep(Duration::from_millis(60)),
+                    Err(_) => {
+                        if let Some((child, diagnostics)) = &mut child {
+                            let report = diagnostics.report(child);
+                            if let Some(status) = report.status
+                                && (report.finished || !report.stderr.is_empty())
+                            {
+                                let first_line = report.stderr.lines().next().unwrap_or_default();
+                                let detail: String = first_line.chars().take(200).collect();
+                                let reason = adapter_exit(status);
+                                if detail.is_empty() {
+                                    anyhow::bail!("{reason}");
+                                }
+                                anyhow::bail!("{reason} · {detail}");
+                            }
+                        }
+                        std::thread::sleep(Duration::from_millis(60));
+                    }
                 }
             };
             (connection, child)
         } else {
             ensure!(!config.adapter.trim().is_empty(), "请指定 DAP 适配器");
-            (Connection::stdio(&mut adapter()?)?, None)
+            (Connection::stdio_with_diagnostics(&mut adapter()?)?, None)
         };
         let mut session = Self {
             connection,
-            _adapter: child,
+            adapter: child,
+            failure: None,
             launch,
             breaks,
             seq: 0,
             pending: HashMap::new(),
             thread: 0,
-            frame: 0,
+            configuration_done: false,
         };
-        session.request("initialize", json!({
+        if let Err(error) = session.request("initialize", json!({
             "clientID":"nemorous","adapterID":"nemorous","linesStartAt1":true,"columnsStartAt1":true,
             "pathFormat":"path","supportsVariableType":true,"supportsRunInTerminalRequest":false
-        }))?;
+        })) {
+            session.failure = Some((error.to_string(), Instant::now()));
+        }
         Ok(session)
+    }
+
+    fn process_report(&mut self) -> Option<ProcessReport> {
+        if let Some((child, diagnostics)) = &mut self.adapter {
+            Some(diagnostics.report(child))
+        } else {
+            self.connection.process_report()
+        }
+    }
+
+    fn finish_failure(&mut self, view: &mut Debug) {
+        let Some((reason, started)) = self.failure.take() else {
+            return;
+        };
+        let report = self.process_report();
+        if report
+            .as_ref()
+            .is_some_and(|report| report.status.is_none() || !report.finished)
+            && started.elapsed() < Duration::from_millis(160)
+        {
+            self.failure = Some((reason, started));
+            return;
+        }
+        view.running = false;
+        view.clear_stack();
+        view.state = report
+            .as_ref()
+            .and_then(|report| report.status)
+            .map_or_else(|| format!("调试适配器连接中断 · {reason}"), adapter_exit);
+        if let Some(report) = report.filter(|report| !report.stderr.is_empty()) {
+            if !view.console.is_empty() && !view.console.ends_with('\n') {
+                view.append_output("\n");
+            }
+            view.append_output(&report.stderr);
+        }
     }
 
     fn request(&mut self, command: &str, arguments: Value) -> Result<()> {
@@ -146,7 +226,17 @@ impl Session {
         for (path, lines) in self.breaks.clone() {
             self.set_breakpoints(&path, &lines)?;
         }
-        self.request("configurationDone", json!({}))
+        if self.configuration_done {
+            self.request("configurationDone", json!({}))?;
+        }
+        Ok(())
+    }
+
+    fn inspect_frame(&mut self, frame: i64, view: &mut Debug) -> Result<()> {
+        self.pending
+            .retain(|_, (command, _)| !matches!(command.as_str(), "scopes" | "variables"));
+        view.variables.clear();
+        self.request("scopes", json!({"frameId":frame}))
     }
 
     fn handle(&mut self, message: Value, view: &mut Debug) -> Result<()> {
@@ -168,23 +258,23 @@ impl Session {
                 }
                 Some("continued") => {
                     view.state = "调试中".into();
-                    view.frames.clear();
-                    view.variables.clear();
+                    view.clear_stack();
+                    self.pending.retain(|_, (command, _)| {
+                        !matches!(
+                            command.as_str(),
+                            "threads" | "stackTrace" | "scopes" | "variables"
+                        )
+                    });
                 }
-                Some("output") => {
+                Some("output") if body["category"].as_str() != Some("telemetry") => {
                     if let Some(text) = body["output"].as_str() {
-                        view.console.push_str(text);
-                        if view.console.len() > 128 * 1024 {
-                            let offset = view
-                                .console
-                                .ceil_char_boundary(view.console.len() - 128 * 1024);
-                            view.console.drain(..offset);
-                        }
+                        view.append_output(text);
                     }
                 }
                 Some("terminated" | "exited") => {
                     view.running = false;
                     view.state = "调试已结束".into();
+                    view.clear_stack();
                 }
                 _ => {}
             },
@@ -204,8 +294,14 @@ impl Session {
                     return Ok(());
                 }
                 match command.as_str() {
-                    "initialize" => self.request("launch", self.launch.clone())?,
-                    "launch" if view.state == "正在连接适配器" => {
+                    "initialize" => {
+                        self.configuration_done = body["supportsConfigurationDoneRequest"]
+                            .as_bool()
+                            .unwrap_or(false);
+                        view.state = "正在启动调试程序".into();
+                        self.request("launch", self.launch.clone())?;
+                    }
+                    "launch" if view.state == "正在启动调试程序" => {
                         view.state = "调试中".into()
                     }
                     "threads" => {
@@ -220,9 +316,10 @@ impl Session {
                     "stackTrace" => {
                         view.frames = body["stackFrames"].as_array().cloned().unwrap_or_default();
                         view.variables.clear();
-                        if let Some(frame) = view.frames.first() {
-                            self.frame = frame["id"].as_i64().unwrap_or_default();
-                            self.request("scopes", json!({"frameId":self.frame}))?;
+                        if let Some(frame) =
+                            view.frames.first().and_then(|frame| frame["id"].as_i64())
+                        {
+                            self.inspect_frame(frame, view)?;
                         }
                     }
                     "scopes" => {
@@ -329,23 +426,29 @@ fn poll() {
         for _ in 0..32 {
             global::<Debug>().update(|view| {
                 let result = (|| -> Result<()> {
+                    if session.failure.is_some() {
+                        session.finish_failure(view);
+                        ended = true;
+                        return Ok(());
+                    }
                     if let Some(message) = session.connection.poll()? {
                         session.handle(message, view)?;
                     } else {
                         ended = true;
                     }
-                    if session
+                    if let Some((command, _)) = session
                         .pending
                         .values()
-                        .any(|(_, started)| started.elapsed() > Duration::from_secs(20))
+                        .find(|(_, started)| started.elapsed() > Duration::from_secs(20))
                     {
-                        anyhow::bail!("调试适配器等待超时");
+                        anyhow::bail!("调试适配器等待 {command} 响应超时");
                     }
                     Ok(())
                 })();
                 if let Err(error) = result {
-                    view.running = false;
-                    view.state = error.to_string();
+                    session.failure = Some((error.to_string(), Instant::now()));
+                    session.finish_failure(view);
+                    ended = true;
                 }
                 if !view.running {
                     disconnected = true;
@@ -426,6 +529,15 @@ pub(super) fn toggle_breakpoint(file: &crate::git::WorkspaceFile, line: u32) {
 }
 
 fn open_frame(frame: Value) {
+    workbench::update_resource::<Runtime>(|runtime| {
+        if let (Some(session), Some(id)) = (&mut runtime.0, frame["id"].as_i64()) {
+            let mut result = Ok(());
+            global::<Debug>().update(|view| result = session.inspect_frame(id, view));
+            if let Err(error) = result {
+                state::show_toast("warn", error.to_string());
+            }
+        }
+    });
     let Some(path) = frame["source"]["path"].as_str() else {
         return;
     };
@@ -442,16 +554,11 @@ fn open_frame(frame: Value) {
     }) {
         state::open_code_file(file, Some(position), true);
     }
-    workbench::update_resource::<Runtime>(|runtime| {
-        if let (Some(session), Some(id)) = (&mut runtime.0, frame["id"].as_i64()) {
-            global::<Debug>().update(|view| view.variables.clear());
-            let _ = session.request("scopes", json!({"frameId":id}));
-        }
-    });
 }
 
 pub(super) fn body() -> impl IntoElement {
     let p = current_palette();
+    let frames = computed(|| global::<Debug>().with(|view| view.frames.clone()));
     view()
         .flex_1()
         .min_h(px(0.0))
@@ -492,27 +599,22 @@ pub(super) fn body() -> impl IntoElement {
                         .child(scroll().flex_1().child(dynamic(move || {
                             view()
                                 .flex_col()
-                                .children(
-                                    global::<Debug>()
-                                        .with(|view| view.frames.clone())
-                                        .into_iter()
-                                        .map(|frame| {
-                                            let label = format!(
-                                                "{}:{}",
-                                                frame["name"].as_str().unwrap_or_default(),
-                                                frame["line"]
-                                            );
-                                            view()
-                                                .h(px(20.0))
-                                                .cursor(Cursor::Pointer)
-                                                .on_press(move || open_frame(frame.clone()))
-                                                .child(
-                                                    text(label)
-                                                        .text_color(p.text_primary)
-                                                        .text_size(px(11.0)),
-                                                )
-                                        }),
-                                )
+                                .children(frames.get().into_iter().map(|frame| {
+                                    let label = format!(
+                                        "{}:{}",
+                                        frame["name"].as_str().unwrap_or_default(),
+                                        frame["line"]
+                                    );
+                                    view()
+                                        .h(px(20.0))
+                                        .cursor(Cursor::Pointer)
+                                        .on_press(move || open_frame(frame.clone()))
+                                        .child(
+                                            text(label)
+                                                .text_color(p.text_primary)
+                                                .text_size(px(11.0)),
+                                        )
+                                }))
                                 .into_element()
                         }))),
                 )

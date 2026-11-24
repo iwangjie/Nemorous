@@ -66,7 +66,7 @@ fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
                 label(action)
             ));
             for report in reports.iter().filter(|report| report.status == RemoteStatus::Failed) {
-                super::workbench::runtime_log(format!("{} · {}", report.repo.name, report.detail));
+                super::workbench::runtime_log(format!("{} · {}", report.repo.label(), report.detail));
             }
             dialog.update(|dialog| {
                 if let Some(batch) = &mut dialog.state {
@@ -205,7 +205,7 @@ pub(super) fn layer() -> impl IntoElement {
                                     .flex_col()
                                     .gap(px(2.0))
                                     .child(
-                                        text(format!("{} · {status}", report.repo.name))
+                                        text(format!("{} · {status}", report.repo.label()))
                                             .text_color(color),
                                     )
                                     .child(

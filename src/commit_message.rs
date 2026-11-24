@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -36,10 +36,7 @@ fn select_agent(setting: &str) -> Result<(&'static str, PathBuf)> {
         "codex" => &["codex"][..],
         _ => &["omp", "pi", "claude", "codex"][..],
     };
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
-        .as_deref()
-        .map(|path| std::env::split_paths(path).collect())
-        .unwrap_or_default();
+    let mut dirs = crate::tool_command::search_dirs();
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(PathBuf::from(home).join(".local/bin"));
     }
@@ -141,7 +138,7 @@ fn push_limited(output: &mut String, text: &str, limit: usize) {
 }
 
 fn run_agent(agent: &str, binary: &Path, prompt: String) -> Result<String> {
-    let mut command = Command::new(binary);
+    let mut command = crate::tool_command::command(binary);
     command
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())

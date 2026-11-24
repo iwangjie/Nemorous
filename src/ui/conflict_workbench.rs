@@ -38,10 +38,36 @@ struct Workbench {
     loaded: Option<Arc<ConflictFile>>,
     operation: Option<RepoOperation>,
     issue: Option<String>,
+    finish_error: Option<String>,
     saving: bool,
     pending_abort: bool,
     loading: bool,
     proposing: bool,
+}
+
+impl Workbench {
+    fn can_control(&self) -> bool {
+        self.operation.is_some() || matches!(self.source, Some(Source::Isolated { .. }))
+    }
+
+    fn can_continue(&self) -> bool {
+        self.can_control()
+            && !self.saving
+            && !self.pending_abort
+            && !self.loading
+            && self.files.is_empty()
+            && self.selected.is_none()
+            && self.issue.is_none()
+    }
+}
+
+enum FinishOutcome {
+    Finished,
+    MoreConflicts,
+    Isolated {
+        hash: String,
+        push_error: Option<String>,
+    },
 }
 
 #[derive(Default, Clone)]
@@ -68,6 +94,14 @@ fn draft_root() -> PathBuf {
 }
 
 pub(super) fn open(source: Source) {
+    open_at(source, None);
+}
+
+pub(super) fn open_file(repo: PathBuf, path: String) {
+    open_at(Source::Repo(repo), Some(path));
+}
+
+fn open_at(source: Source, path: Option<String>) {
     let request = store().with_untracked(|s| s.request.wrapping_add(1));
     let initially_unresolved = match &source {
         Source::Repo(_) => Vec::new(),
@@ -80,7 +114,7 @@ pub(super) fn open(source: Source) {
         ..Workbench::default()
     });
     app_signal().update(state::enter_modal_focus);
-    load(None, false);
+    load(path, false);
 }
 
 fn save_current_draft() {
@@ -132,6 +166,7 @@ fn load(path: Option<String>, keep_draft: bool) {
         s.selected = path.clone();
         s.loaded = None;
         s.issue = None;
+        s.finish_error = None;
         s.pending_abort = false;
         s.loading = true;
         s.proposing = false;
@@ -405,21 +440,14 @@ pub(super) fn save() {
 }
 
 pub(super) fn continue_if_ready() {
-    let ready = store().with_untracked(|s| {
-        !s.loading
-            && s.files.is_empty()
-            && s.selected.is_none()
-            && s.issue.is_none()
-            && (s.operation.is_some() || matches!(s.source, Some(Source::Isolated { .. })))
-    });
-    if ready {
+    if store().with_untracked(Workbench::can_continue) {
         finish(false, false);
     }
 }
 
 fn finish(abort: bool, push: bool) {
     let Some((source, operation, request)) = store().with_untracked(|s| {
-        if s.saving {
+        if s.saving || (!abort && !s.can_continue()) {
             return None;
         }
         Some((s.source.clone()?, s.operation, s.request))
@@ -427,17 +455,29 @@ fn finish(abort: bool, push: bool) {
         return;
     };
     let started = state::run_git_action(
-        move || -> Result<Option<(String, Option<String>)>> {
+        move || -> Result<FinishOutcome> {
             match source {
                 Source::Repo(repo) => {
                     let operation =
                         operation.ok_or_else(|| anyhow::anyhow!("没有可继续的 Git 操作"))?;
-                    git_history_actions::control_operation(&repo, operation, abort)?;
-                    return Ok(None);
+                    match git_history_actions::control_operation(&repo, operation, abort) {
+                        Ok(()) => Ok(FinishOutcome::Finished),
+                        Err(_)
+                            if !abort
+                                && git_history_actions::active_operation(&repo).ok().flatten()
+                                    == Some(operation)
+                                && merge_tasks::unresolved(&repo)
+                                    .is_ok_and(|files| !files.is_empty()) =>
+                        {
+                            Ok(FinishOutcome::MoreConflicts)
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 Source::Isolated { root, task } => {
                     if abort {
                         merge_tasks::abort(&root, &task)?;
+                        Ok(FinishOutcome::Finished)
                     } else {
                         let hash = merge_tasks::finish(&root, &task)?;
                         let push_error = push
@@ -450,11 +490,10 @@ fn finish(abort: bool, push: bool) {
                             })
                             .and_then(Result::err)
                             .map(|err| err.to_string());
-                        return Ok(Some((hash, push_error)));
+                        Ok(FinishOutcome::Isolated { hash, push_error })
                     }
                 }
             }
-            Ok(None)
         },
         move |result| {
             if !store().with_untracked(|s| s.request == request) {
@@ -462,10 +501,11 @@ fn finish(abort: bool, push: bool) {
             }
             store().update(|s| s.saving = false);
             match result {
-                Ok(hash) => {
+                Ok(FinishOutcome::MoreConflicts) => load(None, false),
+                Ok(outcome) => {
                     draft().set(Draft::default());
                     state::close_active_modal();
-                    if let Some((hash, push_error)) = hash {
+                    if let FinishOutcome::Isolated { hash, push_error } = outcome {
                         let push_status = push_error
                             .map(|err| format!("\n\n本地合并已完成，推送失败\n{err}"))
                             .unwrap_or_default();
@@ -485,14 +525,14 @@ fn finish(abort: bool, push: bool) {
                         },
                     );
                 }
-                Err(err) => store().update(|s| s.issue = Some(err.to_string())),
+                Err(err) => store().update(|s| s.finish_error = Some(err.to_string())),
             }
         },
     );
     if started {
         store().update(|s| {
             s.saving = true;
-            s.issue = None;
+            s.finish_error = None;
             s.pending_abort = false;
         });
     }
@@ -827,41 +867,67 @@ pub(super) fn layer() -> impl IntoElement {
                             .child(btn("关闭", "conflict-close", state::close_active_modal)),
                     )
                     .child(dynamic(move || {
-                        let (ready, isolated, can_control, pending_abort, issue, saving) = store()
-                            .with(|s| {
-                                (
-                                    !s.loading
-                                        && s.files.is_empty()
-                                        && s.selected.is_none()
-                                        && s.issue.is_none(),
-                                    matches!(s.source, Some(Source::Isolated { .. })),
-                                    s.operation.is_some()
-                                        || matches!(s.source, Some(Source::Isolated { .. })),
-                                    s.pending_abort,
-                                    s.issue.clone(),
-                                    s.saving,
-                                )
-                            });
+                        let (
+                            ready,
+                            isolated,
+                            can_control,
+                            operation,
+                            pending_abort,
+                            issue,
+                            finish_error,
+                            saving,
+                        ) = store().with(|s| {
+                            (
+                                s.can_continue(),
+                                matches!(s.source, Some(Source::Isolated { .. })),
+                                s.can_control(),
+                                s.operation,
+                                s.pending_abort,
+                                s.issue.clone(),
+                                s.finish_error.clone(),
+                                s.saving,
+                            )
+                        });
                         let mut bar = view()
                             .flex_row()
                             .gap(px(5.0))
                             .items_center()
                             .px(px(9.0))
                             .py(px(4.0));
+                        let mut actions = view().flex_col();
                         if let Some(issue) = issue {
-                            bar = bar.child(text(issue).text_color(p.danger).text_size(px(11.0)));
+                            actions = actions.child(
+                                text(issue)
+                                    .text_color(p.danger)
+                                    .text_size(px(11.0))
+                                    .number_of_lines(3u32)
+                                    .px(px(9.0)),
+                            );
+                        }
+                        if let Some(error) = finish_error {
+                            actions = actions.child(
+                                text(error)
+                                    .test_id("conflict-finish-error")
+                                    .text_color(p.danger)
+                                    .text_size(px(11.0))
+                                    .number_of_lines(3u32)
+                                    .px(px(9.0)),
+                            );
                         }
                         if saving {
-                            return bar
-                                .child(text("Git 操作进行中…").text_color(p.text_muted))
+                            return actions
+                                .child(bar.child(text("Git 操作进行中…").text_color(p.text_muted)))
                                 .into_element();
                         }
-                        if ready && can_control {
+                        if ready {
                             bar = bar.child(btn(
-                                if isolated {
-                                    "完成本地合并"
-                                } else {
-                                    "继续 Git 操作"
+                                match (isolated, operation) {
+                                    (true, _) => "完成本地合并",
+                                    (_, Some(RepoOperation::Merge)) => "继续合并",
+                                    (_, Some(RepoOperation::Rebase)) => "继续变基",
+                                    (_, Some(RepoOperation::CherryPick)) => "继续 Cherry-pick",
+                                    (_, Some(RepoOperation::Revert)) => "继续还原",
+                                    _ => "继续 Git 操作",
                                 },
                                 "conflict-continue",
                                 || finish(false, false),
@@ -890,18 +956,25 @@ pub(super) fn layer() -> impl IntoElement {
                                 store().update(|s| s.pending_abort = true)
                             }));
                         }
-                        bar.into_element()
+                        actions.child(bar).into_element()
                     }))
                     .child(
                         view().flex_1().flex_row().child(files_panel()).child(
                             file.map(|file| views(file).into_element())
                                 .unwrap_or_else(|| {
+                                    let hint = store().with(|s| {
+                                        if s.loading {
+                                            "正在读取冲突…"
+                                        } else if s.files.is_empty() && s.issue.is_none() {
+                                            "没有待处理的冲突"
+                                        } else {
+                                            "选择左侧文件查看冲突"
+                                        }
+                                    });
                                     view()
                                         .flex_1()
                                         .p(px(10.0))
-                                        .child(
-                                            text("选择左侧文件查看冲突").text_color(p.text_muted),
-                                        )
+                                        .child(text(hint).text_color(p.text_muted))
                                         .into_element()
                                 }),
                         ),

@@ -4,7 +4,7 @@ use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -223,7 +223,7 @@ fn read_output(path: &Path) -> Result<String> {
 }
 
 fn run_formatter(repo: &Path, executable: &str, args: &[OsString]) -> std::io::Result<()> {
-    let mut child = Command::new(executable)
+    let mut child = crate::tool_command::command(executable)
         .args(args)
         .current_dir(repo)
         .stdin(Stdio::null())

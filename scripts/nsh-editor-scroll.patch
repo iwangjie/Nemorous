@@ -1,0 +1,76 @@
+diff --git a/crates/nsh-base/src/editor/mod.rs b/crates/nsh-base/src/editor/mod.rs
+--- a/crates/nsh-base/src/editor/mod.rs
++++ b/crates/nsh-base/src/editor/mod.rs
+@@ -239,6 +239,8 @@
+     /// The hover ended: the mouse left the word or the editor, or the text
+     /// changed or scrolled under it.
+     HoverEnd,
++    /// The user began dragging the vertical scroll view.
++    VerticalScrollDragStart,
+     /// A character was pressed, after the editor placed its caret: with
+     /// Mod held, a definition to go to.
+     #[args(event)]
+@@ -652,6 +654,33 @@
+         self.ed.visible_range()
+     }
+
++    /// The row at this position measured from the vertical scroll origin,
++    /// before applying the current offset. None before viewport layout.
++    pub fn scroll_y_for_position(&self, position: EditorPosition) -> Option<Points> {
++        (self.ed.viewport.get_untracked().height > px(0.0)).then(|| {
++            let state = self.ed.st.borrow();
++            self.ed.rows_top.get_untracked() + state.caret_point(state.offset_of(position)).y
++        })
++    }
++
++    /// The current vertical offset. Tracks changes when read in an effect.
++    pub fn vertical_scroll_offset(&self) -> Points {
++        self.ed.scroll_y.get()
++    }
++
++    /// The last reachable vertical offset for the current viewport.
++    pub fn max_vertical_scroll_offset(&self) -> Points {
++        (self.ed.content_height.get_untracked() - self.ed.viewport.get_untracked().height)
++            .max(px(0.0))
++    }
++
++    /// Scrolls vertically, preserving the horizontal offset and selection.
++    pub fn set_vertical_scroll_offset(&self, offset: Points) {
++        let y = offset.clamp(px(0.0), self.max_vertical_scroll_offset());
++        self.ed.scroll_y.set(y);
++        self.ed.vscroll.scroll_to(Point::new(px(0.0), y), false);
++    }
++
+     /// The primary selection's text.
+     pub fn selected_text(&self) -> String {
+         self.ed.selected_text()
+diff --git a/crates/nsh-base/src/editor/view.rs b/crates/nsh-base/src/editor/view.rs
+--- a/crates/nsh-base/src/editor/view.rs
++++ b/crates/nsh-base/src/editor/view.rs
+@@ -11,7 +11,7 @@
+ };
+
+ use super::{
+-    EditorDiagnosticSeverity, EditorPart, EditorProps,
++    EditorDiagnosticSeverity, EditorEvent, EditorPart, EditorProps,
+     controller::Ed,
+     state::{GutterMark, GutterPlace, RowContent, RulerMark, SpanTags},
+ };
+@@ -73,6 +73,7 @@
+         }
+     };
+     let vscroll_ed = ed.clone();
++    let drag_ed = ed.clone();
+     let layout_ed = ed.clone();
+     let place_ed = ed.clone();
+     let grow_ed = ed.clone();
+@@ -104,6 +105,9 @@
+                 .element_ref(&ed.vscroll)
+                 .absolute()
+                 .inset_0()
++                .on_scroll_drag_start(move |_: &Point<Points>| {
++                    drag_ed.cx.emit(EditorEvent::VerticalScrollDragStart);
++                })
+                 .on_scroll(move |e: &ScrollEvent| {
+                     vscroll_ed.scroll_y.set(e.offset.y);
+                     vscroll_ed.viewport.set(e.size);

@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -264,7 +264,7 @@ pub(crate) fn network(dir: &Path, args: &[&str], cancel: &AtomicBool) -> Result<
     if cancel.load(Ordering::Acquire) {
         return Err(Cancelled.into());
     }
-    let mut command = Command::new("git");
+    let mut command = crate::tool_command::command("git");
     command
         .args(args)
         .current_dir(dir)
@@ -383,6 +383,7 @@ mod tests {
                 id: name.clone(),
                 rel_path: ".".to_owned(),
                 name,
+                display_name: None,
                 monogram: "R".to_owned(),
                 path: dir.to_str().unwrap().to_owned(),
                 color_idx: 0,

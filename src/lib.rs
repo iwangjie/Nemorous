@@ -39,6 +39,7 @@ pub mod session;
 mod session_runtime;
 pub mod state;
 pub mod theme;
+mod tool_command;
 pub mod ui;
 pub mod watcher;
 mod update_manifest;
