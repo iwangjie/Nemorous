@@ -45,16 +45,15 @@ fn switch_workspace(path: &Path) -> Result<()> {
     ensure!(!dirty, "请先保存当前工作区的未保存编辑");
     super::github_panel::close_active();
     crate::session_runtime::save_current_workspace();
+    crate::session_runtime::workspace_changed();
     app_signal().update(|s| {
+        s.stop_workspace_refresh();
         let mut cfg = s.cfg.clone();
         cfg.workspace_path = path.to_owned();
         cfg.add_recent_workspace(path);
         let refresh_gen = s.refresh_gen.wrapping_add(1);
-        *s = AppState {
-            cfg,
-            refresh_gen,
-            ..AppState::default()
-        };
+        *s = AppState::for_config(cfg);
+        s.refresh_gen = refresh_gen;
     });
     state::save_config_quiet();
     state::refresh_workspace_async(None);

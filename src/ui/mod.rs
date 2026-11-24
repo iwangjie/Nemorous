@@ -805,13 +805,15 @@ fn setup_shortcuts() {
 /// 监听窗口切回前台与系统生命周期恢复，自动刷新工作区。
 fn setup_window_focus_refresh() {
     let was_focused = stored(true);
-    effect(move || {
+    let active = computed(|| {
         let focused = window_state().map(|w| w.focused).unwrap_or(true);
-        let lc = lifecycle();
-        let active = focused && lc == Lifecycle::Active;
+        focused && lifecycle() == Lifecycle::Active
+    });
+    effect(move || {
+        let active = active.get();
         let prev = was_focused.replace(active);
         if active && !prev {
-            refresh_workspace_async(None);
+            state::refresh_workspace_on_focus();
         }
     });
 }
@@ -832,7 +834,7 @@ fn top_header_bar() -> impl IntoElement {
                 s.cfg.workspace_path.clone(),
                 s.repos.len(),
                 br,
-                s.is_refreshing,
+                s.is_refreshing(),
             )
         });
         let ws_name = if ws_path.trim().is_empty() {

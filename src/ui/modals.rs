@@ -453,7 +453,7 @@ pub fn modals_layer() -> impl IntoElement {
                 match kind {
                     PickerKind::GoToFile => {
                         for wf in files
-                            .into_iter()
+                            .iter()
                             .filter(|f| {
                                 q_low.is_empty()
                                     || f.rel_path.to_ascii_lowercase().contains(&q_low)

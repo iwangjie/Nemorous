@@ -559,8 +559,11 @@ pub fn run_git_string(repo_path: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
-fn is_git_dir(dir: &Path) -> bool {
-    dir.join(".git").exists()
+fn is_git_dir(dir: &Path) -> Result<bool> {
+    match dir.join(".git").try_exists() {
+        Err(err) if err.kind() == std::io::ErrorKind::NotADirectory => Ok(false),
+        result => result.with_context(|| format!("无法检查仓库目录 {}", dir.display())),
+    }
 }
 
 fn make_monogram(name: &str) -> String {
@@ -647,7 +650,8 @@ fn parse_mani_projects(workspace: &Path) -> Vec<(String, String, String)> {
 
 /// 发现工作区内的所有 Git 仓库（支持 mani.yaml、单根仓、多子仓混合模式）。
 pub fn discover_workspace_repos(workspace_path: &str, hidden_repos: &[String]) -> Vec<RepoInfo> {
-    let mut repos = discover_workspace_repository_inventory(workspace_path, &[], &mut BTreeMap::new());
+    let mut repos = discover_workspace_repository_inventory(workspace_path, &[], &mut BTreeMap::new())
+        .unwrap_or_default();
     repos.retain(|repo| !hidden_repos.contains(&repo.id));
     repos
 }
@@ -656,15 +660,13 @@ pub(crate) fn discover_workspace_repository_inventory(
     workspace_path: &str,
     previous: &[RepoInfo],
     bindings: &mut BTreeMap<String, String>,
-) -> Vec<RepoInfo> {
+) -> Result<Vec<RepoInfo>> {
     let trimmed = workspace_path.trim();
     if trimmed.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let ws = Path::new(trimmed);
-    if !ws.exists() {
-        return Vec::new();
-    }
+    let entries = fs::read_dir(ws).with_context(|| format!("无法读取工作区目录 {}", ws.display()))?;
 
     let mut seen_paths: HashSet<PathBuf> = HashSet::new();
     let mut repos = Vec::new();
@@ -672,7 +674,7 @@ pub(crate) fn discover_workspace_repository_inventory(
     // 1. mani.yaml 声明的仓库
     for (name, rel, desc) in parse_mani_projects(ws) {
         let full = ws.join(&rel);
-        if !is_git_dir(&full) {
+        if !is_git_dir(&full)? {
             continue;
         }
         let canon = fs::canonicalize(&full).unwrap_or_else(|_| full.clone());
@@ -694,7 +696,7 @@ pub(crate) fn discover_workspace_repository_inventory(
     }
 
     // 2. 工作区根目录本身是否是 Git 仓
-    if is_git_dir(ws) {
+    if is_git_dir(ws)? {
         let canon = fs::canonicalize(ws).unwrap_or_else(|_| ws.to_path_buf());
         if seen_paths.insert(canon) {
             let name = ws
@@ -717,50 +719,46 @@ pub(crate) fn discover_workspace_repository_inventory(
     }
 
     // 3. 直接子目录中的 Git 仓
-    if let Ok(entries) = fs::read_dir(ws) {
-        let mut subdirs: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .filter(|p| {
-                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                !name.starts_with('.') && name != "node_modules" && name != "target" && name != "build"
-            })
-            .collect();
-        subdirs.sort();
-
-        for sub in subdirs {
-            if !is_git_dir(&sub) {
-                continue;
-            }
-            let canon = fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
-            if !seen_paths.insert(canon) {
-                continue;
-            }
-            let name = sub
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("repo")
-                .to_string();
-            repos.push(RepoInfo {
-                id: name.clone(),
-                monogram: make_monogram(&name),
-                name: name.clone(),
-                display_name: None,
-                path: sub.to_string_lossy().to_string(),
-                rel_path: name,
-                desc: String::new(),
-                color_idx: 0,
-                is_root: false,
-            });
+    let mut subdirs = Vec::new();
+    for entry in entries {
+        let path = entry.with_context(|| format!("无法读取工作区目录 {}", ws.display()))?.path();
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if !name.starts_with('.') && !matches!(name, "node_modules" | "target" | "build") && path.is_dir() {
+            subdirs.push(path);
         }
+    }
+    subdirs.sort();
+    for sub in subdirs {
+        if !is_git_dir(&sub)? {
+            continue;
+        }
+        let canon = fs::canonicalize(&sub).unwrap_or_else(|_| sub.clone());
+        if !seen_paths.insert(canon) {
+            continue;
+        }
+        let name = sub
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("repo")
+            .to_string();
+        repos.push(RepoInfo {
+            id: name.clone(),
+            monogram: make_monogram(&name),
+            name: name.clone(),
+            display_name: None,
+            path: sub.to_string_lossy().to_string(),
+            rel_path: name,
+            desc: String::new(),
+            color_idx: 0,
+            is_root: false,
+        });
     }
 
     assign_repository_ids(&mut repos, previous, bindings);
     for (idx, repo) in repos.iter_mut().enumerate() {
         repo.color_idx = idx % 6;
     }
-    repos
+    Ok(repos)
 }
 
 fn assign_repository_ids(
@@ -1844,38 +1842,41 @@ pub fn file_history_at_revision(
 
 /// 列出所有仓库的工作区文件（用于 Project 树与转到文件）。
 pub fn list_workspace_files(repos: &[RepoInfo]) -> Vec<WorkspaceFile> {
-    let mut out = Vec::new();
-    for repo in repos {
-        let dir = Path::new(&repo.path);
-        let bytes = run_git_bytes(dir, &["ls-files", "-co", "--exclude-standard", "-z"]);
-        let Ok(raw) = bytes else {
-            continue;
-        };
-        let mut seen = HashSet::new();
-        for part in raw.split(|&b| b == 0) {
-            if part.is_empty() {
-                continue;
-            }
-            let rel = String::from_utf8_lossy(part).to_string();
-            if !seen.insert(rel.clone()) {
-                continue;
-            }
-            let abs = dir.join(&rel);
-            if !abs.exists() {
-                continue;
-            }
-            out.push(WorkspaceFile {
-                repo_id: repo.id.clone(),
-                repo_name: repo.label().to_owned(),
-                repo_path: repo.path.clone(),
-                rel_path: rel,
-                abs_path: abs.to_string_lossy().to_string(),
-                color_idx: repo.color_idx,
-            });
-        }
-    }
-    out.sort_by(|a, b| a.repo_name.cmp(&b.repo_name).then(a.rel_path.cmp(&b.rel_path)));
+    let mut out: Vec<_> = repos.iter()
+        .flat_map(|repo| read_repository_files(repo).unwrap_or_default())
+        .collect();
+    sort_workspace_files(&mut out);
     out
+}
+
+pub(crate) fn sort_workspace_files(files: &mut [WorkspaceFile]) {
+    files.sort_by(|a, b| a.repo_name.cmp(&b.repo_name).then(a.rel_path.cmp(&b.rel_path)));
+}
+
+pub(crate) fn read_repository_files(repo: &RepoInfo) -> Result<Vec<WorkspaceFile>> {
+    let dir = Path::new(&repo.path);
+    let raw = run_git_bytes(dir, &["ls-files", "-co", "--exclude-standard", "-z"])?;
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for part in raw.split(|&b| b == 0).filter(|part| !part.is_empty()) {
+        let rel = String::from_utf8_lossy(part).into_owned();
+        if !seen.insert(rel.clone()) {
+            continue;
+        }
+        let abs = dir.join(&rel);
+        if !abs.exists() {
+            continue;
+        }
+        out.push(WorkspaceFile {
+            repo_id: repo.id.clone(),
+            repo_name: repo.label().to_owned(),
+            repo_path: repo.path.clone(),
+            rel_path: rel,
+            abs_path: abs.to_string_lossy().into_owned(),
+            color_idx: repo.color_idx,
+        });
+    }
+    Ok(out)
 }
 
 /// 暂存或取消暂存指定文件列表（支持混合暂存与重命名）。
@@ -1908,22 +1909,22 @@ pub fn stage_or_unstage_files(repo_path: &str, paths: &[String], stage: bool) ->
 
 /// 列出全部仓库的 Stash 条目。
 pub fn list_stashes(repos: &[RepoInfo]) -> Vec<StashEntry> {
-    let mut out = Vec::new();
-    for repo in repos {
-        let dir = Path::new(&repo.path);
-        if let Ok(text) = run_git_string(dir, &["stash", "list", "--format=%gd%x1f%gs"]) {
-            for line in text.lines() {
-                if let Some((sel, msg)) = line.split_once('\x1f') {
-                    out.push(StashEntry {
-                        repo_id: repo.id.clone(),
-                        repo_name: repo.label().to_owned(),
-                        repo_path: repo.path.clone(),
-                        selector: sel.to_string(),
-                        message: msg.to_string(),
-                    });
-                }
-            }
-        }
-    }
-    out
+    repos.iter()
+        .flat_map(|repo| read_repository_stashes(repo).unwrap_or_default())
+        .collect()
+}
+
+pub(crate) fn read_repository_stashes(repo: &RepoInfo) -> Result<Vec<StashEntry>> {
+    let args = ["stash", "list", "--format=%gd%x1f%gs"];
+    let output = run_git_string(Path::new(&repo.path), &args)?;
+    Ok(output.lines().filter_map(|line| {
+        let (selector, message) = line.split_once('\x1f')?;
+        Some(StashEntry {
+            repo_id: repo.id.clone(),
+            repo_name: repo.label().to_owned(),
+            repo_path: repo.path.clone(),
+            selector: selector.to_owned(),
+            message: message.to_owned(),
+        })
+    }).collect())
 }

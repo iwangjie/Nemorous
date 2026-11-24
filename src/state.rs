@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nsh_base::{EditorApi, EditorPosition, EditorSearch, EditorSearchResult, EditorSelection};
 use nsh_base::editor::EditorUndoHistory;
@@ -31,6 +31,7 @@ mod diff_viewport;
 mod navigation;
 mod refresh;
 mod source_open;
+mod workspace_refresh;
 pub use diff_open::{move_commit_diff_file, open_commit_diff};
 pub(crate) use diff_open::{cancel_diff_read, diff_read_pending, preview_commit_diff, set_commit_diff_preview};
 use diff_open::open_working_diff_with_hunk;
@@ -39,9 +40,10 @@ use diff_viewport::reveal_opened_diff_hunk;
 pub(crate) use diff_viewport::{copy_diff_selection, focus_diff_side, record_diff_caret, restore_diff_view_after_render, sync_diff_scroll, toggle_diff_layout};
 use navigation::navigate_history;
 pub use navigation::{open_revision_code_file, restore_nav_target};
-use refresh::{OpenReviewDocuments, ReviewReads};
 pub use source_open::{open_code_file, open_code_file_preview};
 pub(crate) use source_open::prepare_workspace_edit_tab;
+pub use workspace_refresh::refresh_workspace_async;
+pub(crate) use workspace_refresh::{WorkspaceData, WorkspaceNotice, refresh_workspace_on_focus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeftTab {
@@ -487,7 +489,7 @@ pub struct AppState {
     pub repos: Vec<RepoInfo>,
     pub(crate) hidden_repo_labels: BTreeMap<String, String>,
     pub statuses: Vec<RepoStatus>,
-    pub workspace_files: Vec<WorkspaceFile>,
+    pub workspace_files: Arc<[WorkspaceFile]>,
     pub stashes: Vec<StashEntry>,
 
     // 布局与工具窗口状态
@@ -570,11 +572,8 @@ pub struct AppState {
 
     // 刷新并发与代次控制
     pub refresh_gen: u64,
-    pub is_refreshing: bool,
-    pub(crate) refresh_repo_ids: Option<HashSet<String>>,
     pub command_busy: bool,
-    pub pending_refresh: bool,
-    pub pending_refresh_repos: HashSet<String>,
+    workspace_refresh: workspace_refresh::WorkspaceRefresh,
     pub last_refresh_ms: u64,
     pub window_focused: bool,
 }
@@ -709,13 +708,18 @@ impl AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        let cfg = config::load();
+        Self::for_config(config::load())
+    }
+}
+
+impl AppState {
+    pub(crate) fn for_config(cfg: Config) -> Self {
         Self {
             cfg,
             repos: Vec::new(),
             hidden_repo_labels: BTreeMap::new(),
             statuses: Vec::new(),
-            workspace_files: Vec::new(),
+            workspace_files: Arc::default(),
             stashes: Vec::new(),
             left_tab: LeftTab::Commit,
             show_left_panel: true,
@@ -780,11 +784,8 @@ impl Default for AppState {
             toast: None,
             next_toast_id: 1,
             refresh_gen: 0,
-            is_refreshing: false,
-            refresh_repo_ids: None,
             command_busy: false,
-            pending_refresh: false,
-            pending_refresh_repos: HashSet::new(),
+            workspace_refresh: workspace_refresh::WorkspaceRefresh::default(),
             last_refresh_ms: 0,
             window_focused: true,
         }
@@ -1038,324 +1039,8 @@ fn handle_watch_hint(hint: WatchHint) {
     if !hint.history_repo_ids.is_empty() {
         crate::ui::repository_history_changed(&hint.history_repo_ids);
     }
-    if hint.mani_changed || hint.repo_ids.is_empty() {
-        refresh_workspace_async(None);
-    } else {
-        refresh_workspace_async(Some(hint.repo_ids));
-    }
-}
-
-fn queue_workspace_refresh(state: &mut AppState, repo_ids: Option<HashSet<String>>) {
-    let full_already_queued = state.pending_refresh && state.pending_refresh_repos.is_empty();
-    match repo_ids {
-        Some(ids) if !full_already_queued => state.pending_refresh_repos.extend(ids),
-        None => state.pending_refresh_repos.clear(),
-        _ => {}
-    }
-    state.pending_refresh = true;
-}
-
-fn take_queued_workspace_refresh(
-    state: &mut AppState,
-    mut requested: Option<HashSet<String>>,
-) -> Option<HashSet<String>> {
-    if state.pending_refresh && state.pending_refresh_repos.is_empty() {
-        requested = None;
-    }
-    state.pending_refresh = false;
-    let queued = std::mem::take(&mut state.pending_refresh_repos);
-    if let Some(ids) = &mut requested {
-        ids.extend(queued);
-    }
-    requested
-}
-
-fn workspace_refresh_scope(
-    state: &AppState,
-    requested: Option<HashSet<String>>,
-) -> Option<HashSet<String>> {
-    let mut requested = requested.filter(|ids| !ids.is_empty() && !state.repos.is_empty())?;
-    if state.is_refreshing {
-        // A newer request replaces the in-flight snapshot, so it must also
-        // cover its scope. A full refresh includes repository discovery.
-        requested.extend(state.refresh_repo_ids.as_ref()?.iter().cloned());
-    }
-    Some(requested)
-}
-
-#[cfg(test)]
-mod workspace_refresh_tests {
-    use super::*;
-
-    #[test]
-    fn a_new_refresh_keeps_the_scope_of_an_older_in_flight_refresh() {
-        let repo = RepoInfo {
-            id: "first".into(),
-            name: "first".into(),
-            display_name: None,
-            path: "first".into(),
-            rel_path: "first".into(),
-            desc: String::new(),
-            monogram: "FI".into(),
-            color_idx: 0,
-            is_root: false,
-        };
-        let mut state = AppState { repos: vec![repo], ..AppState::default() };
-        let second = HashSet::from(["second".to_owned()]);
-        assert_eq!(workspace_refresh_scope(&state, Some(second.clone())), Some(second.clone()));
-
-        state.is_refreshing = true;
-        assert_eq!(workspace_refresh_scope(&state, Some(second.clone())), None);
-
-        state.refresh_repo_ids = Some(HashSet::from(["first".to_owned()]));
-        assert_eq!(
-            workspace_refresh_scope(&state, Some(second)),
-            Some(HashSet::from(["first".to_owned(), "second".to_owned()])),
-        );
-        assert_eq!(workspace_refresh_scope(&state, None), None);
-        assert_eq!(workspace_refresh_scope(&state, Some(HashSet::new())), None);
-    }
-
-    #[test]
-    fn a_scoped_git_write_preserves_queued_repository_and_workspace_refreshes() {
-        let mut state = AppState::default();
-        let first = HashSet::from(["first".to_owned()]);
-        let second = HashSet::from(["second".to_owned()]);
-        queue_workspace_refresh(&mut state, Some(second.clone()));
-        assert_eq!(
-            take_queued_workspace_refresh(&mut state, Some(first.clone())),
-            Some(HashSet::from(["first".to_owned(), "second".to_owned()])),
-        );
-        queue_workspace_refresh(&mut state, None);
-        queue_workspace_refresh(&mut state, Some(second));
-        assert_eq!(take_queued_workspace_refresh(&mut state, Some(first)), None);
-        assert!(!state.pending_refresh);
-        assert!(state.pending_refresh_repos.is_empty());
-    }
-}
-
-struct RefreshSnapshot {
-    repos: Vec<RepoInfo>,
-    hidden_repo_labels: Option<BTreeMap<String, String>>,
-    repository_id_bindings: Option<BTreeMap<String, String>>,
-    statuses: Vec<RepoStatus>,
-    partial_repo_ids: Option<HashSet<String>>,
-    workspace_files: Vec<WorkspaceFile>,
-    stashes: Vec<StashEntry>,
-    review: ReviewReads,
-    elapsed_ms: u64,
-}
-
-fn compute_workspace_snapshot(
-    ws: String,
-    hidden: Vec<String>,
-    include_root: bool,
-    only_repos: Option<HashSet<String>>,
-    existing_repos: Vec<RepoInfo>,
-    mut bindings: BTreeMap<String, String>,
-    review: OpenReviewDocuments,
-) -> RefreshSnapshot {
-    let start = Instant::now();
-    let (repos, hidden_repo_labels, repository_id_bindings) = if only_repos.is_some() && !existing_repos.is_empty() {
-        (existing_repos, None, None)
-    } else {
-        let previous_bindings = bindings.clone();
-        let mut repos = git::discover_workspace_repository_inventory(&ws, &existing_repos, &mut bindings);
-        let hidden: HashSet<_> = hidden.iter().collect();
-        let hidden_labels = repos.iter()
-            .filter(|repo| hidden.contains(&repo.id))
-            .map(|repo| (repo.id.clone(), repo.label().to_owned()))
-            .collect();
-        repos.retain(|repo| !hidden.contains(&repo.id) && (include_root || !repo.is_root));
-        let updated = (bindings != previous_bindings).then_some(bindings);
-        (repos, Some(hidden_labels), updated)
-    };
-
-    let target_repos: Vec<&RepoInfo> = match &only_repos {
-        Some(ids) if !ids.is_empty() => repos.iter().filter(|r| ids.contains(&r.id)).collect(),
-        _ => repos.iter().collect(),
-    };
-
-    let statuses: Vec<RepoStatus> = target_repos.iter().map(|r| git::inspect_repo(r)).collect();
-    let workspace_files = git::list_workspace_files(&repos);
-
-    let stashes = git::list_stashes(&repos);
-    let review = review.read(&statuses);
-
-    RefreshSnapshot {
-        repos,
-        hidden_repo_labels,
-        repository_id_bindings,
-        statuses,
-        partial_repo_ids: only_repos,
-        workspace_files,
-        stashes,
-        review,
-        elapsed_ms: start.elapsed().as_millis() as u64,
-    }
-}
-
-/// 异步刷新工作区（后台线程跑 git，代次防过期覆盖，绝不覆盖脏缓冲）。
-pub fn refresh_workspace_async(only_repos: Option<HashSet<String>>) {
-    if app_signal().with_untracked(|s| s.command_busy) {
-        app_signal().update(|s| {
-            let scope = workspace_refresh_scope(s, only_repos);
-            queue_workspace_refresh(s, scope);
-        });
-        return;
-    }
-    let (ws, hidden, include_root, generation, existing_repos, bindings, only_repos, review) = app_signal().with_untracked(|s| {
-        let only_repos = workspace_refresh_scope(s, only_repos);
-        let review = OpenReviewDocuments::capture(s, only_repos.as_ref());
-        (
-            s.cfg.workspace_path.clone(),
-            s.cfg.hidden_repos.clone(),
-            s.cfg.extra_bool("include_root_repo",true),
-            s.refresh_gen + 1,
-            s.repos.clone(),
-            s.cfg.workspace_repository_ids(),
-            only_repos,
-            review,
-        )
-    });
-    if ws.trim().is_empty() {
-        return;
-    }
-    app_signal().update(|s| {
-        s.refresh_gen = generation;
-        s.is_refreshing = true;
-        s.refresh_repo_ids = only_repos.clone();
-    });
-
-    spawn(async move {
-        let res = blocking(move || {
-            compute_workspace_snapshot(ws, hidden, include_root, only_repos, existing_repos, bindings, review)
-        })
-        .await;
-        if let Ok(mut snapshot) = res {
-            snapshot.review.prepare_diff(generation).await;
-            apply_workspace_snapshot(generation, snapshot);
-        } else {
-            app_signal().update(|s| {
-                if s.refresh_gen == generation {
-                    s.is_refreshing = false;
-                    s.refresh_repo_ids = None;
-                }
-            });
-        }
-    });
-}
-
-fn apply_workspace_snapshot(generation: u64, snap: RefreshSnapshot) {
-    // 丢弃过期代次刷新结果
-    let stale = app_signal().with_untracked(|s| generation != s.refresh_gen);
-    if stale {
-        return;
-    }
-
-    let complete = snap.partial_repo_ids.is_none();
-    let persist_repository_ids = snap.repository_id_bindings.is_some();
-    app_signal().update(|s| {
-        s.is_refreshing = false;
-        s.refresh_repo_ids = None;
-        s.last_refresh_ms = snap.elapsed_ms;
-        if let Some(labels) = snap.hidden_repo_labels {
-            s.hidden_repo_labels = labels;
-        }
-        if let Some(bindings) = snap.repository_id_bindings {
-            s.cfg.repository_id_bindings.insert(s.cfg.workspace_path.clone(), bindings);
-        }
-        for repo in &snap.repos {
-            if !s.repos.iter().any(|previous| previous.path == repo.path) {
-                s.expanded_project_repos.insert(repo.id.clone());
-            }
-        }
-        s.expanded_project_repos
-            .retain(|id| snap.repos.iter().any(|repo| &repo.id == id));
-        s.repos = snap.repos;
-        if let Some(ref ids) = snap.partial_repo_ids {
-            let mut by_id: HashMap<String, RepoStatus> = snap
-                .statuses
-                .into_iter()
-                .map(|st| (st.repo.id.clone(), st))
-                .collect();
-            for st in &mut s.statuses {
-                if ids.contains(&st.repo.id) {
-                    if let Some(updated) = by_id.remove(&st.repo.id) {
-                        *st = updated;
-                    }
-                }
-            }
-            for (_, rem) in by_id {
-                s.statuses.push(rem);
-            }
-        } else {
-            s.statuses = snap.statuses;
-        }
-        s.workspace_files = snap.workspace_files;
-        s.stashes = snap.stashes;
-
-        // 同步所有当前存在的变更文件 key：
-        // 对齐基线 state.go:1261,1439 —— 新发现的变更默认勾选，用户手动取消勾选的保留未勾选状态，已消失的变更清理。
-        let all_change_map: HashMap<String, ChangedFile> = s
-            .statuses
-            .iter()
-            .flat_map(|st| st.files.iter())
-            .map(|f| (f.key(), f.clone()))
-            .collect();
-        for key in all_change_map.keys() {
-            if !s.known_change_keys.contains(key) {
-                s.known_change_keys.insert(key.clone());
-                s.checked_changes.insert(key.clone());
-            }
-        }
-        s.known_change_keys.retain(|k| all_change_map.contains_key(k));
-        s.checked_changes.retain(|k| all_change_map.contains_key(k));
-        s.included_hunks.retain(|k, _| all_change_map.contains_key(k));
-
-        // 更新当前选中行（保持原路径）
-        if let Some(sel) = &mut s.change_selection {
-            if let Some(latest) = all_change_map.get(&sel.file.key()) {
-                sel.file = latest.clone();
-            } else {
-                s.change_selection = None;
-            }
-        }
-
-        for tab in &mut s.code_tabs {
-            if let Some(repo) = s.repos.iter().find(|repo| {
-                repo.id == tab.file.repo_id && repo.path == tab.file.repo_path
-            }) {
-                tab.file.repo_name = repo.label().to_owned();
-                tab.file.color_idx = repo.color_idx;
-            }
-        }
-        snap.review.apply(s);
-    });
-    retry_file_navigation();
-    if persist_repository_ids {
-        save_config_quiet();
-    }
-    if complete {
-        crate::session_runtime::restore_after_refresh();
-    }
-    if std::env::var_os("NEMOROUS_TRACE_TIMING").is_some() {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        let (repo_cnt, file_cnt, diff_rev) = app_signal().with_untracked(|s| {
-            let files: usize = s.statuses.iter().map(|st| st.files.len()).sum();
-            (
-                s.repos.len(),
-                files,
-                s.working_diff.as_ref().map(|w| w.content_rev).unwrap_or(0),
-            )
-        });
-        eprintln!(
-            "NEMOROUS_TIMING event=commit_ready epoch_ms={now_ms} repos={repo_cnt} changes={file_cnt} diff_rev={diff_rev}"
-        );
-    }
+    let repos = (!hint.mani_changed && !hint.repo_ids.is_empty()).then_some(hint.repo_ids);
+    workspace_refresh::refresh_on_watch(repos);
 }
 
 // ============================================================================
@@ -3571,7 +3256,7 @@ pub fn open_from_file_picker_input(raw_input: &str) {
         open_code_file(wf, pos, true);
     } else {
         let defer = app_signal().with_untracked(|s| {
-            s.is_refreshing.then(|| (s.cfg.workspace_path.clone(), raw_input.to_owned()))
+            s.file_scan_pending().then(|| (s.cfg.workspace_path.clone(), raw_input.to_owned()))
         });
         if let Some(request) = defer {
             global::<PendingFileNavigation>().set(PendingFileNavigation(Some(request)));
@@ -3600,19 +3285,19 @@ pub(crate) fn run_git_action<T: Send + 'static>(
 fn run_git_action_with_refresh<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     complete: impl FnOnce(T) + 'static,
-    mut refresh_scope: Option<HashSet<String>>,
+    refresh_scope: Option<HashSet<String>>,
 ) -> bool {
     if app_signal().with_untracked(|s| s.command_busy) {
         show_toast("warn", "其他 Git 操作正在运行");
         return false;
     }
-    app_signal().update(|s| s.command_busy = true);
+    app_signal().update(|s| {
+        s.command_busy = true;
+        s.pause_workspace_refresh_for_git_write();
+    });
     let task = async move {
         let result = blocking(work).await;
-        app_signal().update(|s| {
-            s.command_busy = false;
-            refresh_scope = take_queued_workspace_refresh(s, refresh_scope.take());
-        });
+        app_signal().update(|s| s.command_busy = false);
         match result {
             Ok(value) => complete(value),
             Err(err) => show_toast("err", format!("任务失败：{err}")),

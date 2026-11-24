@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 
 use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
@@ -8,15 +9,15 @@ use nsh_core::prelude::*;
 use crate::git::WorkspaceFile;
 use crate::paths::basename;
 use crate::state::{
-    self, FocusZone, LeftTab, app_signal, current_palette, open_code_file, open_code_file_preview,
+    self, FocusZone, LeftTab, WorkspaceData, app_signal, current_palette, open_code_file, open_code_file_preview,
 };
 use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
 
-use super::left_tool_window::{ToolWindow, button, tree_scroll};
+use super::left_tool_window::{ToolWindow, button, tree_scroll, workspace_notice};
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 struct ProjectDir {
     name: String,
     rel_path: String,
@@ -24,7 +25,7 @@ struct ProjectDir {
     files: Vec<WorkspaceFile>,
 }
 
-fn build_project_tree(files: &[WorkspaceFile]) -> ProjectDir {
+fn build_project_tree<'a>(files: impl IntoIterator<Item = &'a WorkspaceFile>) -> ProjectDir {
     let mut root = ProjectDir::default();
     for wf in files {
         let parts: Vec<&str> = wf.rel_path.split('/').collect();
@@ -101,7 +102,7 @@ fn expand_selected() {
             let parent = crate::paths::normalize_slashes(&parent.to_string_lossy());
             s.expanded_project_dirs.insert(format!("{repo_id}::{parent}"));
         }
-        for file in &s.workspace_files {
+        for file in s.workspace_files.iter() {
             let path = Path::new(&file.rel_path);
             if file.repo_id == *repo_id && path.starts_with(directory) {
                 for parent in path.ancestors().skip(1).take_while(|parent| parent.starts_with(directory)) {
@@ -126,6 +127,21 @@ pub fn project_pane() -> impl IntoElement {
     let tool = ToolWindow::new(LeftTab::Project);
     let located_row = element_ref();
     let reveal_request = computed(|| app_signal().with(|s| s.project_reveal_request));
+    let files = computed(|| app_signal().with(|s| s.workspace_files.clone()));
+    let filter = computed(|| app_signal().with(|s| s.project_filter.trim().to_ascii_lowercase()));
+    let trees = computed(move || {
+        let files = files.get();
+        let filter = filter.get();
+        let mut by_repo: HashMap<&str, Vec<&WorkspaceFile>> = HashMap::new();
+        for file in files.iter().filter(|file| {
+            filter.is_empty() || file.rel_path.to_ascii_lowercase().contains(&filter)
+        }) {
+            by_repo.entry(&file.repo_id).or_default().push(file);
+        }
+        Rc::new(by_repo.into_iter()
+            .map(|(id, files)| (id.to_owned(), build_project_tree(files)))
+            .collect::<HashMap<_, _>>())
+    });
     effect(move || {
         if reveal_request.get() != 0 {
             super::reveal_selected_row(located_row);
@@ -156,6 +172,7 @@ pub fn project_pane() -> impl IntoElement {
         .flex_col()
         .overflow_hidden()
         .child(header)
+        .child(workspace_notice(WorkspaceData::Files))
         .child(
             view()
                 .px(px(8.0))
@@ -210,8 +227,7 @@ pub fn project_pane() -> impl IntoElement {
                         }
                         (
                             s.repos.clone(),
-                            s.workspace_files.clone(),
-                            s.project_filter.trim().to_ascii_lowercase(),
+                            s.workspace_notice(WorkspaceData::Files).is_some(),
                             s.expanded_project_repos.clone(),
                             s.expanded_project_dirs.clone(),
                             (s.project_located_key.clone(), s.project_compare_keys.clone()),
@@ -223,8 +239,7 @@ pub fn project_pane() -> impl IntoElement {
                     });
                     let (
                         repos,
-                        files,
-                        filter_q,
+                        has_notice,
                         expanded_repos,
                         expanded_dirs,
                         located_key,
@@ -236,13 +251,14 @@ pub fn project_pane() -> impl IntoElement {
 
                     if repos.is_empty() {
                         return view()
-                            .py(px(32.0))
+                            .py(px(if has_notice { 0.0 } else { 32.0 }))
                             .items_center()
-                            .child(text("未发现仓库").text_size(px(12.0)).text_color(p.text_muted))
+                            .child((!has_notice).then(|| text("未发现仓库").text_size(px(12.0)).text_color(p.text_muted)))
                             .into_element();
                     }
 
-                    let force_expand = !filter_q.is_empty();
+                    let trees = trees.get();
+                    let force_expand = !filter.get().is_empty();
                     let mut rows: Vec<AnyElement> = Vec::new();
                     let workspace_expanded = force_expand || workspace_expanded_state;
                     rows.push(
@@ -283,16 +299,8 @@ pub fn project_pane() -> impl IntoElement {
                     );
                     let repos = if workspace_expanded { repos } else { Vec::new() };
                     for repo in repos {
-                        let repo_files: Vec<WorkspaceFile> = files
-                            .iter()
-                            .filter(|f| {
-                                f.repo_id == repo.id
-                                    && (filter_q.is_empty()
-                                        || f.rel_path.to_ascii_lowercase().contains(&filter_q))
-                            })
-                            .cloned()
-                            .collect();
-                        if force_expand && repo_files.is_empty() {
+                        let tree = trees.get(&repo.id);
+                        if force_expand && tree.is_none() {
                             continue;
                         }
                         let expanded = force_expand || expanded_repos.contains(&repo.id);
@@ -362,10 +370,9 @@ pub fn project_pane() -> impl IntoElement {
                                 .into_element(),
                         );
 
-                        if expanded {
-                            let tree = build_project_tree(&repo_files);
+                        if let Some(tree) = tree.filter(|_| expanded) {
                             render_project_dir(
-                                &tree,
+                                tree,
                                 &repo.id,
                                 &repo.path,
                                 1,

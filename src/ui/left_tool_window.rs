@@ -1,7 +1,7 @@
 use nsh_core::element::desktop::{MenuItem, popup_menu};
 use nsh_core::prelude::*;
 
-use crate::state::{self, LeftTab, app_signal, current_palette};
+use crate::state::{self, LeftTab, WorkspaceData, WorkspaceNotice, app_signal, current_palette};
 use crate::theme::Palette;
 
 use super::icons::{self, ICO_MINUS, ICO_MORE_VERTICAL};
@@ -23,6 +23,33 @@ pub(super) fn tree_scroll(
                 .min_w(relative(1.0))
                 .child(content),
         )
+}
+
+pub(super) fn workspace_notice(data: WorkspaceData) -> impl IntoElement {
+    let notice = computed(move || app_signal().with(|s| s.workspace_notice(data)));
+    dynamic(move || {
+        let Some(notice) = notice.get() else { return None };
+        let p = current_palette();
+        let row = view().px(px(8.0)).py(px(6.0)).gap(px(5.0))
+            .flex_none().border_b_1().border_color(p.border);
+        Some(match notice {
+            WorkspaceNotice::Loading(message) => row
+                .test_id("workspace-loading")
+                .child(text(message).text_size(px(11.0)).text_color(p.text_muted))
+                .into_element(),
+            WorkspaceNotice::Failed(message) => row
+                .test_id("workspace-read-error")
+                .child(text(message.clone()).text_size(px(11.0)).text_color(p.text_primary).number_of_lines(2u32))
+                .tooltip(super::tooltip_label(message, p).max_w(px(360.0)))
+                .child(view().test_id("workspace-read-retry").px(px(6.0)).h(px(22.0))
+                    .justify_center().items_center().self_start().rounded(px(4.0))
+                    .label("重试刷新工作区").cursor(Cursor::Pointer)
+                    .hover(move |style| style.bg(p.surface_hover))
+                    .on_press(|| state::refresh_workspace_async(None))
+                    .child(text("重试").text_size(px(11.0)).text_color(p.accent)))
+                .into_element(),
+        })
+    })
 }
 
 #[derive(Clone, Copy)]

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -8,7 +8,7 @@ use nsh_core::prelude::*;
 use crate::git::{self, WorkspaceFile};
 use crate::session::{self, FileEntry, State};
 use crate::state::{
-    AppState, CodeTab, EditorTabKind, FocusZone, LeftTab, RootOwnerHolder, app_signal,
+    AppState, CodeTab, EditorTabKind, FocusZone, LeftTab, RootOwnerHolder, app_signal, spawn_from_root,
 };
 
 const MAX_TABS: usize = 20;
@@ -19,7 +19,7 @@ struct Runtime {
     workspace: String,
     ready: bool,
     generation: u64,
-    queued: Option<(PathBuf, State)>,
+    queued: BTreeMap<PathBuf, State>,
     writing: bool,
 }
 
@@ -73,7 +73,7 @@ fn queue_write(path: PathBuf, snapshot: State) {
     let runtime = global::<Runtime>();
     let mut start = false;
     runtime.update(|s| {
-        s.queued = Some((path, snapshot));
+        s.queued.insert(path, snapshot);
         if !s.writing {
             s.writing = true;
             start = true;
@@ -82,11 +82,11 @@ fn queue_write(path: PathBuf, snapshot: State) {
     if !start {
         return;
     }
-    spawn(async move {
+    spawn_from_root(async move {
         loop {
             let mut next = None;
             runtime.update(|s| {
-                next = s.queued.take();
+                next = s.queued.pop_first();
                 if next.is_none() {
                     s.writing = false;
                 }
@@ -144,11 +144,23 @@ fn live_state(s: &AppState) -> State {
 }
 
 pub(crate) fn save_current_workspace() {
-    let snapshot = app_signal().with_untracked(live_state);
+    let ready = global::<Runtime>().with_untracked(|s| s.ready);
+    let snapshot = app_signal().with_untracked(|s| {
+        (ready || !s.code_tabs.is_empty()).then(|| live_state(s))
+    });
+    let Some(snapshot) = snapshot else { return };
     let workspace = snapshot.workspace.as_deref().unwrap_or_default();
     if !workspace.is_empty() {
         queue_write(session::session_path(workspace), snapshot);
     }
+}
+
+pub(crate) fn workspace_changed() {
+    global::<Runtime>().update(|s| {
+        s.workspace.clear();
+        s.generation = s.generation.wrapping_add(1);
+        s.ready = false;
+    });
 }
 
 pub(crate) fn restore_after_refresh() {
@@ -174,7 +186,7 @@ pub(crate) fn restore_after_refresh() {
     let read_workspace = workspace.clone();
     root.run(|| {
         spawn(async move {
-            let plan = blocking(move || read_plan(&path, &read_workspace, files)).await;
+            let plan = blocking(move || read_plan(&path, &read_workspace, &files)).await;
             if !runtime.with_untracked(|s| s.generation == generation)
                 || !app_signal().with_untracked(|s| s.cfg.workspace_path == workspace)
             {
@@ -203,7 +215,7 @@ struct RestorePlan {
     saved: State,
 }
 
-fn read_plan(path: &Path, workspace: &str, files: Vec<WorkspaceFile>) -> Option<RestorePlan> {
+fn read_plan(path: &Path, workspace: &str, files: &[WorkspaceFile]) -> Option<RestorePlan> {
     let saved = session::load(path);
     if saved.workspace.as_deref().is_some_and(|saved| {
         !saved.is_empty() && session::lexically_clean(saved) != session::lexically_clean(workspace)
@@ -213,15 +225,15 @@ fn read_plan(path: &Path, workspace: &str, files: Vec<WorkspaceFile>) -> Option<
     }
 
     let index: HashMap<_, _> = files
-        .into_iter()
-        .map(|f| ((f.repo_id.clone(), f.rel_path.clone()), f))
+        .iter()
+        .map(|f| ((f.repo_id.as_str(), f.rel_path.as_str()), f))
         .collect();
     let mut tabs: Vec<CodeTab> = Vec::new();
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut active = None;
     let saved_active = saved.active_file.unwrap_or(0);
     for (original, entry) in saved.open_files.iter().take(MAX_TABS).enumerate() {
-        let Some(file) = index.get(&(entry.repo_id.clone(), entry.rel_path.clone())) else {
+        let Some(&file) = index.get(&(entry.repo_id.as_str(), entry.rel_path.as_str())) else {
             continue;
         };
         let id = format!("file::{}", file.key());

@@ -14,6 +14,10 @@ pub(super) struct OpenReviewDocuments {
 }
 
 impl OpenReviewDocuments {
+    pub(super) fn is_empty(&self) -> bool {
+        self.sources.is_empty() && self.working.is_none()
+    }
+
     pub(super) fn capture(state: &AppState, repo_ids: Option<&HashSet<String>>) -> Self {
         let includes = |id: &str| repo_ids.is_none_or(|ids| ids.contains(id));
         Self {

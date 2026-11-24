@@ -7,14 +7,14 @@ use nsh_core::prelude::*;
 use crate::git::{ChangedFile, RepoStatus, WorkspaceFile};
 use crate::paths::{basename, display_path};
 use crate::state::{
-    self, FocusZone, LeftTab, app_signal, click_change_row, current_palette, open_code_file,
+    self, FocusZone, LeftTab, WorkspaceData, WorkspaceNotice, app_signal, click_change_row, current_palette, open_code_file,
     open_working_diff, set_group_checked, stage_files_action,
     tri_state_for_keys,
 };
 use crate::theme::{Palette, repo_badge_colors, status_text_color};
 use crate::ui::icons::{self, *};
 
-use super::left_tool_window::{ToolWindow, button, tree_scroll};
+use super::left_tool_window::{ToolWindow, button, tree_scroll, workspace_notice};
 
 #[derive(Default)]
 struct ChangeDirNode {
@@ -197,8 +197,15 @@ fn view_option_items() -> Vec<MenuItem> {
 }
 
 fn stash_menu_items() -> Vec<MenuItem> {
-    let count = app_signal().with_untracked(|s| s.stashes.len());
+    let (count, notice) = app_signal().with_untracked(|s| (s.stashes.len(), s.workspace_notice(WorkspaceData::Stashes)));
     let mut items = super::git_advanced::stash_workspace_items().into_iter().collect::<Vec<_>>();
+    if let Some(notice) = notice {
+        let message = match notice {
+            WorkspaceNotice::Loading(message) => message.to_owned(),
+            WorkspaceNotice::Failed(message) => message,
+        };
+        items.push(MenuItem::new(message).disabled(true));
+    }
     items.push(MenuItem::new(format!("管理 Stash… ({count})")).on_select(|| {
         app_signal().update(|s| {
             s.stash_modal_open = true;
@@ -370,12 +377,13 @@ pub fn commit_pane() -> impl IntoElement {
         .flex_col()
         .overflow_hidden()
         .child(tool.header(title, || None, commit_panel_options))
+        .child(workspace_notice(WorkspaceData::Changes))
         .child(dynamic(move || {
             let p = current_palette();
             let keys = selected_keys.get();
             let (root_tri, refreshing, can_rollback, compact) = (
                 app_signal().with(|s| commit_tri_state(&keys, &s.checked_changes)),
-                app_signal().with(|s| s.is_refreshing),
+                app_signal().with(|s| s.is_refreshing()),
                 app_signal().with(|s| s.change_selection.is_some()),
                 tool.width.get() < 208.0,
             );
@@ -466,6 +474,7 @@ pub fn commit_pane() -> impl IntoElement {
                             s.collapsed_change_repos.clone(),
                             s.collapsed_change_dirs.clone(),
                             s.focus_zone == FocusZone::CommitTree,
+                            s.workspace_notice(WorkspaceData::Changes).is_some(),
                         )
                     });
                     let (
@@ -480,6 +489,7 @@ pub fn commit_pane() -> impl IntoElement {
                         collapsed_repos,
                         collapsed_dirs,
                         tree_focused,
+                        has_notice,
                     ) = snapshot;
 
                     let mut staged_repos: Vec<(RepoStatus, Vec<ChangedFile>)> = Vec::new();
@@ -516,6 +526,9 @@ pub fn commit_pane() -> impl IntoElement {
                     }
 
                     if staged_repos.is_empty() && unstaged_repos.is_empty() {
+                        if has_notice {
+                            return view().into_element();
+                        }
                         let filtered = !filter_q.is_empty() || app_signal().with_untracked(|s| {
                             !s.cfg.active_change_list.is_empty()
                         });

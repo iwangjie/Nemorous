@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use nsh_core::geometry::{point, px, size};
-use nsh_core::platform::{Idiom, Os};
+use nsh_core::platform::{Idiom, Lifecycle, Os};
 use nsh_engine::{EngineConfig, Environment, Root};
 use nsh_testing::Headless;
 
@@ -119,15 +119,19 @@ impl Fixture {
     }
 
     fn start_app_on(&self, width: f32, height: f32, os: Os) -> Headless {
+        let mut env = Environment::default();
+        env.os = os;
+        env.idiom = Idiom::Desktop;
+        env.apple_keyboard = os == Os::MacOs;
+        self.start_app_in(width, height, env)
+    }
+
+    fn start_app_in(&self, width: f32, height: f32, env: Environment) -> Headless {
         unsafe {
             std::env::set_var("NEMOROUS_CONFIG", &self.config_file);
             std::env::set_var("NEMOROUS_WORKSPACE", &self.repo_dir);
         }
         let mut config = EngineConfig::new(Root::of::<nemorous::App>());
-        let mut env = Environment::default();
-        env.os = os;
-        env.idiom = Idiom::Desktop;
-        env.apple_keyboard = os == Os::MacOs;
         config.environment = env;
         config.viewport = size(px(width), px(height));
         #[cfg(target_os = "macos")]
@@ -2281,6 +2285,110 @@ fn ui_legacy_workspace_session_restores_and_persists_after_reopen() {
     app.wait_for("id:editor-tab-file-src/app.go").unwrap();
     app.wait_for("id:git-bottom-pane").unwrap();
     app.wait_for("4:1").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn ui_workspace_startup_restores_files_while_git_status_is_pending() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = lock_env();
+    let fx = Fixture::new("workspace-startup");
+    let path = nemorous::session::session_path_beside(&fx.config_file, fx.repo_dir.to_str().unwrap());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, serde_json::to_vec(&serde_json::json!({
+        "activeTab": "code",
+        "openFiles": [{"repoId": "sample-repo", "path": "README.md", "line": 2}]
+    })).unwrap()).unwrap();
+
+    let bin = fx.root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let git = bin.join("git");
+    fs::write(&git, r#"#!/bin/sh
+if [ "$3" = status ]; then
+    : > "../status-started-$$"
+    count=0
+    while [ ! -f ../status-release ] && [ "$count" -lt 250 ]; do
+        sleep 0.02
+        count=$((count + 1))
+    done
+    : > "../status-finished-$$"
+fi
+exec /usr/bin/git "$@"
+"#).unwrap();
+    fs::set_permissions(git, fs::Permissions::from_mode(0o700)).unwrap();
+    let _path = TestPath::prepend(&bin);
+    let mut env = Environment::default();
+    env.os = Os::MacOs;
+    env.idiom = Idiom::Desktop;
+    env.apple_keyboard = true;
+    env.lifecycle = Lifecycle::Inactive;
+    let mut app = fx.start_app_in(1440.0, 900.0, env);
+    let markers = |prefix: &str| {
+        fs::read_dir(&fx.root).unwrap().flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix)).count()
+    };
+    let limit = std::time::Instant::now() + Duration::from_secs(3);
+    while markers("status-started-") == 0 {
+        assert!(std::time::Instant::now() < limit, "status did not start");
+        app.wait(Duration::from_millis(20)).unwrap();
+    }
+    app.set_environment("window activated", |env| {
+        env.lifecycle = Lifecycle::Active;
+        env.window_state.get_or_insert_with(Default::default).focused = true;
+    }).unwrap();
+    app.set_environment("window scale reported", |env| {
+        env.window_state.as_mut().unwrap().scale_factor += 0.25;
+    }).unwrap();
+
+    app.wait_for("id:project-file-README.md").unwrap();
+    app.wait_for("id:code-editor-view >> text:# Sample").unwrap();
+    assert_eq!(markers("status-started-"), 1, "startup focus duplicated the scan");
+    assert_eq!(markers("status-finished-"), 0, "the source should appear ahead of Git status");
+
+    app.press_key("mod+0").unwrap();
+    app.wait_for("正在读取 Git 状态…").unwrap();
+    assert!(!app.shows("工作区干净，没有本地变更"));
+    fs::write(fx.root.join("status-release"), "").unwrap();
+    app.wait_for("id:change-row-unstaged-src/app.go").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn ui_workspace_file_read_failure_keeps_the_tree_and_retries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = lock_env();
+    let fx = Fixture::new("workspace-file-retry");
+    let bin = fx.root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    let git = bin.join("git");
+    fs::write(&git, r#"#!/bin/sh
+if [ "$3" = ls-files ] && [ -f ../fail-file-list ]; then
+    echo 'controlled file listing failure' >&2
+    exit 1
+fi
+exec /usr/bin/git "$@"
+"#).unwrap();
+    fs::set_permissions(git, fs::Permissions::from_mode(0o700)).unwrap();
+    let _path = TestPath::prepend(&bin);
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+1").unwrap();
+    app.wait_for("id:project-file-README.md").unwrap();
+
+    let failure = fx.root.join("fail-file-list");
+    fs::write(&failure, "").unwrap();
+    fs::write(fx.repo_dir.join("new-file.txt"), "new").unwrap();
+    app.press_key("mod+alt+y").unwrap();
+    app.wait_for("id:workspace-read-error").unwrap();
+    assert!(app.screen().matches("id:project-file-README.md").unwrap());
+    assert!(!app.screen().matches("id:project-file-new-file.txt").unwrap());
+    assert!(!app.shows("未发现仓库"));
+
+    fs::remove_file(failure).unwrap();
+    app.press("id:workspace-read-retry").unwrap();
+    app.wait_for("id:project-file-new-file.txt").unwrap();
+    app.wait_for_gone("id:workspace-read-error", Duration::from_secs(2)).unwrap();
 }
 
 #[test]

@@ -290,7 +290,7 @@ fn open_with(scope: Option<PathBuf>, replace_mode: bool) {
 
 /// 当前工作区的候选文件（来自既有工作区快照，绝不在此模块扫描磁盘）。
 fn candidates() -> Vec<WorkspaceFile> {
-    app_signal().with_untracked(|s| s.workspace_files.clone())
+    app_signal().with_untracked(|s| s.workspace_files.to_vec())
 }
 
 /// 从活动编辑器取当前选中文本作为初始查询；无法取得时返回 `None`。

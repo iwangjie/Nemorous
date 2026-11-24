@@ -217,7 +217,7 @@ fn refresh_todos() {
                     return Ok(Vec::new());
                 }
                 let by_key: HashMap<_, _> =
-                    files.into_iter().map(|file| (file.key(), file)).collect();
+                    files.iter().map(|file| (file.key(), file.clone())).collect();
                 Ok::<_, crate::search::SearchError>(
                     hits.into_iter()
                         .filter_map(|hit| {

@@ -1,6 +1,6 @@
 [package]
 name = "nemorous"
-version = "0.10.27"
+version = "0.10.28"
 edition = "2024"
 description = "Nemorous native multi-repo Git client and code review workspace (NSH Rust)"
 license = "MIT"
@@ -40,7 +40,7 @@ serde_yaml_ng = "0.10"
 vt100 = "0.16"
 sha1 = "0.10"
 sha2 = "0.10"
-tokio = { version = "1", default-features = false, features = ["sync"] }
+tokio = { version = "1", default-features = false, features = ["macros", "sync"] }
 unicode-segmentation = "1.13"
 
 nsh-core = { path = "build/nsh-v0.6.1/crates/nsh-core", features = ["svg"] }
