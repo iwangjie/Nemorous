@@ -6647,6 +6647,14 @@ fn ui_isolated_merge_reopens_and_retries_promotion_after_dirty_worktree() {
 fn ui_same_named_repositories_keep_files_and_branch_actions_separate() {
     let _guard = lock_env();
     let fx = Fixture::new("same-repo-name");
+    #[cfg(unix)]
+    let fx = {
+        let mut fx = fx;
+        let workspace_alias = fx.root.join("workspace-alias");
+        std::os::unix::fs::symlink(fx.repo_dir.canonicalize().unwrap(), &workspace_alias).unwrap();
+        fx.repo_dir = workspace_alias;
+        fx
+    };
     let first = fx.repo_dir.join("projects/nested");
     let second = fx.repo_dir.join("shared");
     for (repo, content) in [(&first, "first edit\n"), (&second, "second edit\n")] {
@@ -7042,7 +7050,8 @@ fn ui_terminal_wheel_reaches_shell_output_and_returns_to_prompt() {
     app.press("id:terminal-screen").unwrap();
     app.set_clipboard(Some("cat terminal-rows.txt".into()));
     app.press_key("ctrl+shift+v").unwrap();
-    app.wait_for("cat terminal-rows.txt").unwrap();
+    app.wait_for(r"id:terminal-screen >> text:/cat terminal-rows\.txt\s*$/")
+        .unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("fixture_output_099").unwrap();
     assert!(!app.screen().matches("fixture_output_000").unwrap());

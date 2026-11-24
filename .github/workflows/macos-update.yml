@@ -18,6 +18,7 @@ env:
 jobs:
   package:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: arm64
@@ -64,7 +65,10 @@ jobs:
           ln -s /Applications image/Applications
           dmg="update-assets/Nemorous-v$VERSION-darwin-$ARCH.dmg"
           hdiutil create -volname "Nemorous $VERSION" -srcfolder image -format UDZO "$dmg"
-          hdiutil verify "$dmg"
+          hdiutil verify "$dmg" || {
+            sleep 3
+            hdiutil verify "$dmg"
+          }
 
       - uses: actions/upload-artifact@v4
         with:

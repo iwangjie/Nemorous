@@ -158,7 +158,9 @@ pub(super) fn open() {
             let label = s.hidden_repo_labels.get(id).cloned().or_else(|| {
                 let (path, _) = bindings?.iter().find(|(_, bound_id)| *bound_id == id)?;
                 let path = Path::new(path);
-                let label_path = path.strip_prefix(&s.cfg.workspace_path).ok()
+                let workspace = Path::new(&s.cfg.workspace_path);
+                let label_path = path.strip_prefix(workspace).ok()
+                    .or_else(|| path.strip_prefix(workspace.canonicalize().ok()?).ok())
                     .filter(|relative| !relative.as_os_str().is_empty())
                     .unwrap_or(path);
                 Some(crate::paths::display_path(&label_path.to_string_lossy()))
