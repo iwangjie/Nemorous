@@ -70,7 +70,7 @@ jobs:
             hdiutil verify "$dmg"
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: unsigned-mac-${{ matrix.arch }}
           path: update-assets/*
@@ -115,7 +115,7 @@ jobs:
             "$RUNNER_TEMP/sign-macos-update" "$VERSION" "$arch" \
               "update-assets/nemorous-$VERSION-darwin-$arch.tar.gz" "$RUNNER_TEMP/notes.md" "update-assets/update-darwin-$arch.json"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: signed-macos-update-${{ inputs.version }}
           path: update-assets/*
