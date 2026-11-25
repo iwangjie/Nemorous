@@ -138,17 +138,25 @@ pub fn open_project_selection() -> bool {
         let [left, right] = s.project_compare_keys.as_slice() else {
             return None;
         };
-        let left = s
-            .workspace_files
-            .iter()
-            .find(|file| file.key() == *left)?
-            .clone();
-        let right = s
-            .workspace_files
-            .iter()
-            .find(|file| file.key() == *right)?
-            .clone();
-        Some((left, right))
+        let resolve = |key: &str| {
+            s.workspace_files
+                .iter()
+                .find(|file| file.key() == key || file.abs_path == key)
+                .cloned()
+                .or_else(|| {
+                    let ws_root = Path::new(&s.cfg.workspace_path);
+                    let path = Path::new(key);
+                    let abs = if path.is_absolute() {
+                        path.to_path_buf()
+                    } else {
+                        ws_root.join(path)
+                    };
+                    abs.is_file().then(|| {
+                        crate::workspace_ops::resolve_workspace_file(ws_root, &s.repos, &abs)
+                    })?
+                })
+        };
+        Some((resolve(left)?, resolve(right)?))
     });
     let Some((left, right)) = pair else {
         return false;

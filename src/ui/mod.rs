@@ -754,10 +754,19 @@ fn setup_shortcuts() {
                 }
             }
             FocusZone::ProjectTree => {
-                if let Some(wf) =
-                    app_signal().with_untracked(|s| s.project_selected_file.clone())
-                {
+                let selected_file = app_signal().with_untracked(|s| s.project_selected_file.clone());
+                if let Some(wf) = selected_file {
                     state::open_code_file(wf, None, true);
+                } else {
+                    app_signal().update(|s| {
+                        if let Some((_, rel)) = s.project_selected_dir.clone() {
+                            if rel.is_empty() {
+                                s.project_workspace_expanded = !s.project_workspace_expanded;
+                            } else if !s.expanded_project_dirs.remove(&rel) {
+                                s.expanded_project_dirs.insert(rel);
+                            }
+                        }
+                    });
                 }
             }
             FocusZone::GitFiles => {
@@ -804,6 +813,10 @@ fn setup_shortcuts() {
             bind_application_key("left", not_editing, |_| {
                 state::toggle_project_selected_dir(false);
             });
+            bind_application_key("mod+x", not_editing, |_| project_pane::cut_selected());
+            bind_application_key("mod+v", not_editing, |_| project_pane::paste_selected());
+            bind_application_key("shift+f6", not_editing, |_| project_pane::rename_selected());
+            bind_application_key("backspace", not_editing, |_| project_pane::delete_selected());
         }
     });
 

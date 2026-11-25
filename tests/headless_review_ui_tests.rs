@@ -1097,7 +1097,7 @@ fn ui_project_follow_and_keyboard_reveal_offscreen_files() {
     app.press_key("down").unwrap();
     app.wait(Duration::from_millis(100)).unwrap();
     app.press_key("mod+c").unwrap();
-    assert_eq!(app.screen().clipboard(), Some("src"));
+    assert_eq!(app.screen().clipboard(), Some("sample-repo"));
     assert!(app.screen().commands()[previous_commands..].iter().any(|(_, command)| {
         matches!(command, nsh_core::Command::ScrollTo { y, .. } if y.0 < 100.0)
     }), "keyboard wrap should reveal the first selectable row");
@@ -2553,7 +2553,7 @@ exec /usr/bin/git "$@"
     app.wait_for("id:workspace-read-error").unwrap();
     assert!(app.screen().matches("id:project-file-README.md").unwrap());
     assert!(!app.screen().matches("id:project-file-new-file.txt").unwrap());
-    assert!(!app.shows("未发现仓库"));
+    assert!(!app.shows("未打开项目"));
 
     fs::remove_file(failure).unwrap();
     app.press("id:workspace-read-retry").unwrap();
@@ -2652,20 +2652,19 @@ fn ui_project_collapse_survives_refresh_and_filter_then_locate_expands() {
 
     app.press("id:project-collapse-all").unwrap();
     app.wait_for("id:project-workspace-root").unwrap();
-    app.wait_for_gone("id:project-repo-sample-repo", Duration::from_secs(2)).unwrap();
+    app.wait_for_gone("id:project-file-README.md", Duration::from_secs(2)).unwrap();
     app.press_key("mod+alt+y").unwrap();
     app.wait_for("id:project-workspace-root").unwrap();
     app.press_key("mod+f").unwrap();
     app.type_text("id:project-filter-input", "app.go").unwrap();
     app.wait_for("id:project-file-src/app.go").unwrap();
     app.clear("id:project-filter-input").unwrap();
-    app.wait_for_gone("id:project-repo-sample-repo", Duration::from_secs(2)).unwrap();
+    app.wait_for_gone("id:project-file-README.md", Duration::from_secs(2)).unwrap();
 
     app.press("id:project-workspace-root").unwrap();
-    app.wait_for("id:project-repo-sample-repo").unwrap();
-    assert!(!app.screen().matches("id:project-file-src/app.go").unwrap());
-    app.press("id:project-repo-sample-repo").unwrap();
     app.wait_for("id:project-dir-src").unwrap();
+    app.wait_for("id:project-file-README.md").unwrap();
+    assert!(!app.screen().matches("id:project-file-src/app.go").unwrap());
     app.press("id:project-dir-toggle-src").unwrap();
     app.wait_for("id:project-file-src/app.go").unwrap();
 }
@@ -2758,7 +2757,6 @@ fn ui_project_header_locates_and_expands_only_the_selected_branch() {
     assert!(file.origin.y + file.size.height <= scroll.origin.y + scroll.size.height);
     app.press("id:project-collapse-all").unwrap();
     app.press("id:project-workspace-root").unwrap();
-    app.press("id:project-repo-sample-repo").unwrap();
     app.press("id:project-dir-src").unwrap();
     app.press("id:project-expand-selected").unwrap();
     app.wait_for("id:project-file-src/deep/leaf.go").unwrap();
@@ -6596,6 +6594,99 @@ fn ui_workspace_recent_switch_uses_new_repo_and_preserves_original_config_data()
 }
 
 #[test]
+fn ui_project_tree_shows_filesystem_entries_and_file_actions() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-fs-entries");
+    fs::write(fx.repo_dir.join(".gitignore"), "*.log\n").unwrap();
+    fs::write(fx.repo_dir.join("debug.log"), "ignored\n").unwrap();
+    fs::create_dir(fx.repo_dir.join("empty-dir")).unwrap();
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+1").unwrap();
+    app.wait_for("id:project-file-debug.log").unwrap();
+    app.wait_for("id:project-dir-empty-dir").unwrap();
+
+    // 忽略文件也能通过右键重命名
+    app.right_click("id:project-file-debug.log").unwrap();
+    app.choose_menu_item("重命名…").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    app.clear("id:git-text-prompt-input").unwrap();
+    app.type_text("id:git-text-prompt-input", "renamed.log").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for_gone("id:project-file-debug.log", Duration::from_secs(2)).unwrap();
+    app.wait_for("id:project-file-renamed.log").unwrap();
+    assert!(!fx.repo_dir.join("debug.log").exists());
+    assert!(fx.repo_dir.join("renamed.log").exists());
+
+    // 关闭「显示被忽略的文件」后消失；空目录不受影响
+    app.hover("id:project-tree-scroll").unwrap();
+    app.press("id:project-options-button").unwrap();
+    app.choose_menu_item("行为 > 显示被忽略的文件").unwrap();
+    app.wait_for_gone("id:project-file-renamed.log", Duration::from_secs(2)).unwrap();
+    app.wait_for("id:project-dir-empty-dir").unwrap();
+}
+
+#[test]
+fn ui_project_tree_real_fs_nested_repos_and_shortcuts() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-nested-shell");
+
+    // 壳仓库内包含子 Git 仓库、普通目录、根目录散落文件、忽略目录
+    let sub_repo = fx.repo_dir.join("sub-service");
+    fs::create_dir(&sub_repo).unwrap();
+    git_run(&sub_repo, &["init", "-b", "feat/tree"]);
+    fs::write(sub_repo.join("service.rs"), "fn serve() {}\n").unwrap();
+    git_run(&sub_repo, &["add", "."]);
+    git_run(&sub_repo, &["commit", "-m", "init sub-service"]);
+
+    fs::create_dir(fx.repo_dir.join("docs")).unwrap();
+    fs::write(fx.repo_dir.join("docs/guide.md"), "# Guide\n").unwrap();
+    fs::write(fx.repo_dir.join("scratch.txt"), "hello\n").unwrap();
+    fs::write(fx.repo_dir.join(".gitignore"), ".idea/\n").unwrap();
+    fs::create_dir(fx.repo_dir.join(".idea")).unwrap();
+    fs::write(fx.repo_dir.join(".idea/misc.xml"), "<project/>\n").unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+1").unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
+    app.wait_for("id:project-dir-sub-service").unwrap();
+    app.wait_for("id:project-dir-docs").unwrap();
+    app.wait_for("id:project-file-scratch.txt").unwrap();
+    app.wait_for("id:project-dir-.idea").unwrap();
+
+    // 不应渲染旧版重复仓库分组节点
+    assert!(!app.screen().matches("id:project-repo-sample-repo").unwrap());
+    assert!(!app.screen().matches("id:project-repo-sub-service").unwrap());
+
+    // 嵌套 Git 仓库行内显示分支名，按需展开加载子文件
+    app.wait_for("id:project-dir-sub-service >> text:feat/tree").unwrap();
+    assert!(!app.screen().matches("id:project-file-sub-service/service.rs").unwrap());
+    app.press("id:project-dir-toggle-sub-service").unwrap();
+    app.wait_for("id:project-file-sub-service/service.rs").unwrap();
+
+    // 快捷键复制 + 粘贴 + 重命名 + 删除
+    app.press("id:project-file-scratch.txt").unwrap();
+    app.press_key("mod+c").unwrap();
+    app.press("id:project-dir-docs").unwrap();
+    app.press_key("mod+v").unwrap();
+    app.wait_for("id:project-file-docs/scratch.txt").unwrap();
+    assert!(fx.repo_dir.join("docs/scratch.txt").exists());
+
+    app.press_key("shift+f6").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    app.clear("id:git-text-prompt-input").unwrap();
+    app.type_text("id:git-text-prompt-input", "moved.txt").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("id:project-file-docs/moved.txt").unwrap();
+    assert!(fx.repo_dir.join("docs/moved.txt").exists());
+
+    app.press_key("backspace").unwrap();
+    app.wait_for("id:git-text-prompt").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for_gone("id:project-file-docs/moved.txt", Duration::from_secs(2)).unwrap();
+    assert!(!fx.repo_dir.join("docs/moved.txt").exists());
+}
+
+#[test]
 fn ui_project_menu_creates_an_empty_project_and_saves_multiple_files() {
     let _guard = lock_env();
     let fx = Fixture::new("project-menu-new");
@@ -6610,8 +6701,8 @@ fn ui_project_menu_creates_an_empty_project_and_saves_multiple_files() {
     app.press("id:git-text-prompt-submit").unwrap();
 
     let path = fx.root.join("plain-project");
-    app.wait_for("id:project-folder-root").unwrap();
-    app.right_click("id:project-folder-root").unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
+    app.right_click("id:project-workspace-root").unwrap();
     app.choose_menu_item("新建 > 目录…").unwrap();
     app.type_text("id:git-text-prompt-input", "docs").unwrap();
     app.press("id:git-text-prompt-submit").unwrap();
@@ -7073,9 +7164,7 @@ fn ui_same_named_repositories_keep_files_and_branch_actions_separate() {
     app.hover("id:project-tree-scroll").unwrap();
     app.press("id:project-options-button").unwrap();
     app.choose_menu_item("仓库管理 > 隐藏仓库 > shared · projects/nested").unwrap();
-    let second_group = format!("id:project-repo-{second_id}");
-    app.wait_for(&second_group).unwrap();
-    app.wait_for_gone("id:project-repo-shared", Duration::from_secs(3)).unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
     drop(app);
 
     let parked = fx.root.join("parked");
@@ -7083,14 +7172,13 @@ fn ui_same_named_repositories_keep_files_and_branch_actions_separate() {
     let mut app = fx.start_app(1440.0, 900.0);
     app.wait_for("id:changes-header-title-row").unwrap();
     app.press_key("mod+1").unwrap();
-    app.wait_for(&second_group).unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
     app.hover("id:project-tree-scroll").unwrap();
     app.press("id:project-options-button").unwrap();
     app.choose_menu_item("仓库管理 > 恢复隐藏仓库 > projects/nested").unwrap();
     fs::rename(&parked, &first).unwrap();
     app.press_key("mod+alt+y").unwrap();
-    app.wait_for("id:project-repo-shared").unwrap();
-    app.wait_for(&second_group).unwrap();
+    app.wait_for("id:project-workspace-root").unwrap();
 }
 
 #[test]

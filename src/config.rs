@@ -107,6 +107,7 @@ pub struct Config {
     pub git_panel_height: f32,
     pub terminal_panel_height: f32,
     pub project_follow_editor: bool,
+    pub project_show_ignored: bool,
     pub keymap_overrides: BTreeMap<String, String>,
     /// 保留旧版或未来批次的其余配置字段，避免读写时丢失数据。
     #[serde(flatten)]
@@ -151,6 +152,7 @@ impl Default for Config {
             git_panel_height: 290.0,
             terminal_panel_height: 240.0,
             project_follow_editor: false,
+            project_show_ignored: true,
             keymap_overrides: BTreeMap::new(),
             extra: BTreeMap::new(),
         }

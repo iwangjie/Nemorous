@@ -113,15 +113,6 @@ impl AppState {
         self.workspace_refresh.project_directories.clone()
     }
 
-    pub(crate) fn remember_directory(&mut self, repo: &RepoInfo, relative: String) {
-        let mut dirs = self.project_directories().to_vec();
-        let entry = (repo.id.clone(), relative);
-        if !dirs.contains(&entry) {
-            dirs.push(entry);
-            self.workspace_refresh.project_directories = dirs.into();
-        }
-    }
-
     pub(crate) fn is_refreshing(&self) -> bool {
         self.workspace_refresh.active.is_some()
     }

@@ -201,39 +201,26 @@ fn clone_name(source: &str) -> &str {
     name.strip_suffix(".git").unwrap_or(name)
 }
 
-fn selected_path(s: &AppState) -> Option<(&str, &str)> {
+fn selected_abs_path(s: &AppState) -> Option<PathBuf> {
     if s.focus_zone == FocusZone::ProjectTree {
-        if let Some(dir) = &s.project_selected_dir {
-            let root = s
-                .repos
-                .iter()
-                .find(|repo| repo.id == dir.0)
-                .map(|repo| repo.path.as_str())
-                .or_else(|| {
-                    s.plain_project()
-                        .filter(|repo| repo.id == dir.0)
-                        .map(|_| s.cfg.workspace_path.as_str())
-                })?;
-            return Some((root, &dir.1));
+        if let Some(path) = &s.project_selected_path {
+            return Some(path.clone());
         }
         if let Some(file) = &s.project_selected_file {
-            return Some((&file.repo_path, &file.rel_path));
+            return Some(PathBuf::from(&file.abs_path));
         }
     }
-    (s.editor_tab == EditorTabKind::File)
-        .then(|| {
-            let file = &s.code_tabs.get(s.active_code_tab_idx)?.file;
-            Some((file.repo_path.as_str(), file.rel_path.as_str()))
-        })
-        .flatten()
+    if s.editor_tab == EditorTabKind::File
+        && let Some(tab) = s.code_tabs.get(s.active_code_tab_idx)
+    {
+        return Some(PathBuf::from(&tab.file.abs_path));
+    }
+    None
 }
 
 pub(super) fn reveal_project_item() {
     let path = app_signal().with_untracked(|s| {
-        selected_path(s).map_or_else(
-            || PathBuf::from(&s.cfg.workspace_path),
-            |(root, rel)| Path::new(root).join(rel),
-        )
+        selected_abs_path(s).unwrap_or_else(|| PathBuf::from(&s.cfg.workspace_path))
     });
     if !path.as_os_str().is_empty() {
         state::reveal_in_system_finder(&path.to_string_lossy());
@@ -252,31 +239,21 @@ pub(super) fn new_item_menu() -> MenuItem {
 
 pub(super) fn new_project_item(directory: bool) {
     let target = app_signal().with_untracked(|s| {
-        let fallback = || {
-            if let Some(root) = s.repos.iter().find(|repo| repo.is_root) {
-                return Some(root.path.as_str());
-            }
-            match s.repos.as_slice() {
-                [] if !s.cfg.workspace_path.is_empty() => Some(s.cfg.workspace_path.as_str()),
-                [repo] => Some(repo.path.as_str()),
-                _ => None,
-            }
-        };
-        let (root, selected) = selected_path(s).or_else(|| fallback().map(|root| (root, "")))?;
-        let repo = s
-            .repos
-            .iter()
-            .find(|repo| repo.path == root)
-            .cloned()
-            .or_else(|| s.plain_project())?;
-        let mut parent = Path::new(root).join(selected);
+        if s.cfg.workspace_path.is_empty() {
+            return None;
+        }
+        let root = PathBuf::from(&s.cfg.workspace_path);
+        let mut parent = selected_abs_path(s).unwrap_or_else(|| root.clone());
+        if !parent.starts_with(&root) {
+            parent = root.clone();
+        }
         if parent.is_file() {
             parent.pop();
         }
-        Some((PathBuf::from(root), parent, repo))
+        Some((root, parent))
     });
-    let Some((root, parent, repo)) = target else {
-        state::show_toast("warn", "请先在文件树选择目标目录");
+    let Some((root, parent)) = target else {
+        state::show_toast("warn", "请先打开工作区目录");
         return;
     };
     let title = if directory {
@@ -286,17 +263,37 @@ pub(super) fn new_project_item(directory: bool) {
     };
     super::git_prompt::open(title, String::new(), move |name| {
         let (root, parent, name) = (root.clone(), parent.clone(), name.to_owned());
-        let repo = repo.clone();
         ensure!(
             state::run_git_action(
                 move || workspace_ops::create_project_item(&root, &parent, &name, directory),
                 move |result| match result {
                     Ok(path) => {
-                        if let Some(file) = workspace_ops::project_file(&repo, &path) {
-                            if directory {
-                                app_signal().update(|s| s.remember_directory(&repo, file.rel_path));
-                                super::focus_tool_window(LeftTab::Project, false);
-                            } else {
+                        app_signal().update(|s| {
+                            let ws_root = PathBuf::from(&s.cfg.workspace_path);
+                            s.project_workspace_expanded = true;
+                            if let Ok(rel) = path.strip_prefix(&ws_root) {
+                                let mut cur = rel.parent();
+                                while let Some(dir) = cur.filter(|d| !d.as_os_str().is_empty()) {
+                                    s.expanded_project_dirs.insert(crate::paths::normalize_slashes(
+                                        &dir.to_string_lossy(),
+                                    ));
+                                    cur = dir.parent();
+                                }
+                            }
+                            state::select_project_fs_node(s, &path, directory);
+                            s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
+                        });
+                        if directory {
+                            super::focus_tool_window(LeftTab::Project, false);
+                        } else {
+                            let file = app_signal().with_untracked(|s| {
+                                workspace_ops::resolve_workspace_file(
+                                    Path::new(&s.cfg.workspace_path),
+                                    &s.repos,
+                                    &path,
+                                )
+                            });
+                            if let Some(file) = file {
                                 state::open_code_file(file, None, true);
                             }
                         }

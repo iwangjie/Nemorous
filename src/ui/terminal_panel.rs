@@ -64,7 +64,16 @@ pub(super) fn toggle() {
     }
 }
 
+pub(super) fn open_in_directory(directory: PathBuf) {
+    workbench::reveal(Panel::Terminal);
+    start_in(directory);
+}
+
 fn start() {
+    start_in(workbench::workspace());
+}
+
+fn start_in(directory: PathBuf) {
     let shell = if cfg!(windows) {
         std::env::var_os("COMSPEC")
             .map(PathBuf::from)
@@ -74,7 +83,6 @@ fn start() {
             .map(PathBuf::from)
             .unwrap_or_else(|| "/bin/sh".into())
     };
-    let directory = workbench::workspace();
     let mut result = None;
     workbench::update_resource::<Pty>(|pty| {
         pty.terminal.take();

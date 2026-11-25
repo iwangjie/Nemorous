@@ -83,6 +83,12 @@ pub struct ChangeSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectClipboard {
+    pub path: PathBuf,
+    pub cut: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitFileSelection {
     pub commit: CommitEntry,
     pub file: CommitFileEntry,
@@ -526,6 +532,8 @@ pub struct AppState {
     pub(crate) project_reveal_request: u64,
     pub project_selected_file: Option<WorkspaceFile>,
     pub project_selected_dir: Option<(String, String)>, // (repo_id, rel_dir)
+    pub project_selected_path: Option<PathBuf>,
+    pub project_clipboard: Option<ProjectClipboard>,
 
     // Git 历史面板状态
     pub selected_commit: Option<CommitEntry>,
@@ -759,6 +767,8 @@ impl AppState {
             project_reveal_request: 0,
             project_selected_file: None,
             project_selected_dir: None,
+            project_selected_path: None,
+            project_clipboard: None,
             selected_commit: None,
             selected_commit_files: Vec::new(),
             selected_commit_file: None,
@@ -2417,17 +2427,26 @@ pub fn copy_for_current_focus() {
             }
         }
         FocusZone::ProjectTree => {
-            let text = app_signal().with_untracked(|s| {
-                if let Some(wf) = &s.project_selected_file {
-                    Some(basename(&wf.rel_path))
-                } else if let Some((_, dir)) = &s.project_selected_dir {
-                    Some(basename(dir))
-                } else {
-                    None
-                }
+            let selected = app_signal().with_untracked(|s| {
+                s.project_selected_path.clone().or_else(|| {
+                    s.project_selected_file
+                        .as_ref()
+                        .map(|wf| PathBuf::from(&wf.abs_path))
+                })
             });
-            if let Some(t) = text {
-                set_clipboard(t);
+            if let Some(path) = selected {
+                let ws_root = app_signal().with_untracked(|s| PathBuf::from(&s.cfg.workspace_path));
+                if path != ws_root {
+                    app_signal().update(|s| {
+                        s.project_clipboard = Some(ProjectClipboard {
+                            path: path.clone(),
+                            cut: false,
+                        });
+                    });
+                }
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    set_clipboard(name.to_owned());
+                }
             }
         }
         FocusZone::GitFiles => {
@@ -2519,6 +2538,26 @@ pub fn current_location_info() -> Option<(String, String, String, u32)> {
         FocusZone::ProjectTree => {
             if let Some(wf) = &s.project_selected_file {
                 Some((wf.repo_path.clone(), wf.rel_path.clone(), wf.abs_path.clone(), 1))
+            } else if let Some(abs) = &s.project_selected_path {
+                let abs_str = abs.to_string_lossy().to_string();
+                let ws = &s.cfg.workspace_path;
+                if let Some(repo) = crate::workspace_ops::find_owning_repo(&s.repos, abs) {
+                    let rel = abs
+                        .strip_prefix(&repo.path)
+                        .ok()
+                        .and_then(|p| p.to_str())
+                        .map(paths::normalize_slashes)
+                        .unwrap_or_default();
+                    Some((repo.path.clone(), rel, abs_str, 1))
+                } else {
+                    let rel = abs
+                        .strip_prefix(ws)
+                        .ok()
+                        .and_then(|p| p.to_str())
+                        .map(paths::normalize_slashes)
+                        .unwrap_or_default();
+                    Some((ws.clone(), rel, abs_str, 1))
+                }
             } else if let Some((repo_id, rel)) = &s.project_selected_dir {
                 s.repos.iter().find(|r| &r.id == repo_id).map(|r| {
                     let abs = Path::new(&r.path).join(rel).to_string_lossy().to_string();
@@ -2579,30 +2618,48 @@ pub fn copy_path_variant(
     show_toast("ok", format!("已复制: {text}"));
 }
 
-fn select_project_file_in_tree(s: &mut AppState, repo_id: &str, rel_path: &str) {
-    let norm = paths::normalize_slashes(rel_path);
-    s.project_workspace_expanded = true;
-    s.expanded_project_repos.insert(repo_id.to_string());
-
-    let mut parent = Path::new(&norm).parent();
-    while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
-        s.expanded_project_dirs.insert(format!("{repo_id}::{}", dir.display()));
-        parent = dir.parent();
-    }
-    let key = format!("{repo_id}::{norm}");
-    s.project_located_key = Some(key.clone());
-    if let Some(file) = s.workspace_files.iter()
-        .find(|file| file.repo_id == repo_id && file.rel_path == norm)
-        .cloned()
-    {
-        s.project_selected_file = Some(file);
+pub(crate) fn select_project_fs_node(s: &mut AppState, abs_path: &Path, is_dir: bool) {
+    let ws_root = Path::new(&s.cfg.workspace_path);
+    let ws_rel = crate::workspace_ops::workspace_rel_path(ws_root, abs_path).unwrap_or_default();
+    s.project_selected_path = Some(abs_path.to_path_buf());
+    s.project_located_key = Some(ws_rel.clone());
+    if is_dir {
+        s.project_selected_file = None;
+        s.project_compare_keys.clear();
+        s.project_selected_dir = Some((String::new(), ws_rel));
+    } else if let Some(wf) = crate::workspace_ops::resolve_workspace_file(ws_root, &s.repos, abs_path) {
+        s.project_compare_keys = vec![ws_rel];
+        s.project_selected_file = Some(wf);
         s.project_selected_dir = None;
-        s.project_compare_keys = vec![key];
     } else {
         s.project_selected_file = None;
         s.project_selected_dir = None;
         s.project_compare_keys.clear();
     }
+}
+
+fn select_project_file_in_tree(s: &mut AppState, repo_id: &str, rel_path: &str) {
+    let norm = paths::normalize_slashes(rel_path);
+    s.project_workspace_expanded = true;
+
+    let ws_root = PathBuf::from(&s.cfg.workspace_path);
+    let abs_path = s
+        .repos
+        .iter()
+        .find(|repo| repo.id == repo_id)
+        .map(|repo| Path::new(&repo.path).join(&norm))
+        .unwrap_or_else(|| ws_root.join(&norm));
+
+    if let Some(ws_rel) = crate::workspace_ops::workspace_rel_path(&ws_root, &abs_path) {
+        let mut parent = Path::new(&ws_rel).parent();
+        while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
+            let dir_key = paths::normalize_slashes(&dir.to_string_lossy());
+            s.expanded_project_dirs.insert(dir_key);
+            parent = dir.parent();
+        }
+    }
+    let is_dir = abs_path.is_dir();
+    select_project_fs_node(s, &abs_path, is_dir);
 }
 
 pub(crate) fn setup_project_follow() {
@@ -2958,88 +3015,115 @@ pub fn run_active_find_nav(next: bool) {
 pub fn move_project_selection(delta: i32) {
     #[derive(Clone)]
     enum ProjNode {
-        Dir { repo_id: String, rel: String, key: String },
-        File { wf: WorkspaceFile, key: String },
+        Dir { abs: PathBuf, key: String },
+        File { abs: PathBuf, key: String },
     }
 
     let (nodes, cur_key) = app_signal().with_untracked(|s| {
+        if s.cfg.workspace_path.is_empty() {
+            return (Vec::new(), None);
+        }
+        let ws_root = PathBuf::from(&s.cfg.workspace_path);
+        if !ws_root.is_dir() {
+            return (Vec::new(), None);
+        }
         let q = s.project_filter.trim().to_ascii_lowercase();
         let force_expand = !q.is_empty();
-        let mut out = Vec::new();
-        if !force_expand && !s.project_workspace_expanded {
-            return (out, None);
+        let show_ignored = s.cfg.project_show_ignored;
+        let mut out = vec![ProjNode::Dir {
+            abs: ws_root.clone(),
+            key: String::new(),
+        }];
+
+        if !(force_expand || s.project_workspace_expanded) {
+            return (out, s.project_located_key.clone());
         }
-        for repo in &s.repos {
-            let repo_files: Vec<WorkspaceFile> = s
-                .workspace_files
-                .iter()
-                .filter(|f| f.repo_id == repo.id && (q.is_empty() || f.rel_path.to_ascii_lowercase().contains(&q)))
-                .cloned()
-                .collect();
-            if force_expand && repo_files.is_empty() {
-                continue;
-            }
-            if !(force_expand || s.expanded_project_repos.contains(&repo.id)) {
-                continue;
-            }
-            // 按目录优先的树序展开可见节点
+
+        if force_expand {
             #[derive(Default)]
-            struct D {
-                rel: String,
-                subs: std::collections::BTreeMap<String, D>,
-                files: Vec<WorkspaceFile>,
+            struct FilterDir {
+                subs: BTreeMap<String, FilterDir>,
+                files: Vec<(String, PathBuf)>,
             }
-            let mut root = D::default();
-            for wf in repo_files {
-                let parts: Vec<&str> = wf.rel_path.split('/').collect();
-                if parts.len() <= 1 {
-                    root.files.push(wf);
-                } else {
-                    let mut cur = &mut root;
-                    let mut acc = String::new();
-                    for seg in &parts[..parts.len() - 1] {
-                        if !acc.is_empty() {
-                            acc.push('/');
-                        }
-                        acc.push_str(seg);
-                        cur = cur.subs.entry((*seg).to_string()).or_insert_with(|| D {
-                            rel: acc.clone(),
-                            subs: std::collections::BTreeMap::new(),
-                            files: Vec::new(),
-                        });
-                    }
-                    cur.files.push(wf);
+            fn insert_dir<'a>(mut cur: &'a mut FilterDir, rel: &str) -> &'a mut FilterDir {
+                for seg in rel.split('/').filter(|seg| !seg.is_empty()) {
+                    cur = cur.subs.entry(seg.to_owned()).or_default();
+                }
+                cur
+            }
+            let mut root = FilterDir::default();
+            for wf in s.workspace_files.iter() {
+                let abs = PathBuf::from(&wf.abs_path);
+                let Some(ws_rel) = crate::workspace_ops::workspace_rel_path(&ws_root, &abs) else {
+                    continue;
+                };
+                if !ws_rel.to_ascii_lowercase().contains(&q) {
+                    continue;
+                }
+                let parent = ws_rel.rsplit_once('/').map_or("", |(p, _)| p);
+                insert_dir(&mut root, parent).files.push((ws_rel, abs));
+            }
+            fn walk_filter(node: &mut FilterDir, ws_root: &Path, rel_dir: &str, out: &mut Vec<ProjNode>) {
+                for (name, sub) in &mut node.subs {
+                    let rel = if rel_dir.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{rel_dir}/{name}")
+                    };
+                    out.push(ProjNode::Dir {
+                        abs: ws_root.join(&rel),
+                        key: rel.clone(),
+                    });
+                    walk_filter(sub, ws_root, &rel, out);
+                }
+                node.files.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+                for (rel, abs) in &node.files {
+                    out.push(ProjNode::File {
+                        abs: abs.clone(),
+                        key: rel.clone(),
+                    });
                 }
             }
-            fn walk(
-                d: &mut D,
-                repo_id: &str,
-                force_expand: bool,
+            walk_filter(&mut root, &ws_root, "", &mut out);
+        } else {
+            fn walk_fs(
+                ws_root: &Path,
+                dir_abs: &Path,
+                repos: &[RepoInfo],
                 expanded_dirs: &HashSet<String>,
+                show_ignored: bool,
                 out: &mut Vec<ProjNode>,
             ) {
-                d.files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
-                for sub in d.subs.values_mut() {
-                    let key = format!("{repo_id}::{}", sub.rel);
-                    out.push(ProjNode::Dir {
-                        repo_id: repo_id.to_string(),
-                        rel: sub.rel.clone(),
-                        key: key.clone(),
-                    });
-                    if force_expand || expanded_dirs.contains(&key) {
-                        walk(sub, repo_id, force_expand, expanded_dirs, out);
+                for entry in crate::workspace_ops::read_dir_entries(ws_root, dir_abs, repos) {
+                    if entry.ignored && !show_ignored {
+                        continue;
+                    }
+                    if entry.is_dir {
+                        out.push(ProjNode::Dir {
+                            abs: entry.abs_path.clone(),
+                            key: entry.rel_path.clone(),
+                        });
+                        if expanded_dirs.contains(&entry.rel_path) {
+                            walk_fs(ws_root, &entry.abs_path, repos, expanded_dirs, show_ignored, out);
+                        }
+                    } else {
+                        out.push(ProjNode::File {
+                            abs: entry.abs_path,
+                            key: entry.rel_path,
+                        });
                     }
                 }
-                for wf in &d.files {
-                    let key = format!("{}::{}", wf.repo_id, wf.rel_path);
-                    out.push(ProjNode::File {
-                        wf: wf.clone(),
-                        key,
-                    });
-                }
             }
-            walk(&mut root, &repo.id, force_expand, &s.expanded_project_dirs, &mut out);
+            walk_fs(
+                &ws_root,
+                &ws_root,
+                &s.repos,
+                &s.expanded_project_dirs,
+                show_ignored,
+                &mut out,
+            );
         }
+
         (out, s.project_located_key.clone())
     });
 
@@ -3061,40 +3145,51 @@ pub fn move_project_selection(delta: i32) {
     } else {
         (((idx + delta) % len) + len) as usize % nodes.len()
     };
-    match &nodes[next] {
-        ProjNode::Dir { repo_id, rel, key } => {
-            let (rid, r, k) = (repo_id.clone(), rel.clone(), key.clone());
-            app_signal().update(|s| {
-                s.project_located_key = Some(k);
-                s.project_selected_dir = Some((rid, r));
-                s.project_selected_file = None;
-                s.project_compare_keys.clear();
-                s.focus_zone = FocusZone::ProjectTree;
-                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
-            });
+    let target = nodes[next].clone();
+    app_signal().update(|s| {
+        match &target {
+            ProjNode::Dir { abs, .. } => select_project_fs_node(s, abs, true),
+            ProjNode::File { abs, .. } => select_project_fs_node(s, abs, false),
         }
-        ProjNode::File { wf, key } => {
-            let (f, k) = (wf.clone(), key.clone());
-            app_signal().update(|s| {
-                s.project_located_key = Some(k.clone());
-                s.project_selected_file = Some(f);
-                s.project_selected_dir = None;
-                s.project_compare_keys = vec![k];
-                s.focus_zone = FocusZone::ProjectTree;
-                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
-            });
-        }
-    }
+        s.focus_zone = FocusZone::ProjectTree;
+        s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
+    });
 }
 
 pub fn toggle_project_selected_dir(expand: bool) {
     app_signal().update(|s| {
-        if let Some((rid, rel)) = &s.project_selected_dir {
-            let key = format!("{rid}::{rel}");
-            if expand {
-                s.expanded_project_dirs.insert(key);
-            } else {
-                s.expanded_project_dirs.remove(&key);
+        let ws_root = PathBuf::from(&s.cfg.workspace_path);
+        let Some((_, ws_rel)) = s.project_selected_dir.clone() else {
+            if !expand
+                && let Some(parent) = s
+                    .project_selected_path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .map(Path::to_path_buf)
+                && crate::workspace_ops::workspace_rel_path(&ws_root, &parent).is_some()
+            {
+                select_project_fs_node(s, &parent, true);
+                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
+            }
+            return;
+        };
+        if ws_rel.is_empty() {
+            s.project_workspace_expanded = expand;
+            return;
+        }
+        if expand {
+            s.expanded_project_dirs.insert(ws_rel);
+        } else if !s.expanded_project_dirs.remove(&ws_rel) {
+            // 已折叠时按左键跳转到父目录
+            if let Some(parent) = s
+                .project_selected_path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(Path::to_path_buf)
+                && crate::workspace_ops::workspace_rel_path(&ws_root, &parent).is_some()
+            {
+                select_project_fs_node(s, &parent, true);
+                s.project_reveal_request = s.project_reveal_request.wrapping_add(1);
             }
         }
     });

@@ -40,6 +40,7 @@ pub const ICO_LOCATE: &str = r#"<svg viewBox="0 0 24 24"><circle cx="12" cy="12"
 pub const ICO_EXPAND: &str = r#"<svg viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
 pub const ICO_EYE: &str = r#"<svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>"#;
 pub const ICO_UNDO: &str = r#"<svg viewBox="0 0 24 24"><path d="M9 5 4 10l5 5m-5-5h10a5 5 0 0 1 0 10h-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+pub const ICO_PLUS: &str = r#"<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>"#;
 
 pub fn icon(
     markup: &'static str,

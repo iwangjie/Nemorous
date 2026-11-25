@@ -623,7 +623,7 @@ mod macos {
         click("project-collapse-all", 1);
         assert!(!visible("project-file-tracked.txt"));
         click("project-workspace-root", 1);
-        click("project-repo-repo", 1);
+        click("project-workspace-root", 1);
         click("project-file-new.txt", 2);
         wait("editor-tab-file-new.txt");
         println!("BATCH2_NATIVE_PROJECT ok");
