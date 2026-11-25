@@ -47,9 +47,7 @@ fn queue_open(file: WorkspaceFile, target_pos: Option<EditorPosition>, intent: S
         if !request.pending()
             || !app_signal().with_untracked(|s| {
                 request.matches(s)
-                    && s.repos
-                        .iter()
-                        .any(|repo| repo.id == file.repo_id && repo.path == file.repo_path)
+                    && s.contains_project_root(&file.repo_id, &file.repo_path)
             })
         {
             request.finish();

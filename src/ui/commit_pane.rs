@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
+use nsh_core::{AccessibilityState, Checked, element::View};
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -152,13 +153,22 @@ fn commit_tri_state(keys: &[String], checked: &HashSet<String>) -> Option<bool> 
     }
 }
 
-fn tri_checkbox(state_val: Option<bool>, p: Palette, on_toggle: impl Fn(bool) + 'static) -> impl IntoElement {
+fn tri_checkbox(state_val: Option<bool>, p: Palette, on_toggle: impl Fn(bool) + 'static) -> View {
     let checked = state_val == Some(true);
     let partial = state_val == Some(false);
     let bg = if checked || partial { p.accent } else { p.surface };
     let border_col = if checked || partial { p.accent } else { p.border_strong };
 
-    view()
+    super::controls::button()
+        .role(AccessibilityRole::Checkbox)
+        .accessibility_state(AccessibilityState {
+            checked: Some(match state_val {
+                Some(true) => Checked::True,
+                Some(false) => Checked::Mixed,
+                None => Checked::False,
+            }),
+            ..Default::default()
+        })
         .w(px(14.0))
         .h(px(14.0))
         .flex_none()
@@ -166,8 +176,6 @@ fn tri_checkbox(state_val: Option<bool>, p: Palette, on_toggle: impl Fn(bool) + 
         .bg(bg)
         .border_1()
         .border_color(border_col)
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .on_press(move |e: &PressEvent| {
             on_toggle(e.modifiers.shift);
@@ -352,10 +360,10 @@ pub fn commit_pane() -> impl IntoElement {
             super::reveal_selected_row(selected_row);
         }
     });
-    let selected_keys = computed(|| app_signal().with(|s| {
+    let file_count = computed(|| app_signal().with(|s| {
         s.statuses.iter()
-            .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)).map(ChangedFile::key))
-            .collect::<Vec<_>>()
+            .flat_map(|st| st.files.iter().filter(|f| matches_change_list(&s.cfg, f)))
+            .count()
     }));
     let title = view().flex_row().items_center().gap(px(6.0))
         .child(text(move || if tool.width.get() < 122.0 { "变更" } else { "本地变更" })
@@ -364,7 +372,7 @@ pub fn commit_pane() -> impl IntoElement {
             .text_color(move || current_palette().text_primary)
             .number_of_lines(1u32))
         .child(when(move || tool.width.get() >= 174.0, move || {
-            text(move || format!("{} 个文件", selected_keys.with(Vec::len)))
+            text(move || format!("{} 个文件", file_count.get()))
                 .test_id("changes-file-count")
                 .text_size(px(11.0))
                 .text_color(move || current_palette().text_muted)
@@ -379,9 +387,7 @@ pub fn commit_pane() -> impl IntoElement {
         .child(workspace_notice(WorkspaceData::Changes))
         .child(dynamic(move || {
             let p = current_palette();
-            let keys = selected_keys.get();
-            let (root_tri, refreshing, can_rollback, compact) = (
-                app_signal().with(|s| commit_tri_state(&keys, &s.checked_changes)),
+            let (refreshing, can_rollback, compact) = (
                 app_signal().with(|s| s.is_refreshing()),
                 app_signal().with(|s| s.change_selection.is_some()),
                 tool.width.get() < 208.0,
@@ -396,9 +402,6 @@ pub fn commit_pane() -> impl IntoElement {
                 .gap(px(2.0))
                 .border_b_1()
                 .border_color(p.border)
-                .child(tri_checkbox(root_tri, p, move |_| {
-                    set_group_checked(keys.clone(), root_tri != Some(true));
-                }))
                 .child(button("changes-refresh-btn", "刷新变更", ICO_REFRESH, p, refreshing, true, refresh_changes))
                 .child(if compact {
                     button("changes-toolbar-more", "更多变更操作", ICO_MORE, p, false, true, open_narrow_overflow_menu)
@@ -585,19 +588,14 @@ fn render_section(
     p: Palette,
     font_size: f32,
 ) -> impl IntoElement {
-    let section_keys: Vec<String> = repo_groups
-        .iter()
-        .flat_map(|(_, fs)| fs.iter().map(|f| f.key()))
-        .collect();
-    let count = section_keys.len();
-    let tri = commit_tri_state(&section_keys, checked_set);
-    let keys_for_toggle = section_keys.clone();
+    let count: usize = repo_groups.iter().map(|(_, files)| files.len()).sum();
     let multi_repo = repo_groups.len() > 1;
     let section_prefix = if is_staged { "staged" } else { "unstaged" };
 
     let mut children: Vec<AnyElement> = Vec::new();
     children.push(
         view()
+            .test_id(&format!("changes-section-{section_prefix}"))
             .h(px(font_size + 14.5))
             .px(px(8.0))
             .flex_row()
@@ -623,10 +621,6 @@ fn render_section(
                 10.0,
                 p.text_muted,
             ))
-            .child(tri_checkbox(tri, p, move |_| {
-                let target = tri != Some(true);
-                set_group_checked(keys_for_toggle.clone(), target);
-            }))
             .child(
                 text(title)
                     .text_size(px(font_size))
@@ -682,7 +676,7 @@ fn render_section(
                         .child(tri_checkbox(repo_tri, p, move |_| {
                             let target = repo_tri != Some(true);
                             set_group_checked(rkeys.clone(), target);
-                        }))
+                        }).test_id(&format!("change-repo-check-{repo_key}")).label(st.repo.label().to_owned()))
                         .child(
                             view()
                                 .w(px(15.0))
@@ -855,11 +849,9 @@ fn render_change_dir_children(
                     crate::state::show_popup_menu_at(items, e.page_position);
                 })
                 .child(
-                    view()
+                    super::controls::button()
                         .w(px(14.0))
                         .h(px(16.0))
-                        .items_center()
-                        .justify_center()
                         .on_press(move || {
                             app_signal().update(|s| {
                                 if !s.collapsed_change_dirs.remove(&dk_chev) {
@@ -880,7 +872,7 @@ fn render_change_dir_children(
                 .child(tri_checkbox(tri, p, move |_| {
                     let target = tri != Some(true);
                     set_group_checked(keys.clone(), target);
-                }))
+                }).test_id(&format!("change-dir-check-{dir_key}")).label(sub.rel_path.clone()))
                 .child(icons::icon(ICO_FOLDER, 12.0, p.text_control))
                 .child(
                     text(sub.name.clone())
@@ -1076,7 +1068,7 @@ fn render_change_file_row(
             if partial { Some(false) } else if is_checked { Some(true) } else { None },
             p,
             move |shift| state::toggle_change_checked_in_section(&key_chk, is_staged, shift),
-        ))
+        ).test_id(&format!("{test_id_val}-check")).label(cf.path.clone()))
         .child(icons::icon(ICO_FILE, 11.5, status_col))
         .child(name_el)
         .child((show_parent_dir && !parent_dir.is_empty()).then(|| {

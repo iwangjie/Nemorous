@@ -43,8 +43,11 @@ pub(crate) mod merge_menu;
 pub(crate) mod rebase_plan_view;
 pub mod project_pane;
 mod workspace_menu;
+mod workspace_windows;
+mod project_menus;
 mod left_tool_window;
 mod font_zoom;
+mod controls;
 pub(crate) mod sync_dialog;
 
 use nsh_base::{EditorCommand, h_resizable, resizable_panel, v_resizable};
@@ -63,7 +66,7 @@ use crate::state::{
     init_workspace, jump_diff_hunk, jump_from_diff_to_source, locate_current_in_project_tree,
     move_change_selection, move_commit_diff_file, navigate_back, navigate_forward,
     open_commit_diff, open_find_bar, open_goto_line_modal,
-    open_working_diff, refresh_workspace_async, save_active_document, stage_selected_change,
+    open_working_diff, refresh_workspace_async, stage_selected_change,
     toggle_selected_change_checkbox,
 };
 use crate::theme;
@@ -165,7 +168,10 @@ fn menu_binding(item: MenuItem, keymap: &crate::keymap::Keymap, action: &str) ->
     }
 }
 
-fn build_application_menu(text_input_focused: bool, modal_open: bool, document_undo: bool, keymap: &crate::keymap::Keymap) -> Vec<MenuItem> {
+fn build_application_menu(
+    text_input_focused: bool, modal_open: bool, document_undo: bool,
+    keymap: &crate::keymap::Keymap, project: &project_menus::Context,
+) -> Vec<MenuItem> {
     let copy_item = if text_input_focused {
         // 焦点位于原生 <input>（筛选框、查找/替换框、转到行/文件框）时，使用标准 responder copy:，绝不劫持输入框 ⌘C
         MenuItem::role(MenuRole::Copy)
@@ -191,6 +197,7 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, document_u
                 MenuItem::role(MenuRole::Quit),
             ],
         ),
+        project_menus::file(project, modal_open, keymap),
         MenuItem::submenu(
             "编辑",
             [
@@ -251,35 +258,7 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, document_u
                     .disabled(modal_open),
             ],
         ),
-        MenuItem::submenu(
-            "Git",
-            [
-                MenuItem::new("Git 高级…")
-                    .on_select(guard_app_command(git_advanced::open)).disabled(modal_open),
-                MenuItem::new("多仓合并…")
-                    .on_select(guard_app_command(merge_menu::open)).disabled(modal_open),
-                menu_binding(MenuItem::new("分支矩阵…"), keymap, "branchMatrix")
-                    .on_select(guard_app_command(branch_matrix::open)).disabled(modal_open),
-                menu_binding(MenuItem::new("拉取全部仓库"), keymap, "pull")
-                    .on_select(guard_app_command(|| sync_dialog::start_all(crate::git_remotes::RemoteAction::Pull))).disabled(modal_open),
-                menu_binding(MenuItem::new("推送全部仓库"), keymap, "push")
-                    .on_select(guard_app_command(|| sync_dialog::start_all(crate::git_remotes::RemoteAction::Push))).disabled(modal_open),
-                MenuItem::new("获取全部仓库").on_select(guard_app_command(|| sync_dialog::start_all(crate::git_remotes::RemoteAction::Fetch))).disabled(modal_open),
-                menu_binding(MenuItem::new("刷新工作区"), keymap, "refresh")
-                    .on_select(guard_app_command(|| refresh_workspace_async(None)))
-                    .disabled(modal_open),
-                MenuItem::submenu(
-                    "选中的文件",
-                    [
-                        MenuItem::new("查看历史")
-                            .on_select(guard_app_command(revision_picker::show_active_history)),
-                        MenuItem::new("与修订版本比较…")
-                            .on_select(guard_app_command(revision_picker::open_active)),
-                    ],
-                )
-                .disabled(modal_open),
-            ],
-        ),
+        project_menus::git(project, modal_open, keymap),
         MenuItem::submenu(
             "窗口",
             [
@@ -302,20 +281,23 @@ fn build_application_menu(text_input_focused: bool, modal_open: bool, document_u
 }
 
 fn setup_application_menu() {
-    let last_mode = stored(None::<(bool, bool, bool, crate::keymap::Keymap)>);
     let keymap = keymap_memo();
-    let modal_memo = computed(|| app_signal().with(|s| s.focus_zone == FocusZone::Modal));
-    effect(move || {
+    let mode = computed(move || {
         let input_focused = state::text_input_focus_signal().with(|f| f.focused);
-        let modal_open = modal_memo.get();
-        let document_undo = !input_focused && app_signal().with(|s| document_undo_focus(s).is_some());
-        let keys = keymap.get();
-        let mode = (input_focused, modal_open, document_undo, keys.clone());
-        let changed = last_mode.with(|prior| prior.as_ref() != Some(&mode));
-        if changed {
-            last_mode.replace(Some(mode));
-            set_application_menu(build_application_menu(input_focused, modal_open, document_undo, &keys));
-        }
+        app_signal().with(|s| (
+            input_focused,
+            s.focus_zone == FocusZone::Modal,
+            !input_focused && document_undo_focus(s).is_some(),
+            keymap.get(),
+            project_menus::Context::from_state(s),
+        ))
+    });
+    // The menu handlers belong to this effect. Every rerun must reinstall
+    // them, even though unrelated app changes leave the memo unchanged.
+    effect(move || {
+        mode.with(|(input_focused, modal_open, document_undo, keys, context)| {
+            set_application_menu(build_application_menu(*input_focused, *modal_open, *document_undo, keys, context));
+        });
     });
 }
 
@@ -442,7 +424,7 @@ fn setup_shortcuts() {
         bind_action(&keys, "actions", always, |_| navigation_picker::open(navigation_picker::Mode::Actions));
         bind_action(&keys, "switcher", always, |key| navigation_picker::start_or_move_switcher(key.contains("shift+")));
         bind_action(&keys, "save", always, |_| {
-            save_active_document();
+            crate::format_runtime::save_all();
         });
         bind_action(&keys, "settings", always, |_| settings::open());
         bind_action(&keys, "zoomIn", always, |_| settings::zoom(0.1));
@@ -450,7 +432,7 @@ fn setup_shortcuts() {
         bind_action(&keys, "zoomReset", always, |_| settings::zoom(0.0));
         bind_action(&keys, "gitCommit", not_editing, |_| commit_form::focus());
         bind_action(&keys, "pull", not_editing, |_| sync_dialog::start_all(crate::git_remotes::RemoteAction::Pull));
-        bind_action(&keys, "push", not_editing, |_| sync_dialog::start_all(crate::git_remotes::RemoteAction::Push));
+        bind_action(&keys, "push", not_editing, |_| project_menus::push_all());
         bind_action(&keys, "searchEverywhere", always, |_| navigation_picker::open(navigation_picker::Mode::Everywhere));
         bind_action(&keys, "previousTab", always, |_| navigation_picker::cycle_tabs(-1));
         bind_action(&keys, "nextTab", always, |_| navigation_picker::cycle_tabs(1));
@@ -856,29 +838,16 @@ fn setup_window_focus_refresh() {
 }
 
 fn top_header_bar() -> impl IntoElement {
+    let workspace = computed(|| app_signal().with(|s| {
+        if s.cfg.workspace_path.is_empty() { "选择项目".to_owned() } else { basename(&s.cfg.workspace_path) }
+    }));
+    let branch = computed(|| app_signal().with(|s| s.statuses.first()
+        .map(|status| status.branch.clone()).filter(|branch| !branch.is_empty())));
+    let refreshing = computed(|| app_signal().with(|s| s.is_refreshing()));
     dynamic(move || {
         let p = current_palette();
         let bar = title_bar();
         let left_pad = bar.left.0.max(76.0);
-        let (ws_path, repo_count, branch, is_refreshing) = app_signal().with(|s| {
-            let br = s
-                .statuses
-                .first()
-                .map(|st| st.branch.clone())
-                .filter(|b| !b.is_empty())
-                .unwrap_or_else(|| "main".to_string());
-            (
-                s.cfg.workspace_path.clone(),
-                s.repos.len(),
-                br,
-                s.is_refreshing(),
-            )
-        });
-        let ws_name = if ws_path.trim().is_empty() {
-            "选择工作区".to_string()
-        } else {
-            basename(&ws_path)
-        };
 
         view()
             .test_id("top-header-bar")
@@ -899,41 +868,34 @@ fn top_header_bar() -> impl IntoElement {
                     .items_center()
                     .gap(px(8.0))
                     .window_drag(false)
-                    .child(
-                        view()
+                    .child(workspace_menu::toolbar(
+                        controls::button()
                             .h(px(28.0))
                             .px(px(10.0))
                             .gap(px(6.0))
-                            .flex_row()
-                            .items_center()
                             .rounded(px(6.0))
                             .bg(p.surface2)
                             .test_id("top-workspace-button")
-                            .label("工作区管理")
+                            .label("切换项目")
                             .cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
-                            .on_press(workspace_menu::open)
+                            .expanded(move |s| s.bg(p.accent_soft))
                             .child(icons::icon(ICO_FOLDER, 13.0, p.text_control))
                             .child(
-                                text(ws_name)
+                                text(move || workspace.get())
                                     .text_size(px(12.5))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(p.text_primary)
                                     .number_of_lines(1u32),
                             )
-                            .child(
-                                text(format!("{repo_count}"))
-                                    .text_size(px(11.0))
-                                    .text_color(p.text_muted),
-                            ),
-                    )
-                    .child(
-                        view()
+                            .child(icons::icon(ICO_CHEVRON_DOWN, 10.0, p.text_muted)),
+                        p,
+                    ))
+                    .child(dynamic(move || branch.get().map(|branch| {
+                        controls::button()
                             .h(px(28.0))
                             .px(px(10.0))
                             .gap(px(6.0))
-                            .flex_row()
-                            .items_center()
                             .rounded(px(6.0))
                             .bg(p.surface2)
                             .test_id("top-branch-button")
@@ -948,8 +910,8 @@ fn top_header_bar() -> impl IntoElement {
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(p.text_primary)
                                     .number_of_lines(1u32),
-                            ),
-                    ),
+                            )
+                    }))),
             )
             .child(
                 view()
@@ -958,51 +920,45 @@ fn top_header_bar() -> impl IntoElement {
                     .gap(px(6.0))
                     .window_drag(false)
                     .child(
-                        view()
+                        controls::button()
                             .test_id("top-git-advanced-btn")
                             .label("Git 高级操作")
-                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0))
-                            .items_center().justify_center().cursor(Cursor::Pointer)
+                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0)).cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
                             .on_press(git_advanced::open)
                             .child(icons::icon(ICO_SETTINGS, 13.0, p.text_control)),
                     )
                     .child(
-                        view()
+                        controls::button()
                             .test_id("top-git-sync-btn")
                             .label("获取、拉取或推送")
-                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0))
-                            .items_center().justify_center().cursor(Cursor::Pointer)
+                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0)).cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
                             .on_press(sync_dialog::open_menu)
                             .child(text("同步").text_size(px(11.0)).text_color(p.text_control)),
                     )
                     .child(
-                        view()
+                        controls::button()
                             .test_id("top-refresh-btn")
                             .w(px(26.0))
                             .h(px(26.0))
                             .rounded(px(5.0))
-                            .items_center()
-                            .justify_center()
                             .cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
                             .label("刷新工作区 (⌘⌥Y)")
                             .on_press(|| refresh_workspace_async(None))
-                            .child(icons::icon(
+                            .child(dynamic(move || icons::icon(
                                 ICO_REFRESH,
                                 13.0,
-                                if is_refreshing { p.accent } else { p.text_control },
-                            )),
+                                if refreshing.get() { p.accent } else { p.text_control },
+                            ))),
                     )
                     .child(
-                        view()
+                        controls::button()
                             .test_id("top-search-btn")
                             .w(px(26.0))
                             .h(px(26.0))
                             .rounded(px(5.0))
-                            .items_center()
-                            .justify_center()
                             .cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
                             .label("随处搜索")
@@ -1201,7 +1157,7 @@ fn status_bar() -> impl IntoElement {
                             .px(px(6.0)).text_size(px(11.0)).text_color(p.text_muted))
                     })
                     .child(cursor_text.map(|pos_txt| {
-                        view()
+                        controls::button()
                             .test_id("status-cursor-pos")
                             .px(px(6.0))
                             .py(px(1.5))
@@ -1254,7 +1210,7 @@ fn toast_layer() -> impl IntoElement {
                 ),
             )
             .child(
-                view()
+                controls::button()
                     .label("关闭提示")
                     .cursor(Cursor::Pointer)
                     .on_press(|| app_signal().update(|s| s.toast = None))
@@ -1328,6 +1284,7 @@ pub fn shell() -> impl IntoElement {
     setup_theme_appearance_sync();
     setup_hidden_title_bar();
     setup_application_menu();
+    workspace_windows::observe();
     setup_shortcuts();
     #[cfg(target_os = "macos")]
     key_gestures::observe_macos();

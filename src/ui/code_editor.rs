@@ -1,7 +1,6 @@
 use nsh_base::{
     Editor, EditorApi, EditorCommand, EditorContextMenuEvent, EditorSearchResult,
-    EditorSelection, editor, input,
-};
+    EditorSelection, editor, };
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -254,14 +253,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                         .items_center()
                         .gap(px(6.0))
                         .child(is_dirty.then(|| {
-                            view()
+                            super::controls::button()
                                 .test_id("code-save-btn")
                                 .h(px(24.0))
                                 .px(px(10.0))
                                 .rounded(px(5.0))
                                 .bg(p.accent)
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .hover(move |s| s.bg(p.accent_hover))
                                 .on_press(|| {
@@ -275,13 +272,11 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 )
                         }))
                         .child((!split.get()).then(|| {
-                            view()
+                            super::controls::button()
                                 .test_id("code-split-right-btn")
                                 .w(px(24.0))
                                 .h(px(24.0))
                                 .rounded(px(5.0))
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .hover(move |s| s.bg(p.surface_hover))
                                 .label("向右拆分")
@@ -289,13 +284,11 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .child(icons::icon(ICO_COLUMNS, 13.0, p.text_control))
                         }))
                         .child(
-                            view()
+                            super::controls::button()
                                 .test_id("code-git-history-btn")
                                 .w(px(24.0))
                                 .h(px(24.0))
                                 .rounded(px(5.0))
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .hover(move |s| s.bg(p.surface_hover))
                                 .label("查看 Git 文件历史")
@@ -303,27 +296,23 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .child(icons::icon(ICO_BRANCH, 13.0, p.text_control)),
                         )
                         .child(
-                            view()
+                            super::controls::button()
                                 .test_id("code-history-btn")
                                 .h(px(24.0))
                                 .px(px(8.0))
                                 .rounded(px(5.0))
                                 .bg(p.surface2)
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .hover(move |s| s.bg(p.surface_hover))
                                 .on_press(open_local_history_for_active)
                                 .child(text("历史").text_size(px(11.0)).text_color(p.text_control)),
                         )
                         .child(
-                            view()
+                            super::controls::button()
                                 .w(px(24.0))
                                 .h(px(24.0))
                                 .rounded(px(5.0))
                                 .bg(if show_opts { p.accent_soft } else { transparent_black() })
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .hover(move |s| s.bg(p.surface_hover))
                                 .label("显示选项")
@@ -353,13 +342,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                         .border_color(p.border)
                         .child(text("显示选项：").text_size(px(11.0)).text_color(p.text_muted))
                         .child(
-                            view()
+                            super::controls::button()
                                 .test_id("code-format-on-save")
                                 .h(px(22.0))
                                 .px(px(8.0))
                                 .rounded(px(4.0))
                                 .bg(if format_on_save { p.accent_soft } else { p.surface2 })
-                                .items_center()
                                 .cursor(Cursor::Pointer)
                                 .on_press(|| {
                                     app_signal().update(|s| s.cfg.format_on_save = !s.cfg.format_on_save);
@@ -368,14 +356,11 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .child(text("保存时格式化").text_size(px(11.0)).text_color(p.text_control)),
                         )
                         .child(
-                            input()
+                            super::controls::text_field(23.0, 11.0, 6.0)
                                 .test_id("code-format-command")
-                                .h(px(23.0))
                                 .flex_1()
-                                .px(px(6.0))
                                 .rounded(px(4.0))
                                 .bg(p.surface)
-                                .text_size(px(11.0))
                                 .text_color(p.text_primary)
                                 .placeholder("格式化命令（留空按语言选择）")
                                 .value(|| app_signal().with(|s| s.cfg.format_command.clone()))
@@ -390,13 +375,11 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .on_submit(|_: &str| state::save_config_quiet()),
                         )
                         .child(
-                            view()
+                            super::controls::button()
                                 .h(px(22.0))
                                 .px(px(8.0))
                                 .rounded(px(4.0))
                                 .bg(p.surface2)
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .on_press(|| {
                                     app_signal().update(|s| {
@@ -411,13 +394,11 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 ),
                         )
                         .child(
-                            view()
+                            super::controls::button()
                                 .h(px(22.0))
                                 .px(px(8.0))
                                 .rounded(px(4.0))
                                 .bg(p.surface2)
-                                .items_center()
-                                .justify_center()
                                 .cursor(Cursor::Pointer)
                                 .on_press(|| {
                                     app_signal().update(|s| {
@@ -457,19 +438,16 @@ pub fn code_editor_pane() -> impl IntoElement {
                             .items_center()
                             .gap(px(6.0))
                             .child(
-                                input()
+                                super::controls::text_field(24.0, 11.5, 8.0)
                                     .test_id("code-find-input")
                                     .element_ref(&find_input)
                                     .flex_1()
                                     .min_w(px(80.0))
                                     .max_w(px(220.0))
-                                    .h(px(24.0))
-                                    .px(px(8.0))
                                     .rounded(px(4.0))
                                     .bg(move || current_palette().surface)
                                     .border_1()
                                     .border_color(move || current_palette().border)
-                                    .text_size(px(11.5))
                                     .text_color(move || current_palette().text_primary)
                                     .placeholder("查找…")
                                     .value(move || app_signal().with(|s| s.code_search.query.to_string()))
@@ -493,14 +471,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .text_color(move || current_palette().text_muted),
                             )
                             .child(
-                                view()
+                                super::controls::button()
                                     .test_id("code-find-prev")
                                     .h(px(22.0))
                                     .px(px(6.0))
                                     .rounded(px(4.0))
                                     .bg(move || current_palette().surface2)
-                                    .items_center()
-                                    .justify_center()
                                     .cursor(Cursor::Pointer)
                                     .on_press(move || {
                                         if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
@@ -514,14 +490,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     ),
                             )
                             .child(
-                                view()
+                                super::controls::button()
                                     .test_id("code-find-next")
                                     .h(px(22.0))
                                     .px(px(6.0))
                                     .rounded(px(4.0))
                                     .bg(move || current_palette().surface2)
-                                    .items_center()
-                                    .justify_center()
                                     .cursor(Cursor::Pointer)
                                     .on_press(move || {
                                         if let Some(api) = state::active_editor_api(FocusZone::CodeEditor) {
@@ -535,7 +509,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                     ),
                             )
                             .child(
-                                view()
+                                super::controls::button()
                                     .test_id("code-find-toggle-replace")
                                     .h(px(22.0))
                                     .px(px(6.0))
@@ -547,8 +521,6 @@ pub fn code_editor_pane() -> impl IntoElement {
                                             current_palette().surface2
                                         }
                                     })
-                                    .items_center()
-                                    .justify_center()
                                     .cursor(Cursor::Pointer)
                                     .on_press(|| {
                                         app_signal().update(|s| s.code_replace_open = !s.code_replace_open);
@@ -561,11 +533,9 @@ pub fn code_editor_pane() -> impl IntoElement {
                             )
                             .child(view().flex_1())
                             .child(
-                                view()
+                                super::controls::button()
                                     .w(px(20.0))
                                     .h(px(20.0))
-                                    .items_center()
-                                    .justify_center()
                                     .cursor(Cursor::Pointer)
                                     .on_press(state::close_find_bar)
                                     .child(icons::icon(ICO_CLOSE, 10.0, current_palette().text_muted)),
@@ -579,16 +549,13 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .items_center()
                                 .gap(px(6.0))
                                 .child(
-                                    input()
+                                    super::controls::text_field(24.0, 11.5, 8.0)
                                         .test_id("code-replace-input")
                                         .w(px(220.0))
-                                        .h(px(24.0))
-                                        .px(px(8.0))
                                         .rounded(px(4.0))
                                         .bg(move || current_palette().surface)
                                         .border_1()
                                         .border_color(move || current_palette().border)
-                                        .text_size(px(11.5))
                                         .text_color(move || current_palette().text_primary)
                                         .placeholder("替换为…")
                                         .value(move || app_signal().with(|s| s.code_replace_text.clone()))
@@ -600,14 +567,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         }),
                                 )
                                 .child(
-                                    view()
+                                    super::controls::button()
                                         .test_id("code-replace-one")
                                         .h(px(22.0))
                                         .px(px(8.0))
                                         .rounded(px(4.0))
                                         .bg(move || current_palette().surface2)
-                                        .items_center()
-                                        .justify_center()
                                         .cursor(Cursor::Pointer)
                                         .on_press(move || {
                                             let repl = app_signal().with_untracked(|s| s.code_replace_text.clone());
@@ -622,14 +587,12 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         ),
                                 )
                                 .child(
-                                    view()
+                                    super::controls::button()
                                         .test_id("code-replace-all")
                                         .h(px(22.0))
                                         .px(px(8.0))
                                         .rounded(px(4.0))
                                         .bg(move || current_palette().accent_soft)
-                                        .items_center()
-                                        .justify_center()
                                         .cursor(Cursor::Pointer)
                                         .on_press(move || {
                                             let repl = app_signal().with_untracked(|s| s.code_replace_text.clone());

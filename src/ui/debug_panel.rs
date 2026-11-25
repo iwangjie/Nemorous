@@ -605,7 +605,7 @@ pub(super) fn body() -> impl IntoElement {
                                         frame["name"].as_str().unwrap_or_default(),
                                         frame["line"]
                                     );
-                                    view()
+                                    super::controls::button()
                                         .h(px(20.0))
                                         .cursor(Cursor::Pointer)
                                         .on_press(move || open_frame(frame.clone()))

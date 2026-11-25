@@ -279,7 +279,7 @@ pub(super) fn body() -> impl IntoElement {
                     view()
                         .flex_col()
                         .children(lines.into_iter().enumerate().map(|(index, line)| {
-                            view()
+                            super::controls::button().justify_start()
                                 .h(px(23.0))
                                 .px(px(4.0))
                                 .cursor(Cursor::Pointer)

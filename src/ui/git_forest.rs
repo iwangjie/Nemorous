@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -337,7 +336,7 @@ fn label_button(
     action: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label.clone())
         .h(px(23.0))
@@ -348,8 +347,6 @@ fn label_button(
         .border_1()
         .border_color(p.border)
         .cursor(Cursor::Pointer)
-        .items_center()
-        .justify_center()
         .on_press(action)
         .child(
             text(label)
@@ -366,15 +363,13 @@ fn filter_button(
     action: impl Fn() + 'static,
 ) -> nsh_core::element::View {
     let p = current_palette();
-    view()
+    super::controls::button().justify_start()
         .test_id(id)
         .label(label)
         .h(px(23.0))
         .max_w(px(128.0))
         .px(px(5.0))
         .gap(px(3.0))
-        .flex_row()
-        .items_center()
         .rounded(px(4.0))
         .bg(move || if value().is_some() { p.accent_soft } else { transparent_black() })
         .cursor(Cursor::Pointer)
@@ -399,15 +394,13 @@ pub(super) fn icon_action(
 ) -> impl IntoElement {
     let p = current_palette();
     let color = if !enabled { p.text_muted.opacity(0.5) } else { p.text_control };
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .tooltip(super::tooltip_label(label.into(), p))
         .w(px(25.0))
         .h(px(23.0))
         .flex_none()
-        .items_center()
-        .justify_center()
         .rounded(px(4.0))
         .bg(if active { p.accent_soft } else { transparent_black() })
         .cursor(if enabled { Cursor::Pointer } else { Cursor::Default })
@@ -428,15 +421,13 @@ fn match_mode(
     toggle: impl Fn(&mut Query) + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .tooltip(super::tooltip_label(label.into(), p))
         .w(px(19.0))
         .h(px(18.0))
         .flex_none()
-        .items_center()
-        .justify_center()
         .rounded(px(3.0))
         .bg(move || forest().with(|s| {
             if active(&s.filters.query) { p.accent_soft } else { transparent_black() }
@@ -503,16 +494,13 @@ fn text_filter(
                         .border_color(p.border_strong)
                         .rounded(px(5.0))
                         .child(
-                            input()
+                            super::controls::text_field(24.0, 11.0, 6.0)
                                 .test_id(input_id)
                                 .label(label)
                                 .flex_1()
-                                .h(px(24.0))
-                                .px(px(6.0))
                                 .rounded(px(3.0))
                                 .bg(p.surface2)
                                 .text_color(p.text_primary)
-                                .text_size(px(11.0))
                                 .placeholder(hint)
                                 .auto_focus(true)
                                 .value(move || draft.get())
@@ -553,13 +541,12 @@ pub(super) fn controls() -> impl IntoElement {
                 .border_color(p.border)
                 .child(icons::icon(ICO_SEARCH, 12.0, p.text_muted))
                 .child(
-                    input()
+                    super::controls::text_field(23.0, 11.0, 0.0)
                         .test_id("git-filter-input")
                         .label("搜索提交信息或哈希")
                         .flex_1()
                         .min_w(px(0.0))
                         .h_full()
-                        .text_size(px(11.0))
                         .text_color(p.text_primary)
                         .placeholder("文本或哈希")
                         .value(|| forest().with(|s| s.filters.query.text.clone()))

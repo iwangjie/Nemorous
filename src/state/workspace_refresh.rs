@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -60,6 +61,8 @@ pub(super) struct WorkspaceRefresh {
     inventory_ready: bool,
     inventory_error: Option<String>,
     files_ready: bool,
+    plain_folder: bool,
+    project_directories: Arc<[(String, String)]>,
     changes_ready: bool,
     stashes_ready: bool,
     file_errors: BTreeMap<String, String>,
@@ -97,6 +100,28 @@ pub(crate) enum WorkspaceNotice {
 }
 
 impl AppState {
+    pub(crate) fn plain_project(&self) -> Option<RepoInfo> {
+        self.workspace_refresh.plain_folder.then(|| crate::workspace_ops::folder_project(&self.cfg.workspace_path))
+    }
+
+    pub(super) fn contains_project_root(&self, id: &str, path: &str) -> bool {
+        let matches = |repo: &RepoInfo| repo.id == id && repo.path == path;
+        self.repos.iter().any(matches) || self.plain_project().as_ref().is_some_and(matches)
+    }
+
+    pub(crate) fn project_directories(&self) -> Arc<[(String, String)]> {
+        self.workspace_refresh.project_directories.clone()
+    }
+
+    pub(crate) fn remember_directory(&mut self, repo: &RepoInfo, relative: String) {
+        let mut dirs = self.project_directories().to_vec();
+        let entry = (repo.id.clone(), relative);
+        if !dirs.contains(&entry) {
+            dirs.push(entry);
+            self.workspace_refresh.project_directories = dirs.into();
+        }
+    }
+
     pub(crate) fn is_refreshing(&self) -> bool {
         self.workspace_refresh.active.is_some()
     }
@@ -233,6 +258,7 @@ struct Discovery {
 
 struct Inventory {
     repos: Vec<RepoInfo>,
+    plain_folder: bool,
     hidden_labels: BTreeMap<String, String>,
     bindings: Option<BTreeMap<String, String>>,
 }
@@ -245,6 +271,7 @@ impl Discovery {
             previous,
             &mut self.bindings,
         )?;
+        let plain_folder = repos.is_empty();
         let hidden_labels = repos
             .iter()
             .filter(|repo| self.hidden.contains(&repo.id))
@@ -254,6 +281,7 @@ impl Discovery {
             .retain(|repo| !self.hidden.contains(&repo.id) && (self.include_root || !repo.is_root));
         Ok(Inventory {
             repos,
+            plain_folder,
             hidden_labels,
             bindings: (self.bindings != old_bindings).then_some(self.bindings),
         })
@@ -339,12 +367,14 @@ fn apply_inventory(s: &mut AppState, inventory: Inventory) {
     s.workspace_refresh.inventory_ready = true;
     s.workspace_refresh.inventory_error = None;
     s.hidden_repo_labels = inventory.hidden_labels;
+    let folder_changed = s.workspace_refresh.plain_folder != inventory.plain_folder;
+    s.workspace_refresh.plain_folder = inventory.plain_folder;
     if let Some(bindings) = inventory.bindings {
         s.cfg
             .repository_id_bindings
             .insert(s.cfg.workspace_path.clone(), bindings);
     }
-    if s.repos == inventory.repos {
+    if s.repos == inventory.repos && !folder_changed {
         return;
     }
     for repo in &inventory.repos {
@@ -355,6 +385,9 @@ fn apply_inventory(s: &mut AppState, inventory: Inventory) {
     let repos: HashMap<_, _> = inventory.repos.iter().map(|r| (r.id.as_str(), r)).collect();
     s.expanded_project_repos
         .retain(|id| repos.contains_key(id.as_str()));
+    if let Some(folder) = s.plain_project() {
+        s.expanded_project_repos.insert(folder.id);
+    }
     let matching_repo =
         |id: &str, path: &str| repos.get(id).copied().filter(|repo| repo.path == path);
     s.statuses.retain_mut(|status| {
@@ -455,23 +488,31 @@ async fn refresh_files(generation: u64, targets: Arc<[RepoInfo]>, superseded: Ar
     if !is_current(generation) {
         return;
     }
-    let previous = app_signal().with_untracked(|s| s.workspace_files.clone());
+    let (previous, folder, directories, inventory) = app_signal().with_untracked(|s| (
+        s.workspace_files.clone(), s.plain_project(), s.project_directories(), s.repos.clone(),
+    ));
     let repos = targets.clone();
     let result = blocking(move || {
-        let mut data = read_repo_data(&repos, &superseded, git::read_repository_files);
-        data.values.extend(
-            previous
-                .iter()
-                .filter(|f| !data.updated.contains(&f.repo_id))
-                .cloned(),
-        );
-        git::sort_workspace_files(&mut data.values);
-        let files = if data.values == previous.as_ref() {
+        let (mut values, dirs, errors) = if let Some(folder) = folder {
+            match crate::workspace_ops::read_project_folder(&folder, &superseded) {
+                Ok((files, dirs)) => (files, dirs.into_iter().map(|dir| (folder.id.clone(), dir)).collect(), ReadErrors::new()),
+                Err(err) => (previous.to_vec(), directories.to_vec(), BTreeMap::from([(String::new(), format!("读取项目目录失败 · {err:#}"))])),
+            }
+        } else {
+            let mut data = read_repo_data(&repos, &superseded, git::read_repository_files);
+            data.values.extend(previous.iter().filter(|f| !data.updated.contains(&f.repo_id)).cloned());
+            let dirs = directories.iter().filter(|(id, relative)| {
+                inventory.iter().any(|repo| &repo.id == id && Path::new(&repo.path).join(relative).is_dir())
+            }).cloned().collect();
+            (data.values, dirs, data.errors)
+        };
+        git::sort_workspace_files(&mut values);
+        let files = if values == previous.as_ref() {
             previous
         } else {
-            data.values.into()
+            values.into()
         };
-        (files, data.errors)
+        (files, dirs, errors)
     })
     .await;
     let mut restore_session = false;
@@ -481,8 +522,11 @@ async fn refresh_files(generation: u64, targets: Arc<[RepoInfo]>, superseded: Ar
             active.files_pending = false;
         }
         match result {
-            Ok((files, errors)) => {
+            Ok((files, dirs, errors)) => {
                 s.workspace_files = files;
+                if dirs.as_slice() != refresh.project_directories.as_ref() {
+                    refresh.project_directories = dirs.into();
+                }
                 refresh.files_ready = true;
                 update_errors(&mut refresh.file_errors, &targets, errors);
                 restore_session = refresh.file_errors.is_empty();

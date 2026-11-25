@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, ensure};
-use nsh_base::{editor, input};
+use nsh_base::{editor};
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -181,12 +181,11 @@ pub(super) fn body() -> impl IntoElement {
                 .h(px(26.0))
                 .flex_none()
                 .child(
-                    view()
+                    super::controls::button().justify_start()
                         .test_id("run-select-config")
                         .h(px(24.0))
                         .px(px(8.0))
                         .bg(p.surface2)
-                        .items_center()
                         .cursor(Cursor::Pointer)
                         .on_press(choose)
                         .child(
@@ -233,12 +232,10 @@ fn field(
                 .text_size(px(11.0)),
         )
         .child(
-            input()
+            super::controls::text_field(26.0, 12.0, 5.0)
                 .test_id(id)
                 .placeholder(label)
-                .h(px(26.0))
                 .flex_1()
-                .px(px(5.0))
                 .bg(p.surface2)
                 .text_color(p.text_primary)
                 .value(move || {

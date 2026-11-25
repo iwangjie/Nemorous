@@ -1405,7 +1405,8 @@ fn ui_search_previews_selected_context_and_discards_old_queries() {
     app.press_key("mod+a").unwrap();
     app.press_key("mod+c").unwrap();
     assert!(app.screen().clipboard().unwrap_or_default().contains("远处上下文"));
-    app.press(input).unwrap();
+    // Headless press targets require a press handler. Focus the field without editing it.
+    app.type_text(input, "").unwrap();
     app.press_key("down").unwrap();
     app.wait_for(&format!("{preview} >> text:备注上下文")).unwrap();
     assert!(!app.screen().matches("id:editor-tab-file-notes.txt").unwrap());
@@ -1592,6 +1593,54 @@ fn ui_content_search_modal_scope_open_and_close() {
     app.wait_for("id:editor-tab-file-README.md").unwrap();
 }
 
+fn assert_button_centered(app: &Headless, id: &str) {
+    let nodes = app.screen().layout_nodes();
+    let button = nodes.iter().find(|node| node.test_id.as_deref() == Some(id)).unwrap();
+    let label = nodes.iter().find(|node| node.parent == button.id && node.text.is_some()).unwrap();
+    let center = |bounds: nsh_core::geometry::Bounds<nsh_core::geometry::Points>| {
+        bounds.origin.y.0 + bounds.size.height.0 / 2.0
+    };
+    assert!((center(button.bounds) - center(label.bounds)).abs() <= 1.0, "{id}: {button:?} {label:?}");
+}
+
+#[test]
+fn ui_local_history_empty_state_and_global_control_layout() {
+    let _guard = lock_env();
+    let fx = Fixture::new("empty-local-history-controls");
+    let path = fx.repo_dir.join("README.md");
+    let mut app = fx.start_headless(940.0, 650.0);
+    app.press_key("mod+shift+o").unwrap();
+    app.type_text("id:review-picker-input", "README.md").unwrap();
+    app.submit("id:review-picker-input").unwrap();
+    app.press("id:code-history-btn").unwrap();
+    app.wait_for("id:local-history-empty >> text:暂无快照").unwrap();
+    for id in ["local-history-compare", "local-history-snapshot", "local-history-current"] {
+        assert!(!app.screen().matches(&format!("id:{id}")).unwrap());
+    }
+    assert_button_centered(&app, "local-history-close");
+    app.press("id:local-history-close").unwrap();
+    app.wait_for_gone("id:local-history-modal", Duration::from_secs(2)).unwrap();
+
+    let mut draft = nsh_core::PasteEvent::default();
+    draft.text = "中文草稿".into();
+    app.paste("id:code-editor-view", &draft).unwrap();
+    app.wait_for("id:code-editor-view >> text:/中文草稿/").unwrap();
+    app.wait_for("id:code-dirty-badge").unwrap();
+    assert_button_centered(&app, "code-save-btn");
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:code-dirty-badge", Duration::from_secs(3)).unwrap();
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("中文草稿"), "{saved:?}");
+    assert!(!app.screen().matches("id:toast-notification").unwrap());
+
+    app.press("id:rail-settings-btn").unwrap();
+    app.press("id:settings-keymap").unwrap();
+    app.wait_for("id:keymap-close").unwrap();
+    assert_button_centered(&app, "keymap-close");
+    app.type_text("id:keymap-filter", "文件").unwrap();
+    assert_button_centered(&app, "keymap-close");
+}
+
 #[test]
 fn ui_local_history_restores_old_format_one_hunk_and_full_snapshot() {
     use sha1::{Digest, Sha1};
@@ -1626,6 +1675,7 @@ fn ui_local_history_restores_old_format_one_hunk_and_full_snapshot() {
     app.press("id:code-history-btn").unwrap();
     app.wait_for("旧版快照").unwrap();
     app.wait_for("id:local-history-restore-hunk").unwrap();
+    assert_button_centered(&app, "local-history-compare");
     app.press("id:local-history-restore-hunk").unwrap();
     app.wait_for("已在编辑器恢复此变更块").unwrap();
     assert_eq!(fs::read_to_string(&file).unwrap(), original);
@@ -2120,6 +2170,7 @@ fn ui_format_file_and_format_on_save_use_checked_writes() {
     app.wait_for("id:code-editor-view").unwrap();
     app.press_key("mod+alt+l").unwrap();
     app.wait_for("已格式化 README.md").unwrap();
+    app.press("label:关闭提示").unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"# Formatted\r\nsecond line\r\n");
 
     app.right_click("# Formatted").unwrap();
@@ -2133,6 +2184,14 @@ fn ui_format_file_and_format_on_save_use_checked_writes() {
     app.press_key("mod+s").unwrap();
     app.wait_for_gone("未保存", Duration::from_secs(4)).unwrap();
     assert_eq!(fs::read(&path).unwrap(), b"# Formatted\r\nsecond line\r\n");
+    assert!(!app.screen().matches("id:toast-notification").unwrap());
+
+    fs::write(&formatter, "#!/bin/sh\necho formatting-failed >&2\nexit 1\n").unwrap();
+    app.press("id:code-editor-view >> text:# Formatted").unwrap();
+    app.type_text("id:code-editor-view", "FALLBACK_DRAFT").unwrap();
+    app.press_key("mod+s").unwrap();
+    app.wait_for("id:toast-notification >> text:/格式化失败/").unwrap();
+    assert!(fs::read_to_string(&path).unwrap().contains("FALLBACK_DRAFT"));
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
     assert_eq!(settings["format_on_save"], true);
@@ -2171,7 +2230,8 @@ fn ui_working_diff_auto_format_keeps_draft_undo_in_both_layouts() {
         }
 
         app.press_key("mod+s").unwrap();
-        app.wait_for("已格式化 src/app.go").unwrap();
+        app.wait_for_gone("id:diff-dirty-badge", Duration::from_secs(4)).unwrap();
+        assert!(!app.screen().matches("id:toast-notification").unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), formatted);
         if single {
             app.press("id:diff-layout-toggle").unwrap();
@@ -2874,6 +2934,7 @@ fn ui_working_diff_scope_switch_single_column_and_collapse() {
     app.press_key("mod+s").unwrap();
     app.wait_for_gone("id:diff-dirty-badge", Duration::from_secs(3)).unwrap();
     assert!(fs::read_to_string(&path).unwrap().contains("draft from Diff"));
+    assert!(!app.screen().matches("id:toast-notification").unwrap());
     assert_eq!(nemorous::git::run_git_string(&fx.repo_dir, &["show", ":src/app.go"]).unwrap().trim(), staged.trim());
 
     app.press("id:diff-layout-toggle").unwrap();
@@ -3268,8 +3329,9 @@ fn ui_diff_preserves_draft_while_the_staged_baseline_is_not_text() {
     stage(binary.trim());
     app.wait_for("id:diff-disk-state >> text:Git 比较基准为二进制或非 UTF-8 文件").unwrap();
     app.press_key("mod+s").unwrap();
-    app.wait_for("已保存 src/app.go").unwrap();
     app.wait_for("id:diff-blocked-notice").unwrap();
+    app.wait_for_gone("id:diff-dirty-badge", Duration::from_secs(4)).unwrap();
+    assert!(!app.screen().matches("id:toast-notification").unwrap());
     assert!(fs::read_to_string(&path).unwrap().contains("retained text draft"));
     let staged = nemorous::git::run_git_string(&fx.repo_dir, &["rev-parse", ":src/app.go"]).unwrap();
     assert_eq!(staged, binary);
@@ -6522,13 +6584,54 @@ fn ui_workspace_recent_switch_uses_new_repo_and_preserves_original_config_data()
 
     let mut app = fx.start_headless(1440.0, 900.0);
     app.press("id:top-workspace-button").unwrap();
-    let label = nemorous::paths::display_path(&other.to_string_lossy());
-    app.choose_menu_item(&format!("最近工作区 > {label} > 打开")).unwrap();
-    app.wait_for("id:change-row-unstaged-new-workspace.txt").unwrap();
-    assert!(!app.screen().matches("id:change-row-unstaged-src/app.go").unwrap());
+    let label = nemorous::paths::basename(&other.to_string_lossy());
+    app.wait_for("最近项目").unwrap();
+    app.press(&format!("label:{label}")).unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("id:project-file-new-workspace.txt").unwrap();
+    assert!(!app.screen().matches("id:project-file-README.md").unwrap());
     let cfg: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
     assert_eq!(cfg["legacy_field"]["keep"], true);
     assert_eq!(cfg["workspace_path"], other.canonicalize().unwrap().to_str().unwrap());
+}
+
+#[test]
+fn ui_project_menu_creates_an_empty_project_and_saves_multiple_files() {
+    let _guard = lock_env();
+    let fx = Fixture::new("project-menu-new");
+    let mut app = fx.start_headless(940.0, 650.0);
+    app.on_pick_paths(vec![fx.root.clone()]).unwrap();
+    app.press("id:top-workspace-button").unwrap();
+    app.wait_for("已打开项目").unwrap();
+    app.press("label:新建项目…").unwrap();
+    app.type_text("id:git-text-prompt-input", "plain-project").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("打开项目 · plain-project").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+
+    let path = fx.root.join("plain-project");
+    app.wait_for("id:project-folder-root").unwrap();
+    app.right_click("id:project-folder-root").unwrap();
+    app.choose_menu_item("新建 > 目录…").unwrap();
+    app.type_text("id:git-text-prompt-input", "docs").unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("id:project-dir-docs").unwrap();
+    for (name, content) in [("a.md", "draft a"), ("b.md", "draft b")] {
+        app.right_click("id:project-dir-docs").unwrap();
+        app.choose_menu_item("新建 > 文件…").unwrap();
+        app.type_text("id:git-text-prompt-input", name).unwrap();
+        app.press("id:git-text-prompt-submit").unwrap();
+        app.wait_for(&format!("id:editor-tab-file-docs/{name}")).unwrap();
+        let mut draft = nsh_core::PasteEvent::default();
+        draft.text = content.into();
+        app.paste("id:code-editor-view", &draft).unwrap();
+    }
+    app.press_key("mod+s").unwrap();
+    app.wait_for_gone("id:code-dirty-badge", Duration::from_secs(2)).unwrap();
+    assert_eq!(fs::read_to_string(path.join("docs/a.md")).unwrap(), "draft a");
+    assert_eq!(fs::read_to_string(path.join("docs/b.md")).unwrap(), "draft b");
+    assert!(!app.screen().matches("id:toast-notification").unwrap());
+    assert!(!path.join(".git").exists());
 }
 
 #[test]
@@ -6615,6 +6718,8 @@ fn ui_worktree_operations_target_the_selected_repository_and_preserve_dirty_file
 
     open_worktrees(&mut app);
     app.choose_menu_item(&open).unwrap();
+    app.wait_for("id:project-file-agent-worktree.txt").unwrap();
+    app.press_key("mod+0").unwrap();
     app.wait_for("id:change-row-unstaged-agent-worktree.txt").unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&fx.config_file).unwrap()).unwrap();
     assert_eq!(saved["workspace_path"], linked.canonicalize().unwrap().to_str().unwrap());
@@ -6683,9 +6788,10 @@ exec /usr/bin/git "$@"
     };
     wait_for_file(&mut app, "menu-query-started");
     app.press("id:top-workspace-button").unwrap();
-    let label = nemorous::paths::display_path(&other.to_string_lossy());
-    app.choose_menu_item(&format!("最近工作区 > {label} > 打开")).unwrap();
-    app.wait_for("id:change-row-unstaged-current-workspace.txt").unwrap();
+    let label = nemorous::paths::basename(&other.to_string_lossy());
+    app.press(&format!("label:{label}")).unwrap();
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("id:project-file-current-workspace.txt").unwrap();
     fs::write(fx.repo_dir.join(".git/resume-menu-query"), "").unwrap();
     wait_for_file(&mut app, "menu-query-finished");
     app.wait(Duration::from_millis(250)).unwrap();
@@ -6963,9 +7069,10 @@ fn ui_same_named_repositories_keep_files_and_branch_actions_separate() {
     assert_eq!(git_text(&first, &["branch", "--show-current"]).trim(), "main");
     assert_eq!(git_text(&second, &["branch", "--show-current"]).trim(), "review-only-second");
 
-    app.press("id:top-workspace-button").unwrap();
-    app.choose_menu_item("隐藏仓库 > shared · projects/nested").unwrap();
     app.press_key("mod+1").unwrap();
+    app.hover("id:project-tree-scroll").unwrap();
+    app.press("id:project-options-button").unwrap();
+    app.choose_menu_item("仓库管理 > 隐藏仓库 > shared · projects/nested").unwrap();
     let second_group = format!("id:project-repo-{second_id}");
     app.wait_for(&second_group).unwrap();
     app.wait_for_gone("id:project-repo-shared", Duration::from_secs(3)).unwrap();
@@ -6977,8 +7084,9 @@ fn ui_same_named_repositories_keep_files_and_branch_actions_separate() {
     app.wait_for("id:changes-header-title-row").unwrap();
     app.press_key("mod+1").unwrap();
     app.wait_for(&second_group).unwrap();
-    app.press("id:top-workspace-button").unwrap();
-    app.choose_menu_item("恢复隐藏仓库 > projects/nested").unwrap();
+    app.hover("id:project-tree-scroll").unwrap();
+    app.press("id:project-options-button").unwrap();
+    app.choose_menu_item("仓库管理 > 恢复隐藏仓库 > projects/nested").unwrap();
     fs::rename(&parked, &first).unwrap();
     app.press_key("mod+alt+y").unwrap();
     app.wait_for("id:project-repo-shared").unwrap();
@@ -6996,6 +7104,30 @@ fn ui_git_sync_reports_missing_remote_without_rolling_back_changes() {
     app.wait_for("sample-repo · 跳过").unwrap();
     app.press("id:git-sync-close").unwrap();
     assert_eq!(fs::read(fx.repo_dir.join("src/app.go")).unwrap(), worktree);
+}
+
+#[test]
+fn ui_git_push_shortcut_confirms_the_repository_before_uploading() {
+    let _guard = lock_env();
+    let fx = Fixture::new("git-menu-push");
+    let origin = fx.root.join("origin.git");
+    fs::create_dir(&origin).unwrap();
+    git_run(&origin, &["init", "--bare", "-b", "main"]);
+    git_run(&fx.repo_dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git_run(&fx.repo_dir, &["push", "--set-upstream", "origin", "main"]);
+    let remote_head = || nemorous::git::run_git_string(&origin, &["rev-parse", "refs/heads/main"]).unwrap();
+    let before = remote_head();
+    git_run(&fx.repo_dir, &["commit", "--allow-empty", "-m", "Ready for the acceptance push"]);
+    let pending = nemorous::git::run_git_string(&fx.repo_dir, &["rev-parse", "HEAD"]).unwrap();
+
+    let mut app = fx.start_headless(1440.0, 900.0);
+    app.press_key("mod+shift+k").unwrap();
+    app.wait_for("推送改动 · sample-repo").unwrap();
+    assert_eq!(remote_head(), before);
+    app.press("id:git-text-prompt-submit").unwrap();
+    app.wait_for("推送完成：成功 1，跳过 0，失败 0，取消 0").unwrap();
+    assert_eq!(remote_head(), pending);
+    assert!(app.screen().matches("id:git-sync-close").unwrap());
 }
 
 #[test]

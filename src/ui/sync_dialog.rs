@@ -36,7 +36,7 @@ pub(super) fn start_all(action: RemoteAction) {
     start(repos, action);
 }
 
-fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
+pub(super) fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
     if repos.is_empty() {
         state::show_toast("warn", "工作区没有可用仓库");
         return;
@@ -141,7 +141,7 @@ pub(super) fn open_menu() {
 
 fn button(label: &'static str, id: &'static str, handler: impl Fn() + 'static) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .label(label)
         .test_id(id)
         .px(px(9.0))

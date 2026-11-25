@@ -163,9 +163,7 @@ impl Navigation {
                     }
                     if data.is_none()
                         || !app_signal().with_untracked(|s| {
-                            s.repos
-                                .iter()
-                                .any(|repo| repo.id == *repo_id && repo.path == file.repo_path)
+                            s.contains_project_root(repo_id, &file.repo_path)
                         })
                     {
                         return Ok(Restore::Missing);

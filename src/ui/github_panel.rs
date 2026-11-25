@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use nsh_base::{editor, input};
+use nsh_base::{editor};
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 use serde_json::Value;
@@ -373,10 +373,9 @@ fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
                 .flex_row()
                 .gap(px(5.0))
                 .child(
-                    input()
+                    super::controls::text_field(27.0, 12.0, 8.0)
                         .test_id("gh-pr-title")
                         .disabled(submitting)
-                        .h(px(27.0))
                         .flex_1()
                         .placeholder("PR 标题")
                         .value(|| {
@@ -390,10 +389,9 @@ fn form_view(number: Option<u64>, draft: bool) -> impl IntoElement {
                         .on_change(|v: &str| edit_form(|form| form.title = v.into())),
                 )
                 .child(
-                    input()
+                    super::controls::text_field(27.0, 12.0, 8.0)
                         .test_id("gh-pr-base")
                         .disabled(submitting)
-                        .h(px(27.0))
                         .w(px(165.0))
                         .placeholder("目标分支")
                         .value(|| {
@@ -532,11 +530,10 @@ pub(super) fn layer() -> impl IntoElement {
                                     .children(rows.get().into_iter().filter_map(|pr| {
                                         let number = pr["number"].as_u64()?;
                                         Some(
-                                            view()
+                                            super::controls::button().justify_start()
                                                 .test_id(&format!("gh-pr-{number}"))
                                                 .px(px(4.0))
                                                 .h(px(25.0))
-                                                .items_center()
                                                 .cursor(Cursor::Pointer)
                                                 .disabled(submitting)
                                                 .disabled_style(|style| style.opacity(0.5))

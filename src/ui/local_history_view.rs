@@ -27,6 +27,9 @@ fn modal() -> impl IntoElement {
         focus.focus();
     });
     let data = computed(history_runtime::snapshot);
+    let has_snapshots = computed(move || data.with(|state| {
+        state.as_ref().is_some_and(|state| !state.entries.is_empty())
+    }));
     let ready = computed(move || data.with(|state| {
         state.as_ref().is_some_and(|state| state.comparison_ready)
     }));
@@ -150,7 +153,8 @@ fn modal() -> impl IntoElement {
                             state::close_active_modal,
                         )),
                 )
-                .child(
+                .child(when(move || !has_snapshots.get(), move || history_empty_state(data)))
+                .child(when(move || has_snapshots.get(), move || {
                     view()
                         .flex_1()
                         .flex_row()
@@ -178,7 +182,7 @@ fn modal() -> impl IntoElement {
                                             } else {
                                                 "对比当前"
                                             },
-                                            true,
+                                            ready && !confirming,
                                             move || compare.update(|value| *value = !*value),
                                         ))
                                         .child((ready && compare.get() && changes > 0).then(|| {
@@ -280,8 +284,32 @@ fn modal() -> impl IntoElement {
                                             ),
                                         ),
                                 ),
-                        ),
-                ),
+                        )
+                })),
+        )
+}
+
+fn history_empty_state(data: Memo<Option<HistoryView>>) -> impl IntoElement {
+    let p = current_palette();
+    view()
+        .test_id("local-history-empty")
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .px(px(24.0))
+        .child(
+            text(move || data.with(|state| {
+                let Some(state) = state else { return String::new() };
+                if let Some(error) = &state.error {
+                    error.clone()
+                } else if state.loading {
+                    "正在读取本地历史…".to_owned()
+                } else {
+                    "暂无快照".to_owned()
+                }
+            }))
+            .text_size(px(12.0))
+            .text_color(p.text_muted),
         )
 }
 
@@ -323,23 +351,7 @@ fn snapshot_list(state: Option<HistoryView>) -> impl IntoElement {
         .w(px(190.0))
         .border_r_1()
         .border_color(p.border)
-        .child(
-            view()
-                .flex_col()
-                .child(
-                    state
-                        .as_ref()
-                        .filter(|s| !s.loading && s.entries.is_empty())
-                        .map(|_| {
-                            view().p(px(12.0)).child(
-                                text("暂无快照")
-                                    .text_size(px(11.0))
-                                    .text_color(p.text_muted),
-                            )
-                        }),
-                )
-                .children(rows),
-        )
+        .child(view().flex_col().children(rows))
 }
 
 fn confirmation() -> impl IntoElement {
@@ -423,12 +435,11 @@ fn history_editor(
 
 fn button(id: &'static str, label: &'static str, enabled: bool, handler: impl Fn() + 'static) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .h(px(24.0))
         .px(px(6.0))
         .rounded(px(4.0))
-        .items_center()
         .cursor(Cursor::Pointer)
         .disabled(!enabled)
         .style_when(!enabled, |style| style.opacity(0.45).cursor(Cursor::Default))

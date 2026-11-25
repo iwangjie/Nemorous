@@ -1,4 +1,3 @@
-use nsh_base::input;
 use nsh_core::prelude::*;
 
 use crate::keymap::{self, ACTIONS, Keymap};
@@ -143,13 +142,10 @@ fn modal() -> impl IntoElement {
                                 .border_r_1()
                                 .border_color(p.border)
                                 .child(
-                                    input()
+                                    super::controls::text_field(28.0, 12.0, 8.0)
                                         .test_id("keymap-filter")
                                         .auto_focus(true)
-                                        .h(px(28.0))
-                                        .px(px(8.0))
                                         .bg(p.rail_bg)
-                                        .text_size(px(12.0))
                                         .text_color(p.text_primary)
                                         .placeholder("查找操作…")
                                         .value(|| signal().with(|s| s.filter.clone()))
@@ -241,10 +237,8 @@ fn editor_panel() -> impl IntoElement {
                         .text_color(p.text_primary),
                 )
                 .child(
-                    input()
+                    super::controls::text_field(30.0, 12.0, 8.0)
                         .test_id("keymap-draft")
-                        .h(px(30.0))
-                        .px(px(8.0))
                         .bg(p.rail_bg)
                         .border_1()
                         .border_color(p.border)
@@ -287,12 +281,11 @@ fn editor_panel() -> impl IntoElement {
 
 fn button(id: &'static str, label: &'static str, handler: impl Fn() + 'static) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .h(px(25.0))
         .px(px(7.0))
         .rounded(px(4.0))
-        .items_center()
         .cursor(Cursor::Pointer)
         .bg(p.surface2)
         .hover(move |style| style.bg(p.surface_hover))

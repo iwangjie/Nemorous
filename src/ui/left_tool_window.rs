@@ -56,17 +56,14 @@ pub(super) fn tree_filter(
             .border_b_1()
             .border_color(p.border)
             .child(
-                nsh_base::input()
+                super::controls::text_field(26.0, 11.5, 8.0)
                     .element_ref(&input_ref)
                     .test_id(id)
                     .auto_focus(true)
-                    .h(px(26.0))
-                    .px(px(8.0))
                     .rounded(px(5.0))
                     .bg(p.surface)
                     .border_1()
                     .border_color(p.border)
-                    .text_size(px(11.5))
                     .text_color(p.text_primary)
                     .placeholder(placeholder)
                     .value(move || app_signal().with(|s| match tab {
@@ -123,8 +120,7 @@ pub(super) fn workspace_notice(data: WorkspaceData) -> impl IntoElement {
                 .test_id("workspace-read-error")
                 .child(text(message.clone()).text_size(px(11.0)).text_color(p.text_primary).number_of_lines(2u32))
                 .tooltip(super::tooltip_label(message, p).max_w(px(360.0)))
-                .child(view().test_id("workspace-read-retry").px(px(6.0)).h(px(22.0))
-                    .justify_center().items_center().self_start().rounded(px(4.0))
+                .child(super::controls::button().test_id("workspace-read-retry").px(px(6.0)).h(px(22.0)).self_start().rounded(px(4.0))
                     .label("重试刷新工作区").cursor(Cursor::Pointer)
                     .hover(move |style| style.bg(p.surface_hover))
                     .on_press(|| state::refresh_workspace_async(None))
@@ -293,14 +289,12 @@ pub(super) fn button(
     } else {
         p.text_control
     };
-    view()
+    super::controls::button()
         .test_id(id)
         .w(px(22.0))
         .h(px(22.0))
         .flex_none()
         .rounded(px(4.0))
-        .items_center()
-        .justify_center()
         .bg(if active {
             p.accent_soft
         } else {

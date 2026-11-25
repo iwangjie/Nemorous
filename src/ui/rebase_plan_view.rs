@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, ensure};
-use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -142,14 +141,12 @@ fn move_row(hash: &str, direction: isize) {
 
 fn button(label: &'static str, id: &str, handler: impl Fn() + 'static) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .label(label)
         .test_id(id)
         .px(px(7.0))
         .h(px(25.0))
         .rounded(px(4.0))
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .bg(p.surface2)
         .on_press(handler)
@@ -250,10 +247,8 @@ fn rows() -> impl IntoElement {
                     move || {
                         let hash = editor_id.clone();
                         let value = text_id.clone();
-                        input()
+                        super::controls::text_field(25.0, 11.5, 6.0)
                             .test_id(&format!("rebase-word-{value}"))
-                            .h(px(25.0))
-                            .px(px(6.0))
                             .bg(p.surface2)
                             .placeholder("提交说明")
                             .text_color(p.text_primary)

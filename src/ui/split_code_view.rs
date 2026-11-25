@@ -157,10 +157,8 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
 
         if matches!(side, PaneId::Right) {
             strip = strip.child(view().flex_1()).child(
-                view()
+                super::controls::button()
                     .test_id("split-code-merge")
-                    .flex_row()
-                    .items_center()
                     .px_2()
                     .py_1()
                     .rounded(px(5.0))

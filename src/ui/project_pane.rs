@@ -24,32 +24,23 @@ struct ProjectDir {
     files: Vec<WorkspaceFile>,
 }
 
+fn directory_node<'a>(mut root: &'a mut ProjectDir, path: &str) -> &'a mut ProjectDir {
+    let mut relative = String::new();
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        if !relative.is_empty() { relative.push('/'); }
+        relative.push_str(segment);
+        root = root.subdirs.entry(segment.to_owned()).or_insert_with(|| ProjectDir {
+            name: segment.to_owned(), rel_path: relative.clone(), ..Default::default()
+        });
+    }
+    root
+}
+
 fn build_project_tree<'a>(files: impl IntoIterator<Item = &'a WorkspaceFile>) -> ProjectDir {
     let mut root = ProjectDir::default();
     for wf in files {
-        let parts: Vec<&str> = wf.rel_path.split('/').collect();
-        if parts.len() <= 1 {
-            root.files.push(wf.clone());
-            continue;
-        }
-        let mut cur = &mut root;
-        let mut acc = String::new();
-        for seg in &parts[..parts.len() - 1] {
-            if !acc.is_empty() {
-                acc.push('/');
-            }
-            acc.push_str(seg);
-            cur = cur
-                .subdirs
-                .entry((*seg).to_string())
-                .or_insert_with(|| ProjectDir {
-                    name: (*seg).to_string(),
-                    rel_path: acc.clone(),
-                    subdirs: BTreeMap::new(),
-                    files: Vec::new(),
-                });
-        }
-        cur.files.push(wf.clone());
+        let parent = wf.rel_path.rsplit_once('/').map_or("", |(parent, _)| parent);
+        directory_node(&mut root, parent).files.push(wf.clone());
     }
     sort_dir(&mut root);
     root
@@ -86,6 +77,7 @@ fn project_options(width: f32) -> Vec<MenuItem> {
             MenuItem::new("全部折叠").on_select(collapse_all),
         ]);
     }
+    items.push(MenuItem::submenu("仓库管理", super::workspace_menu::repository_items()));
     items
 }
 
@@ -127,6 +119,7 @@ pub fn project_pane() -> impl IntoElement {
     let located_row = element_ref();
     let reveal_request = computed(|| app_signal().with(|s| s.project_reveal_request));
     let files = computed(|| app_signal().with(|s| s.workspace_files.clone()));
+    let directories = computed(|| app_signal().with(|s| s.project_directories()));
     let filter = computed(|| app_signal().with(|s| s.project_filter.trim().to_ascii_lowercase()));
     let trees = computed(move || {
         let files = files.get();
@@ -137,9 +130,15 @@ pub fn project_pane() -> impl IntoElement {
         }) {
             by_repo.entry(&file.repo_id).or_default().push(file);
         }
-        Rc::new(by_repo.into_iter()
+        let mut trees = by_repo.into_iter()
             .map(|(id, files)| (id.to_owned(), build_project_tree(files)))
-            .collect::<HashMap<_, _>>())
+            .collect::<HashMap<_, _>>();
+        for (repo, directory) in directories.get().iter() {
+            if filter.is_empty() || directory.to_ascii_lowercase().contains(&filter) {
+                directory_node(trees.entry(repo.clone()).or_default(), directory);
+            }
+        }
+        Rc::new(trees)
     });
     effect(move || {
         if reveal_request.get() != 0 {
@@ -197,8 +196,13 @@ pub fn project_pane() -> impl IntoElement {
                                 }
                             }
                         }
+                        let folder = s.plain_project();
+                        let is_folder = folder.is_some();
+                        let mut repos = s.repos.clone();
+                        repos.extend(folder);
                         (
-                            s.repos.clone(),
+                            repos,
+                            is_folder,
                             s.workspace_notice(WorkspaceData::Files).is_some(),
                             s.expanded_project_repos.clone(),
                             s.expanded_project_dirs.clone(),
@@ -211,6 +215,7 @@ pub fn project_pane() -> impl IntoElement {
                     });
                     let (
                         repos,
+                        is_folder,
                         has_notice,
                         expanded_repos,
                         expanded_dirs,
@@ -232,8 +237,8 @@ pub fn project_pane() -> impl IntoElement {
                     let trees = trees.get();
                     let force_expand = !filter.get().is_empty();
                     let mut rows: Vec<AnyElement> = Vec::new();
-                    let workspace_expanded = force_expand || workspace_expanded_state;
-                    rows.push(
+                    let workspace_expanded = is_folder || force_expand || workspace_expanded_state;
+                    if !is_folder { rows.push(
                         view()
                             .test_id("project-workspace-root")
                             .h(px(font_size + 14.5))
@@ -268,7 +273,7 @@ pub fn project_pane() -> impl IntoElement {
                                     .text_color(p.text_primary),
                             )
                             .into_element(),
-                    );
+                    ); }
                     let repos = if workspace_expanded { repos } else { Vec::new() };
                     for repo in repos {
                         let tree = trees.get(&repo.id);
@@ -282,7 +287,7 @@ pub fn project_pane() -> impl IntoElement {
 
                         rows.push(
                             view()
-                                .test_id(&format!("project-repo-{}", repo.id))
+                                .test_id(&if is_folder { "project-folder-root".to_owned() } else { format!("project-repo-{}", repo.id) })
                                 .h(px(font_size + 14.5))
                                 .px(px(8.0))
                                 .flex_row()
@@ -299,11 +304,19 @@ pub fn project_pane() -> impl IntoElement {
                                     });
                                 })
                                 .on_context_menu(move |event: &ContextMenuEvent| {
-                                    let mut items = super::sync_dialog::menu(Some(sync_repo.clone()));
-                                    items.push(MenuItem::submenu("Git 高级", super::git_advanced::repo_items(sync_repo.clone())));
-                                    if super::mani_panel::enabled() {
-                                        let path = std::path::PathBuf::from(&sync_repo.path);
-                                        items.push(MenuItem::new("运行 Mani 任务…").on_select(move || super::mani_panel::open_project(path.clone())));
+                                    app_signal().update(|s| {
+                                        s.project_selected_dir = Some((sync_repo.id.clone(), String::new()));
+                                        s.project_selected_file = None;
+                                        s.focus_zone = FocusZone::ProjectTree;
+                                    });
+                                    let mut items = vec![super::workspace_menu::new_item_menu()];
+                                    if !is_folder {
+                                        items.extend(super::sync_dialog::menu(Some(sync_repo.clone())));
+                                        items.push(MenuItem::submenu("Git 高级", super::git_advanced::repo_items(sync_repo.clone())));
+                                        if super::mani_panel::enabled() {
+                                            let path = std::path::PathBuf::from(&sync_repo.path);
+                                            items.push(MenuItem::new("运行 Mani 任务…").on_select(move || super::mani_panel::open_project(path.clone())));
+                                        }
                                     }
                                     crate::state::show_popup_menu_at(items, event.page_position);
                                 })
@@ -445,6 +458,11 @@ fn render_project_dir(
                     });
                 })
                 .on_context_menu(move |e: &ContextMenuEvent| {
+                    app_signal().update(|s| {
+                        s.project_selected_dir = Some((cm_rid.clone(), cm_rel.clone()));
+                        s.project_selected_file = None;
+                        s.focus_zone = FocusZone::ProjectTree;
+                    });
                     let mut items = build_location_menu_items(
                         cm_rid.clone(),
                         cm_rpath.clone(),
@@ -453,6 +471,7 @@ fn render_project_dir(
                         1,
                         true,
                     );
+                    items.insert(0, super::workspace_menu::new_item_menu());
                     let search_dir = cm_abs.clone();
                     items.push(
                         MenuItem::new("在目录中查找").on_select(move || {
@@ -462,12 +481,10 @@ fn render_project_dir(
                     crate::state::show_popup_menu_at(items, e.page_position);
                 })
                 .child(
-                    view()
+                    super::controls::button()
                         .test_id(&format!("project-dir-toggle-{}", sub.rel_path))
                         .w(px(14.0))
                         .h(px(16.0))
-                        .items_center()
-                        .justify_center()
                         .on_press(move || {
                             app_signal().update(|s| {
                                 if !s.expanded_project_dirs.remove(&dk_chev) {
@@ -615,10 +632,12 @@ fn render_project_dir(
                     }
                     let history = f.clone();
                     let revision = f.clone();
-                    items.push(MenuItem::submenu("Git", [
-                        MenuItem::new("查看文件历史").on_select(move || super::revision_picker::show_history(history.clone())),
-                        MenuItem::new("与修订版本比较…").on_select(move || super::revision_picker::open(revision.clone())),
-                    ]));
+                    if app_signal().with_untracked(|s| s.repos.iter().any(|repo| repo.id == f.repo_id)) {
+                        items.push(MenuItem::submenu("Git", [
+                            MenuItem::new("查看文件历史").on_select(move || super::revision_picker::show_history(history.clone())),
+                            MenuItem::new("与修订版本比较…").on_select(move || super::revision_picker::open(revision.clone())),
+                        ]));
+                    }
                     items.extend(build_location_menu_items(
                         f.repo_id.clone(),
                         f.repo_path.clone(),

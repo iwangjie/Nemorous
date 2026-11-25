@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use nsh_base::{EditorDecoration, EditorGutterMark, EditorPosition, EditorRange, input};
+use nsh_base::{EditorDecoration, EditorGutterMark, EditorPosition, EditorRange};
 use nsh_core::prelude::*;
 
 use crate::config::{Bookmark, Config};
@@ -321,7 +321,7 @@ fn bookmarks_header(count: usize) -> impl IntoElement {
 
 fn action_button(label: &'static str, test_id: &'static str, on_click: fn()) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(test_id)
         .px(px(8.0))
         .py(px(3.0))
@@ -335,14 +335,12 @@ fn action_button(label: &'static str, test_id: &'static str, on_click: fn()) -> 
 fn bookmarks_filter_row() -> impl IntoElement {
     let p = current_palette();
     view().px(px(14.0)).pb(px(8.0)).child(
-        input()
+        super::controls::text_field(28.0, 12.0, 8.0)
             .test_id("bookmarks-filter")
             .auto_focus(true)
-            .h(px(28.0))
             .border_1()
             .border_color(p.border)
             .rounded(px(6.0))
-            .px(px(8.0))
             .text_color(p.text_primary)
             .placeholder("搜索路径…")
             .value(|| global::<BookmarksUi>().with(|s| s.query.clone()))
@@ -384,7 +382,7 @@ fn bookmark_row(bookmark: Bookmark) -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .child(
-                    view()
+                    super::controls::button()
                         .test_id(&format!("bookmark-jump-{repo_id}-{rel_path}-{line}"))
                         .px(px(8.0))
                         .py(px(3.0))
@@ -396,7 +394,7 @@ fn bookmark_row(bookmark: Bookmark) -> impl IntoElement {
                 )
                 .child(view().w(px(6.0)))
                 .child(
-                    view()
+                    super::controls::button()
                         .test_id(&format!("bookmark-remove-{repo_id}-{rel_path}-{line}"))
                         .px(px(8.0))
                         .py(px(3.0))

@@ -435,6 +435,8 @@ pub fn load_from(path: &Path) -> Result<Config> {
     if let Ok(ws) = std::env::var("NEMOROUS_WORKSPACE") {
         let trimmed = ws.trim();
         if !trimmed.is_empty() {
+            let previous = cfg.workspace_path.clone();
+            cfg.add_recent_workspace(&previous);
             cfg.workspace_path = trimmed.to_string();
             cfg.add_recent_workspace(trimmed);
         }

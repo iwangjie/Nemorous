@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use nsh_base::input;
 use nsh_core::prelude::*;
 
 use crate::paths::basename;
@@ -560,11 +559,9 @@ fn query_bar() -> impl IntoElement {
         .gap(px(6.0))
         .flex_col()
         .child(
-            input()
+            super::controls::text_field(30.0, 12.0, 8.0)
                 .test_id("navigation-picker-input")
                 .auto_focus(true)
-                .h(px(30.0))
-                .px(px(8.0))
                 .bg(p.rail_bg)
                 .border_1()
                 .border_color(p.border)
@@ -591,7 +588,7 @@ fn query_bar() -> impl IntoElement {
                     ]
                     .into_iter()
                     .map(|(label, mode)| {
-                        view()
+                        super::controls::button()
                             .h(px(24.0))
                             .px(px(8.0))
                             .rounded(px(4.0))

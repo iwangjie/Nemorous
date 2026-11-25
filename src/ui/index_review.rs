@@ -270,15 +270,13 @@ fn button(
     on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .px(px(8.0))
         .h(px(26.0))
         .rounded(px(4.0))
         .bg(p.surface2)
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .on_press(on_press)
         .child(text(label).text_size(px(11.5)).text_color(p.text_primary))

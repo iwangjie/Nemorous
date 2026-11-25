@@ -122,12 +122,10 @@ pub fn editor_tab_bar() -> impl IntoElement {
                             .bg(p.amber)
                     }))
                     .child(
-                        view()
+                        super::controls::button()
                             .w(px(16.0))
                             .h(px(16.0))
                             .rounded(px(3.0))
-                            .items_center()
-                            .justify_center()
                             .hover(move |s| s.bg(p.surface_hover))
                             .on_press(move || request_close_code_tab(&tid_close))
                             .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),
@@ -198,12 +196,10 @@ pub fn editor_tab_bar() -> impl IntoElement {
                             .w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(p.amber)
                     }))
                     .child(
-                        view()
+                        super::controls::button()
                             .w(px(16.0))
                             .h(px(16.0))
                             .rounded(px(3.0))
-                            .items_center()
-                            .justify_center()
                             .hover(move |s| s.bg(p.surface_hover))
                             .on_press(request_close_working_diff)
                             .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),
@@ -271,12 +267,10 @@ pub fn editor_tab_bar() -> impl IntoElement {
                             .number_of_lines(1u32),
                     )
                     .child(
-                        view()
+                        super::controls::button()
                             .w(px(16.0))
                             .h(px(16.0))
                             .rounded(px(3.0))
-                            .items_center()
-                            .justify_center()
                             .hover(move |s| s.bg(p.surface_hover))
                             .on_press(close_commit_diff_now)
                             .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),
@@ -293,7 +287,7 @@ pub fn editor_tab_bar() -> impl IntoElement {
                 .cursor(Cursor::Pointer)
                 .on_press(super::comparison::activate)
                 .child(text(title).text_size(px(11.5)).text_color(p.text_primary).number_of_lines(1u32))
-                .child(view().test_id("close-comparison-tab").label("关闭比较")
+                .child(super::controls::button().test_id("close-comparison-tab").label("关闭比较")
                     .on_press(super::comparison::close)
                     .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted))).into_element());
         }
@@ -318,14 +312,12 @@ pub fn editor_tab_bar() -> impl IntoElement {
                     .child(view().flex_row().items_center().gap(px(4.0)).children(tab_els)),
             )
             .child(
-                view()
+                super::controls::button()
                     .test_id("editor-all-tabs-btn")
                     .flex_none()
                     .w(px(24.0))
                     .h(px(24.0))
                     .rounded(px(4.0))
-                    .items_center()
-                    .justify_center()
                     .cursor(Cursor::Pointer)
                     .hover(move |s| s.bg(p.surface_hover))
                     .label("全部标签")

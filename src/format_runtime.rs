@@ -23,6 +23,13 @@ struct Source {
 }
 
 impl Target {
+    fn save(&self) -> bool {
+        match self {
+            Self::Code(id) => state::save_code_tab_by_id(id),
+            Self::WorkingDiff(_) => state::save_working_diff_now(),
+        }
+    }
+
     fn source(&self, app: &AppState) -> Option<Source> {
         match self {
             Self::Code(id) => {
@@ -53,6 +60,30 @@ impl Target {
                 })
             }
         }
+    }
+}
+
+pub(crate) fn save_all() {
+    save_all_then(|| {});
+}
+
+pub(crate) fn save_all_then(after: impl FnOnce() + 'static) {
+    let targets = app_signal().with_untracked(|s| {
+        let dirty: Vec<_> = s.code_tabs.iter().filter(|tab| tab.is_dirty() && tab.editor_editable()).collect();
+        let mut targets: Vec<_> = dirty.iter().map(|tab| Target::Code(tab.id.clone())).collect();
+        if let Some(diff) = &s.working_diff
+            && diff.is_dirty()
+            && diff.editor_editable()
+            && !dirty.iter().any(|tab| tab.file.repo_id == diff.file.repo_id && tab.file.rel_path == diff.file.path)
+        {
+            targets.push(Target::WorkingDiff(diff.file.key()));
+        }
+        targets
+    });
+    if !targets.is_empty() && app_signal().with_untracked(|s| s.cfg.format_on_save) {
+        start(targets, false, after);
+    } else if targets.iter().all(Target::save) {
+        after();
     }
 }
 
@@ -182,14 +213,11 @@ async fn format_and_save(workspace: &str, command: &str, source: Source, manual:
             Target::WorkingDiff(key) => state::edit_working_diff_text(key, text),
         }
     }
-    let saved = match &source.target {
-        Target::Code(id) => state::save_code_tab_by_id(id),
-        Target::WorkingDiff(_) => state::save_working_diff_now(),
-    };
+    let saved = source.target.save();
     if saved {
         if let Some(failure) = failure {
             state::show_toast("warn", format!("已保存。{failure}"));
-        } else if formatted.is_some() {
+        } else if manual {
             state::show_toast("ok", format!("已格式化 {}", source.relative));
         }
     }

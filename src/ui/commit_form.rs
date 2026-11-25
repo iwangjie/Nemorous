@@ -426,14 +426,12 @@ fn button(
     handler: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .px(px(8.0))
         .h(px(25.0))
         .rounded(px(4.0))
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .bg(if primary { p.accent } else { p.surface2 })
         .on_press(handler)

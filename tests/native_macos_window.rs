@@ -2098,12 +2098,18 @@ exec /usr/bin/git "$@"
         }));
 
         let fixture = root_dir.join(format!("build/tmp-ab/native-crisp-{}", std::process::id()));
-        let repo = fixture.join("repo");
+        let changes = std::env::var_os("NEMOROUS_NATIVE_CRISP_CHANGES").is_some();
+        let multi_workspace = fixture.join("workspace");
+        let repo = if changes { multi_workspace.join("primary-review") } else { fixture.join("repo") };
         let linked = std::env::var_os("NEMOROUS_NATIVE_LINKED_WORKTREE").is_some();
         let tool_width = std::env::var("NEMOROUS_NATIVE_LEFT_TOOL_WIDTH").ok()
             .map(|width| width.parse::<f32>().expect("left tool window width"));
         let primary = if linked { fixture.join("primary") } else { repo.clone() };
         let ux = std::env::var_os("NEMOROUS_NATIVE_UX").is_some();
+        let menus = std::env::var_os("NEMOROUS_NATIVE_CRISP_MENUS").is_some();
+        let empty_recent = std::env::var_os("NEMOROUS_NATIVE_CRISP_MENU_EMPTY").is_some();
+        let startup_repo = std::env::var_os("NEMOROUS_CRISP_STARTUP_REPO").map(PathBuf::from);
+        let workspace = startup_repo.as_deref().unwrap_or(if changes { &multi_workspace } else { &repo });
         let path = repo.join("history.txt");
         let attribution_file = "attribution.txt";
         let committed_file = "committed-attribution.txt";
@@ -2152,14 +2158,41 @@ exec /usr/bin/git "$@"
             .replace("Original attribution line 003", "Uncommitted attribution line 003")
             .replace("Reviewed attribution line", "Working attribution line");
         fs::write(repo.join(attribution_file), attribution_working).unwrap();
+        let other_repo = multi_workspace.join("other-review");
+        if changes {
+            git_run(&repo, &["restore", "--", "history.txt", attribution_file]);
+            fs::create_dir_all(&other_repo).unwrap();
+            git_run(&other_repo, &["init", "-b", "main"]);
+            for (root, suffix) in [(&repo, "main"), (&other_repo, "other")] {
+                git_run(root, &["config", "user.name", "Crisp Fixture"]);
+                git_run(root, &["config", "user.email", "crisp-fixture@example.invalid"]);
+                git_run(root, &["config", "commit.gpgsign", "false"]);
+                if suffix == "other" {
+                    git_run(root, &["commit", "--allow-empty", "-m", "Other fixture baseline"]);
+                }
+                fs::create_dir_all(root.join("checks")).unwrap();
+                for stem in ["match", "keep"] {
+                    fs::write(root.join(format!("checks/{stem}-{suffix}.txt")), "Fixture change\n").unwrap();
+                }
+            }
+            fs::write(repo.join("checks/staged-main.txt"), "Staged fixture\n").unwrap();
+            git_run(&repo, &["add", "checks/staged-main.txt"]);
+        }
         let config = fixture.join("config.json");
         let mut settings = serde_json::json!({
-            "workspace_path": repo.to_string_lossy(),
+            "workspace_path": workspace.to_string_lossy(),
             "theme": "darcula",
             "change_diff_preview": false,
             "diff_single_column": false,
             "auto_update": false
         });
+        let recent = fixture.join("project-with-a-long-name");
+        if menus && !empty_recent {
+            fs::create_dir_all(&recent).unwrap();
+            fs::write(recent.join("README.md"), "Recently opened project\n").unwrap();
+            settings["recent_workspaces"] = serde_json::json!([recent]);
+        }
+        if changes { settings["changes_flat"] = false.into(); }
         if let Some(width) = tool_width {
             fs::write(repo.join("src/nested/tracked.txt"), "first\nworking edit\nlast\n").unwrap();
             settings["commit_left_width"] = width.into();
@@ -2170,7 +2203,8 @@ exec /usr/bin/git "$@"
         // Override configuration before mounting the test app and its workers.
         unsafe {
             std::env::set_var("NEMOROUS_CONFIG", &config);
-            std::env::set_var("NEMOROUS_WORKSPACE", &repo);
+            if menus { std::env::remove_var("NEMOROUS_WORKSPACE"); }
+            else { std::env::set_var("NEMOROUS_WORKSPACE", workspace); }
         }
         let root_repo = nemorous::git::discover_workspace_repos(repo.to_str().unwrap(), &[])
             .into_iter().find(|entry| entry.is_root).unwrap();
@@ -2288,6 +2322,227 @@ exec /usr/bin/git "$@"
             })
         };
 
+        if changes {
+            let first = "change-row-unstaged-checks/match-main.txt-check";
+            let first_keep = "change-row-unstaged-checks/keep-main.txt-check";
+            let other = "change-row-unstaged-checks/match-other.txt-check";
+            let other_keep = "change-row-unstaged-checks/keep-other.txt-check";
+            let staged = "change-row-staged-checks/staged-main.txt-check";
+            let repo_ids = nemorous::git::discover_workspace_repos(&workspace.to_string_lossy(), &[]);
+            let repo_id = |path: &Path| repo_ids.iter().find(|entry| Path::new(&entry.path) == path).unwrap().id.as_str();
+            let other_group = format!("change-repo-check-unstaged::{}", repo_id(&other_repo));
+            let first_directory = format!("change-dir-check-unstaged::{}::checks", repo_id(&repo));
+            let checked = |id: &str, expected: bool| {
+                wait_until(&format!("{id} checked={expected}"), Duration::from_secs(5), || {
+                    view_with_id(&root, id).and_then(|view| view.accessibilityValue())
+                        .and_then(|value| value.downcast::<NSNumber>().ok())
+                        .is_some_and(|value| value.integerValue() == i64::from(expected) as isize)
+                });
+                check_window();
+            };
+            checked(first, true);
+            let changes_visible_ms = startup.elapsed().as_millis();
+            checked(other, true);
+            checked(staged, true);
+            for id in ["changes-header-toolbar-row", "changes-section-staged", "changes-section-unstaged"] {
+                let row = view_with_id(&root, id).unwrap();
+                assert!(row.subviews().iter().all(|child| {
+                    child.accessibilityRole().is_none_or(|role| role.to_string() != "AXCheckBox")
+                }), "unexpected global checkbox in {id}");
+            }
+            save_window_png(&window, &fixture.join("commit-multi-repo.png"));
+            click(&other_group, 1);
+            checked(other, false);
+            checked(other_keep, false);
+            checked(first, true);
+            click(&other_group, 1);
+            checked(other, true);
+            checked(other_keep, true);
+
+            click("change-row-unstaged-checks/match-main.txt", 1);
+            key("f", "f", 3, NSEventModifierFlags::Command);
+            for (ch, code) in [("m", 46), ("a", 0), ("t", 17), ("c", 8), ("h", 4)] {
+                key(ch, ch, code, NSEventModifierFlags::empty());
+            }
+            expect("changes-filter-input", "match");
+            clean(other_keep);
+            click(&other_group, 1);
+            checked(other, false);
+            save_window_png(&window, &fixture.join("commit-filtered.png"));
+            key("\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+            clean("changes-filter-input");
+            checked(other_keep, true);
+            checked(other, false);
+
+            click(&first_directory, 1);
+            checked(first, false);
+            checked(first_keep, false);
+            checked(staged, true);
+            click(first, 1);
+            click(staged, 1);
+            click(other_keep, 1);
+            checked(first, true);
+            checked(staged, false);
+            checked(other_keep, false);
+
+            let other_before = git_run(&other_repo, &["rev-parse", "HEAD"]);
+            click("git-commit-message", 1);
+            key("v", "v", 9, NSEventModifierFlags::empty());
+            expect("git-commit-message", "v");
+            click("git-commit-submit", 1);
+            wait_until("selected file was committed", Duration::from_secs(8), || {
+                git_run(&repo, &["log", "-1", "--format=%s"]) == "v"
+            });
+            assert_eq!(git_run(&repo, &["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]), "checks/match-main.txt");
+            assert_eq!(git_run(&repo, &["diff", "--cached", "--name-only"]), "checks/staged-main.txt");
+            assert_eq!(git_run(&other_repo, &["rev-parse", "HEAD"]), other_before);
+            check_window();
+            window.close();
+            assert!(!runtime_panicked.load(std::sync::atomic::Ordering::Relaxed));
+            println!("NATIVE_CRISP_CHANGES PASS display={number} changes_visible_ms={changes_visible_ms} evidence={}", fixture.display());
+            return;
+        }
+
+        if startup_repo.is_some() {
+            wait_until("project switcher is rendered", Duration::from_secs(12), || {
+                view_with_id(&root, "top-workspace-button").is_some()
+            });
+            key("1", "1", 18, NSEventModifierFlags::Command);
+            wait_until("README.md is visible in the Project tree", Duration::from_secs(20), || {
+                let row = view_with_id(&root, "project-file-README.md");
+                let tree = view_with_id(&root, "project-tree-scroll");
+                row.zip(tree).is_some_and(|(row, tree)| {
+                    let area = NSIntersectionRect(row.convertRect_toView(row.visibleRect(), None), tree.convertRect_toView(tree.bounds(), None));
+                    area.size.width > 0.0 && area.size.height > 0.0
+                })
+            });
+            let project_visible_ms = startup.elapsed().as_millis();
+            check_window();
+            window.close();
+            assert!(!runtime_panicked.load(std::sync::atomic::Ordering::Relaxed));
+            println!("NATIVE_CRISP_STARTUP PASS display={number} project_visible_ms={project_visible_ms}");
+            return;
+        }
+
+        if menus {
+            wait_until("workspace renders a change row", Duration::from_secs(8), || {
+                view_with_id(&root, "change-row-unstaged-history.txt").is_some()
+            });
+            let menu = |title: &str| {
+                app.mainMenu().unwrap().itemArray().iter()
+                    .find(|item| item.title().to_string() == title)
+                    .and_then(|item| item.submenu())
+                    .unwrap_or_else(|| panic!("missing native {title} menu"))
+            };
+            let menu_item = |menu: &platform::objc2_app_kit::NSMenu, title: &str| {
+                menu.itemArray().iter().find(|item| item.title().to_string() == title)
+                    .unwrap_or_else(|| panic!("missing native menu item {title}"))
+            };
+            let invoke = |menu: &platform::objc2_app_kit::NSMenu, title: &str| {
+                check_window();
+                let item = menu_item(menu, title);
+                assert!(item.tag() > 0 && item.target().is_some(), "{title} must have an application callback");
+                assert!(unsafe { app.sendAction_to_from(item.action().unwrap(), item.target().as_deref(), Some(&*item)) });
+            };
+            if empty_recent {
+                let item = menu_item(&menu("文件"), "最近项目");
+                assert!(item.submenu().is_none() && item.target().is_none());
+                check_window();
+                window.close();
+                println!("NATIVE_CRISP_EMPTY_RECENTS PASS display={number}");
+                return;
+            }
+            key("1", "1", 18, NSEventModifierFlags::Command);
+            wait_until("Project renders a real file row", Duration::from_secs(8), || {
+                view_with_id(&root, "project-file-history.txt").is_some_and(|row| {
+                    let visible = row.visibleRect();
+                    visible.size.width > 0.0 && visible.size.height > 0.0
+                })
+            });
+            let project_visible_ms = startup.elapsed().as_millis();
+            let opened = Instant::now();
+            click("top-workspace-button", 1);
+            wait_until("project menu renders recent entries", Duration::from_secs(4), || {
+                a11y_contains(&root, "最近项目")
+            });
+            let popover_ms = opened.elapsed().as_millis();
+            save_window_png(&window, &fixture.join("project-menu.png"));
+            key("\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+            wait_until("Escape closes the project menu", Duration::from_secs(4), || {
+                !a11y_contains(&root, "最近项目")
+            });
+            click("top-workspace-button", 1);
+            key("\u{f701}", "\u{f701}", 125, NSEventModifierFlags::Function);
+            key("p", "p", 35, NSEventModifierFlags::empty());
+            wait_until("typing the project name focuses that row", Duration::from_secs(4), || {
+                window.firstResponder().and_then(|view| view.downcast::<NSView>().ok())
+                    .and_then(|view| view.accessibilityLabel())
+                    .is_some_and(|label| label.to_string() == "project-with-a-long-name")
+            });
+            save_window_png(&window, &fixture.join("project-menu-keyboard.png"));
+            key("\r", "\r", 36, NSEventModifierFlags::empty());
+            expect("git-text-prompt", "project-with-a-long-name");
+            key("\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+            clean("git-text-prompt");
+
+            let file = menu("文件");
+            let git = menu("Git");
+            let titles = |menu: &platform::objc2_app_kit::NSMenu| {
+                menu.itemArray().iter().map(|item| item.title().to_string()).collect::<Vec<_>>()
+            };
+            let file_titles = titles(&file);
+            let git_titles = titles(&git);
+            for title in ["新建", "最近项目", "保存全部", "关闭项目"] {
+                assert!(file_titles.iter().any(|item| item == title), "missing File > {title}");
+            }
+            for title in ["提交…", "显示 Git 日志", "分支…", "推送…"] {
+                assert!(git_titles.iter().any(|item| item == title), "missing Git > {title}");
+            }
+            invoke(&git, "显示 Git 日志");
+            wait_until("native Git menu displays the Log panel", Duration::from_secs(4), || {
+                view_with_id(&root, "git-bottom-pane").is_some()
+            });
+            wait_until("native Git menu opens commit history", Duration::from_secs(6), || {
+                view_with_id(&root, &format!("git-commit-row-{second_commit}")).is_some()
+            });
+            key("9", "9", 25, NSEventModifierFlags::Command);
+            click("project-file-history.txt", 2);
+            expect("code-editor-view", "baseline 001");
+            click("code-editor-view", 1);
+            wait_until("document has the keyboard focus", Duration::from_secs(4), || editor_has_responder("code-editor-view"));
+            key("v", "v", 9, NSEventModifierFlags::empty());
+            wait_until("document shows unsaved edits", Duration::from_secs(4), || view_with_id(&root, "code-dirty-badge").is_some());
+            invoke(&menu("文件"), "保存全部");
+            clean("code-dirty-badge");
+            assert_ne!(fs::read_to_string(&path).unwrap(), modified);
+            assert!(view_with_id(&root, "toast-notification").is_none());
+            fs::write(&path, "Crisp File reload fixture\n").unwrap();
+            invoke(&menu("文件"), "从磁盘重新加载全部");
+            expect("code-editor-view", "Crisp File reload fixture");
+            let history = menu_item(&menu("文件"), "本地历史").submenu().unwrap();
+            invoke(&history, "显示历史…");
+            expect("local-history-modal", "history.txt");
+            click("local-history-close", 1);
+            clean("local-history-modal");
+
+            let recent = menu_item(&menu("文件"), "最近项目").submenu().unwrap();
+            invoke(&recent, "project-with-a-long-name");
+            expect("git-text-prompt", "project-with-a-long-name");
+            click("git-text-prompt-submit", 1);
+            expect("top-workspace-button", "project-with-a-long-name");
+            expect("project-file-README.md", "README.md");
+            let recent = menu_item(&menu("文件"), "最近项目").submenu().unwrap();
+            assert!(titles(&recent).iter().any(|item| item == "repo"), "the startup project must stay in history after switching");
+
+            invoke(&menu("文件"), "关闭项目");
+            expect("top-workspace-button", "选择项目");
+            check_window();
+            window.close();
+            assert!(!runtime_panicked.load(std::sync::atomic::Ordering::Relaxed));
+            println!("NATIVE_CRISP_MENUS PASS display={number} project_visible_ms={project_visible_ms} popover_ms={popover_ms} file={file_titles:?} git={git_titles:?} evidence={}", fixture.display());
+            return;
+        }
+
         if ux {
             wait_until("workspace renders a change row", Duration::from_secs(8), || {
                 view_with_id(&root, "change-row-unstaged-history.txt").is_some()
@@ -2354,6 +2609,47 @@ exec /usr/bin/git "$@"
             expect("code-editor-view", "attribution");
             click("find-results-hide", 1);
 
+            let open_history = || {
+                click("code-history-btn", 1);
+                pump(160);
+                if view_with_id(&root, "local-history-modal").is_none() {
+                    click("code-history-btn", 1);
+                }
+                wait_until("local history opens", Duration::from_secs(4), || {
+                    view_with_id(&root, "local-history-modal").is_some()
+                });
+            };
+            open_history();
+            expect("local-history-empty", "暂无快照");
+            assert!(view_with_id(&root, "local-history-compare").is_none());
+            assert!(view_with_id(&root, "local-history-current").is_none());
+            save_window_png(&window, &fixture.join("history-empty.png"));
+            click("local-history-close", 1);
+            clean("local-history-modal");
+
+            let original_frame = window.frame();
+            let mut narrow = original_frame;
+            narrow.size.width = 940.0;
+            narrow.size.height = 640.0;
+            window.setFrame_display(narrow, true);
+            check_window();
+            click("project-file-history.txt", 2);
+            expect("code-editor-view", "baseline 001");
+            open_history();
+            expect("local-history-compare", "查看快照");
+            expect("local-history-current", "baseline");
+            save_window_png(&window, &fixture.join("history-controls-narrow.png"));
+            click("local-history-close", 1);
+            clean("local-history-modal");
+
+            click("rail-settings-btn", 1);
+            click("settings-keymap", 1);
+            expect("keymap-close", "关闭");
+            save_window_png(&window, &fixture.join("keymap-controls-narrow.png"));
+            key("\u{1b}", "\u{1b}", 53, NSEventModifierFlags::empty());
+            window.setFrame_display(original_frame, true);
+            check_window();
+
             key("0", "0", 29, NSEventModifierFlags::Command);
             click("change-row-staged-history.txt", 2);
             expect("working-diff-new-editor", "CRISP_STAGED_CHANGE");
@@ -2374,12 +2670,16 @@ exec /usr/bin/git "$@"
             });
             save_window_png(&window, &fixture.join("compact-diff.png"));
             click("working-diff-new-editor", 1);
+            wait_until("working Diff has keyboard focus", Duration::from_secs(4), || {
+                editor_has_responder("working-diff-new-editor")
+            });
             key("x", "x", 7, NSEventModifierFlags::empty());
-            wait_until("Diff tab marks the saved draft", Duration::from_secs(4), || {
+            wait_until("Diff tab marks the draft", Duration::from_secs(4), || {
                 view_with_id(&root, "diff-dirty-badge").is_some()
             });
             key("s", "s", 1, NSEventModifierFlags::Command);
             clean("diff-dirty-badge");
+            assert!(view_with_id(&root, "toast-notification").is_none());
             assert_ne!(fs::read_to_string(&path).unwrap(), modified);
             assert!(git_run(&repo, &["show", ":history.txt"]).contains("CRISP_STAGED_CHANGE"));
             check_window();

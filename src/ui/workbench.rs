@@ -227,15 +227,13 @@ pub(super) fn button(
     action: impl Fn() + 'static,
 ) -> impl IntoElement + Interactive {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .rounded(px(4.0))
         .h(px(24.0))
         .px(px(7.0))
         .bg(p.surface2)
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .disabled_style(|style| style.opacity(0.5))
         .on_press(action)

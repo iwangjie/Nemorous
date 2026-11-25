@@ -2,10 +2,11 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use crate::git::{discover_workspace_repos, run_git_string};
+use crate::git::{RepoInfo, WorkspaceFile, discover_workspace_repos, run_git_string};
 
 pub(crate) fn workspace_path(path: &Path) -> Result<PathBuf> {
     let path = path.canonicalize().context("无法打开工作区目录")?;
@@ -14,23 +15,107 @@ pub(crate) fn workspace_path(path: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn target(workspace: &Path, name: &str) -> Result<(PathBuf, PathBuf)> {
+pub(crate) fn new_item_path(parent: &Path, name: &str) -> Result<PathBuf> {
     let mut components = Path::new(name).components();
     ensure!(
         matches!(components.next(), Some(Component::Normal(value)) if value == name)
             && components.next().is_none()
-            && !name.starts_with('.')
             && !name.contains(['\r', '\n', '\0']),
-        "请输入单个有效的仓库目录名"
+        "请输入单个有效的名称"
     );
+    Ok(workspace_path(parent)?.join(name))
+}
+
+fn target(workspace: &Path, name: &str) -> Result<(PathBuf, PathBuf)> {
+    ensure!(!name.starts_with('.'), "请输入有效的仓库目录名");
     let workspace = workspace_path(workspace)?;
-    let path = workspace.join(name);
+    let path = new_item_path(&workspace, name)?;
     match fs::symlink_metadata(&path) {
         Ok(_) => bail!("目标目录已经存在"),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
         Err(err) => return Err(err).context("无法检查目标目录"),
     }
     Ok((workspace, path))
+}
+
+pub(crate) fn create_project(parent: &Path, name: &str, branch: Option<&str>) -> Result<PathBuf> {
+    if let Some(branch) = branch {
+        return init_repo(parent, name, branch);
+    }
+    let path = new_item_path(parent, name)?;
+    fs::create_dir(&path).context("无法创建项目目录")?;
+    Ok(path)
+}
+
+pub(crate) fn create_project_item(
+    root: &Path, parent: &Path, name: &str, directory: bool,
+) -> Result<PathBuf> {
+    let root = workspace_path(root)?;
+    let path = new_item_path(parent, name)?;
+    ensure!(path.starts_with(root), "请选择项目内的目录");
+    if directory {
+        fs::create_dir(&path).context("无法创建目录")?;
+    } else {
+        OpenOptions::new().write(true).create_new(true).open(&path).context("无法创建文件")?;
+    }
+    Ok(path)
+}
+
+pub(crate) fn folder_project(path: &str) -> RepoInfo {
+    use sha1::{Digest, Sha1};
+
+    let name = crate::paths::basename(path);
+    RepoInfo {
+        id: format!("folder-{:x}", Sha1::digest(path.as_bytes())),
+        monogram: name.chars().take(2).flat_map(char::to_uppercase).collect(),
+        name,
+        display_name: None,
+        path: path.to_owned(),
+        rel_path: ".".into(),
+        desc: String::new(),
+        color_idx: 0,
+        is_root: true,
+    }
+}
+
+pub(crate) fn project_file(repo: &RepoInfo, path: &Path) -> Option<WorkspaceFile> {
+    let rel_path = crate::paths::normalize_slashes(path.strip_prefix(&repo.path).ok()?.to_str()?);
+    Some(WorkspaceFile {
+        repo_id: repo.id.clone(), repo_name: repo.label().to_owned(), repo_path: repo.path.clone(),
+        rel_path, abs_path: path.to_str()?.to_owned(), color_idx: repo.color_idx,
+    })
+}
+
+pub(crate) fn read_project_folder(repo: &RepoInfo, cancelled: &AtomicBool) -> Result<(Vec<WorkspaceFile>, Vec<String>)> {
+    const MAX_ENTRIES: usize = 50_000;
+    let mut pending = vec![PathBuf::from(&repo.path)];
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let mut scanned = 0;
+    while let Some(parent) = pending.pop() {
+        for entry in fs::read_dir(&parent)? {
+            if cancelled.load(Ordering::Relaxed) {
+                return Ok((files, directories));
+            }
+            scanned += 1;
+            ensure!(scanned <= MAX_ENTRIES, "目录内容超过 {MAX_ENTRIES} 项，请打开更小的项目目录");
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            let path = entry.path();
+            if kind.is_dir() && !matches!(name, ".git" | "node_modules" | "target" | "build") {
+                if let Some(item) = project_file(repo, &path) {
+                    directories.push(item.rel_path);
+                    pending.push(path);
+                }
+            } else if kind.is_file() && name != ".git" {
+                files.extend(project_file(repo, &path));
+            }
+        }
+    }
+    directories.sort_unstable();
+    Ok((files, directories))
 }
 
 pub(crate) fn clone_repo(workspace: &Path, source: &str, name: &str) -> Result<PathBuf> {

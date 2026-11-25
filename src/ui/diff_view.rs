@@ -2,8 +2,7 @@ use std::{cell::RefCell, collections::HashSet, path::Path, rc::Rc};
 
 use nsh_base::{
     Editor, EditorApi, EditorContextMenuEvent, EditorHoverEvent, EditorPosition, EditorSearch,
-    EditorSearchResult, EditorSelection, editor, input,
-};
+    EditorSearchResult, EditorSelection, editor, };
 use nsh_base::editor::EditorProjection;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::keymap::When;
@@ -61,14 +60,11 @@ fn toolbar_icon_btn(
     let background = active.clone();
     let enabled = enabled.into_reactive();
     let disabled = enabled.clone().map(|enabled| !enabled);
-    view()
+    super::controls::button()
         .test_id(tid)
         .h(px(24.0))
         .px(px(6.0))
         .gap(px(4.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
         .rounded(px(4.0))
         .bg(move || {
             if background.get() {
@@ -106,13 +102,10 @@ fn toolbar_text_btn(
 ) -> impl IntoElement {
     let active = active.into_reactive();
     let background = active.clone();
-    view()
+    super::controls::button()
         .test_id(tid)
         .h(px(24.0))
         .px(px(8.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
         .rounded(px(4.0))
         .bg(move || {
             let p = current_palette();
@@ -339,14 +332,12 @@ fn diff_details(controls: Memo<DiffControls>) -> impl IntoElement {
             details
         }
     });
-    view()
+    super::controls::button()
         .test_id("diff-details")
         .w(px(24.0))
         .h(px(24.0))
         .flex_none()
         .rounded(px(4.0))
-        .justify_center()
-        .items_center()
         .cursor(Cursor::Pointer)
         .label("差异详情")
         .hover(|style| style.bg(move || current_palette().surface_hover))
@@ -788,19 +779,16 @@ pub(super) fn diff_find_bar(tab: EditorTabKind) -> impl IntoElement {
                         ),
                 )
                 .child(
-                    input()
+                    super::controls::text_field(24.0, 11.5, 8.0)
                         .test_id("diff-find-input")
                         .element_ref(&find_input)
                         .flex_1()
                         .min_w(px(80.0))
                         .max_w(px(220.0))
-                        .h(px(24.0))
-                        .px(px(8.0))
                         .rounded(px(4.0))
                         .bg(move || current_palette().surface)
                         .border_1()
                         .border_color(move || current_palette().border)
-                        .text_size(px(11.5))
                         .text_color(move || current_palette().text_primary)
                         .placeholder("在当前聚焦侧查找…")
                         .value(move || app_signal().with(|s| s.diff_search.query.to_string()))
@@ -833,11 +821,9 @@ pub(super) fn diff_find_bar(tab: EditorTabKind) -> impl IntoElement {
                 ))
                 .child(view().flex_1())
                 .child(
-                    view()
+                    super::controls::button()
                         .w(px(20.0))
                         .h(px(20.0))
-                        .items_center()
-                        .justify_center()
                         .cursor(Cursor::Pointer)
                         .on_press(state::close_find_bar)
                         .child(icons::icon(ICO_CLOSE, 10.0, p.text_muted)),

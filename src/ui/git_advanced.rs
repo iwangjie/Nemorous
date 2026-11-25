@@ -65,7 +65,7 @@ pub(super) fn layer() -> impl IntoElement {
                             .bg(p.rail_bg)
                             .child(text(title).flex_1().text_color(p.text_primary))
                             .child(
-                                view()
+                                super::controls::button()
                                     .test_id("git-advanced-report-close")
                                     .label("关闭")
                                     .cursor(Cursor::Pointer)
@@ -772,7 +772,7 @@ fn stash_workspace(pop: bool) {
     );
 }
 
-fn list_stash(repo: PathBuf) {
+pub(super) fn list_stash(repo: PathBuf) {
     let request = RepositoryMenuRequest::start();
     state::spawn_from_root(async move {
         let dir = repo.clone();
@@ -891,6 +891,10 @@ fn single_commit_action(repo: PathBuf, label: &'static str, action: fn(&Path, &s
         );
         Ok(())
     });
+}
+
+pub(super) fn rebase(repo: PathBuf) {
+    single_commit_action(repo, "Rebase 到引用", history::rebase);
 }
 
 fn force_push(repo: PathBuf) {

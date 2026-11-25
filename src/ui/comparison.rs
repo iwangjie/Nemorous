@@ -459,12 +459,11 @@ fn action_button(
 ) -> impl IntoElement {
     let p = current_palette();
     let disabled = enabled.into_reactive().map(|enabled| !enabled);
-    view()
+    super::controls::button()
         .test_id(id)
         .h(px(24.0))
         .px(px(6.0))
         .rounded(px(4.0))
-        .items_center()
         .cursor(Cursor::Pointer)
         .disabled(disabled.clone())
         .style_when(disabled, |style| style.opacity(0.45).cursor(Cursor::Default))

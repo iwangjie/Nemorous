@@ -1858,7 +1858,6 @@ pub fn save_working_diff_now() -> bool {
                     }
                 }
             });
-            show_toast("ok", format!("已保存 {rel_path}"));
             refresh_workspace_async(Some(HashSet::from([repo_id])));
             true
         }
@@ -1968,7 +1967,6 @@ pub fn save_code_tab_by_id(tab_id: &str) -> bool {
                     }
                 }
             });
-            show_toast("ok", format!("已保存 {rel_path}"));
             refresh_workspace_async(Some(HashSet::from([repo_id])));
             true
         }

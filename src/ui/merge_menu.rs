@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -239,15 +238,13 @@ fn action(
     callback: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .px(px(8.0))
         .h(px(26.0))
         .rounded(px(4.0))
         .cursor(Cursor::Pointer)
-        .items_center()
-        .justify_center()
         .bg(p.surface2)
         .hover(move |s| s.bg(p.surface_hover))
         .on_press(callback)
@@ -316,11 +313,9 @@ pub(super) fn layer() -> impl IntoElement {
                                 .flex_row()
                                 .gap(px(6.0))
                                 .child(
-                                    input()
+                                    super::controls::text_field(27.0, 12.0, 6.0)
                                         .test_id("merge-source")
                                         .flex_1()
-                                        .h(px(27.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("来源分支")
                                         .text_color(p.text_primary)
@@ -330,11 +325,9 @@ pub(super) fn layer() -> impl IntoElement {
                                         }),
                                 )
                                 .child(
-                                    input()
+                                    super::controls::text_field(27.0, 12.0, 6.0)
                                         .test_id("merge-target")
                                         .flex_1()
-                                        .h(px(27.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("目标分支")
                                         .text_color(p.text_primary)
@@ -364,10 +357,9 @@ pub(super) fn layer() -> impl IntoElement {
                                     .children(repos.into_iter().map(|repo| {
                                         let id = repo.id.clone();
                                         let selected_id = id.clone();
-                                        view()
+                                        super::controls::button().justify_start()
                                             .test_id(&format!("merge-repo-{id}"))
                                             .h(px(27.0))
-                                            .items_center()
                                             .px(px(7.0))
                                             .cursor(Cursor::Pointer)
                                             .on_press(move || {
@@ -398,11 +390,10 @@ pub(super) fn layer() -> impl IntoElement {
                                             task.target,
                                             task.original_conflicts.len()
                                         );
-                                        view()
+                                        super::controls::button()
                                             .test_id(&format!("merge-recover-{}", task.id))
                                             .h(px(29.0))
                                             .px(px(6.0))
-                                            .items_center()
                                             .cursor(Cursor::Pointer)
                                             .bg(p.accent_soft)
                                             .rounded(px(4.0))
@@ -425,11 +416,9 @@ pub(super) fn layer() -> impl IntoElement {
                                 .items_center()
                                 .gap(px(6.0))
                                 .child(
-                                    input()
+                                    super::controls::text_field(27.0, 12.0, 6.0)
                                         .test_id("merge-preset-name")
                                         .flex_1()
-                                        .h(px(27.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("组合名称")
                                         .text_color(p.text_primary)

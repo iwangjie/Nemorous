@@ -540,14 +540,12 @@ fn finish(abort: bool, push: bool) {
 
 fn btn(label: &'static str, id: &'static str, action: impl Fn() + 'static) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .label(label)
         .test_id(id)
         .px(px(7.0))
         .h(px(25.0))
         .rounded(px(4.0))
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .bg(p.surface2)
         .hover(move |s| s.bg(p.surface_hover))
@@ -579,12 +577,11 @@ fn files_panel() -> impl IntoElement {
                             let path = path.clone();
                             let unresolved = s.files.contains(&path);
                             let selected = s.selected.as_ref() == Some(&path);
-                            view()
+                            super::controls::button().justify_start()
                                 .test_id(&format!("conflict-file-{path}"))
                                 .h(px(26.0))
                                 .px(px(8.0))
                                 .bg(if selected { p.accent_soft } else { p.surface })
-                                .items_center()
                                 .cursor(if unresolved {
                                     Cursor::Pointer
                                 } else {

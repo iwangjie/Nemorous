@@ -74,7 +74,7 @@ impl FindBar {
             };
             mode.enabled(search)
         }));
-        view()
+        super::controls::button()
             .test_id(&format!("{prefix}-find-{id}"))
             .label(description)
             .tooltip(dynamic(move || super::tooltip_label(description.to_owned(), current_palette())))
@@ -82,8 +82,6 @@ impl FindBar {
             .h(px(22.0))
             .flex_none()
             .rounded(px(4.0))
-            .items_center()
-            .justify_center()
             .cursor(Cursor::Pointer)
             .bg(move || {
                 let palette = current_palette();

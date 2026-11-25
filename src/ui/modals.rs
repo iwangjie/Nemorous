@@ -1,4 +1,4 @@
-use nsh_base::{Editor, editor, input};
+use nsh_base::{Editor, editor};
 use nsh_core::prelude::*;
 
 use crate::paths::basename;
@@ -35,14 +35,12 @@ fn action_btn(
     } else {
         (p.surface2, p.text_primary)
     };
-    view()
+    super::controls::button()
         .test_id(tid)
         .h(px(28.0))
         .px(px(12.0))
         .rounded(px(6.0))
         .bg(bg)
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .hover(move |s| s.opacity(0.9))
         .label(label.clone())
@@ -388,15 +386,12 @@ pub fn modals_layer() -> impl IntoElement {
                             .text_color(p.text_primary),
                     )
                     .child(
-                        input()
+                        super::controls::text_field(30.0, 12.5, 10.0)
                             .test_id("goto-line-input")
-                            .h(px(30.0))
-                            .px(px(10.0))
                             .rounded(px(6.0))
                             .bg(p.rail_bg)
                             .border_1()
                             .border_color(p.accent)
-                            .text_size(px(12.5))
                             .text_color(p.text_primary)
                             .placeholder("输入行号或 行:列，例如 12:5")
                             .value(move || app_signal().with(|s| s.goto_line_input.clone()))
@@ -577,22 +572,19 @@ pub fn modals_layer() -> impl IntoElement {
                                             .text_color(p.text_primary),
                                     )
                                     .child(
-                                        view()
+                                        super::controls::button()
                                             .cursor(Cursor::Pointer)
                                             .on_press(state::close_active_modal)
                                             .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),
                                     ),
                             )
                             .child(
-                                input()
+                                super::controls::text_field(28.0, 12.0, 8.0)
                                     .test_id("review-picker-input")
-                                    .h(px(28.0))
-                                    .px(px(8.0))
                                     .rounded(px(6.0))
                                     .bg(p.rail_bg)
                                     .border_1()
                                     .border_color(p.accent)
-                                    .text_size(px(12.0))
                                     .text_color(p.text_primary)
                                     .placeholder(match kind {
                                         PickerKind::GoToFile => "输入路径或 ~/path:line:col 后回车…",
@@ -671,7 +663,7 @@ pub fn modals_layer() -> impl IntoElement {
                                     .text_color(p.text_primary),
                             )
                             .child(
-                                view()
+                                super::controls::button()
                                     .cursor(Cursor::Pointer)
                                     .on_press(state::close_active_modal)
                                     .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),

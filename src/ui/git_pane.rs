@@ -422,12 +422,10 @@ pub fn git_pane() -> impl IntoElement {
                         .number_of_lines(1u32),
                 )
                 .child(file_history.is_some().then(|| {
-                    view()
+                    super::controls::button()
                         .w(px(22.0))
                         .h(px(22.0))
                         .rounded(px(4.0))
-                        .items_center()
-                        .justify_center()
                         .cursor(Cursor::Pointer)
                         .hover(move |s| s.bg(p.surface_hover))
                         .label("关闭文件历史")
@@ -440,12 +438,10 @@ pub fn git_pane() -> impl IntoElement {
                 }))
                 .child(view().flex_1())
                 .child(
-                    view()
+                    super::controls::button()
                         .w(px(22.0))
                         .h(px(22.0))
                         .rounded(px(4.0))
-                        .items_center()
-                        .justify_center()
                         .cursor(Cursor::Pointer)
                         .hover(move |s| s.bg(p.surface_hover))
                         .label("关闭 Git")

@@ -8,8 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nsh_base::{
-    Editor, EditorApi, EditorDecoration, EditorPosition, EditorRange, editor, h_resizable, input,
-    resizable_panel, v_resizable,
+    Editor, EditorApi, EditorDecoration, EditorPosition, EditorRange, editor, h_resizable, resizable_panel, v_resizable,
 };
 use nsh_core::prelude::*;
 
@@ -659,7 +658,7 @@ fn header(p: Palette) -> impl IntoElement {
                 .text_color(p.text_muted),
         )
         .child(
-            view()
+            super::controls::button()
                 .cursor(Cursor::Pointer)
                 .on_press(state::close_active_modal)
                 .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),
@@ -674,20 +673,17 @@ fn query_row(p: Palette, query: ElementRef) -> impl IntoElement {
         .items_center()
         .gap(px(6.0))
         .child(
-            input()
+            super::controls::text_field(32.0, 12.5, 8.0)
                 .test_id("content-search-input")
                 .element_ref(&query)
                 .auto_focus(true)
                 .h(move || if multiline.get() { px(84.0) } else { px(32.0) })
-                .px(px(8.0))
-                .py(move || if multiline.get() { px(6.0) } else { px(7.0) })
-                .line_height(px(16.0))
+                .py(move || if multiline.get() { px(6.0) } else { px(0.0) })
                 .rounded(px(6.0))
                 .flex_1()
                 .bg(p.rail_bg)
                 .border_1()
                 .border_color(p.accent)
-                .text_size(px(12.5))
                 .text_color(p.text_primary)
                 .multiline(move || multiline.get())
                 .placeholder("搜索文件内容…")
@@ -788,16 +784,13 @@ fn options_row(p: Palette) -> impl IntoElement {
 }
 
 fn mask_input(p: Palette) -> impl IntoElement {
-    input()
+    super::controls::text_field(26.0, 11.5, 8.0)
         .test_id("content-search-mask-input")
-        .h(px(26.0))
-        .px(px(8.0))
         .rounded(px(6.0))
         .flex_1()
         .bg(p.rail_bg)
         .border_1()
         .border_color(p.border)
-        .text_size(px(11.5))
         .text_color(p.text_primary)
         .placeholder("文件名掩码，如 *.rs, !*_test.rs")
         .value(move || with_state(|s| s.mask.clone()))
@@ -824,15 +817,12 @@ fn replacement_input_changed() -> bool {
 
 fn replacement_input(p: Palette) -> impl IntoElement {
     view().px(px(14.0)).child(
-        input()
+        super::controls::text_field(28.0, 11.5, 8.0)
             .test_id("content-search-replacement-input")
-            .h(px(28.0))
-            .px(px(8.0))
             .rounded(px(6.0))
             .bg(p.rail_bg)
             .border_1()
             .border_color(p.border)
-            .text_size(px(11.5))
             .text_color(p.text_primary)
             .placeholder("替换为…")
             .value(|| with_state(|s| s.replacement.clone()))
@@ -957,13 +947,11 @@ fn toggle_button(
     on_click: impl Fn() + 'static,
 ) -> impl IntoElement {
     let active = computed(active);
-    view()
+    super::controls::button()
         .test_id(tid)
         .h(px(28.0))
         .px(px(8.0))
         .rounded(px(6.0))
-        .items_center()
-        .justify_center()
         .cursor(Cursor::Pointer)
         .label(tip)
         .bg(move || {
@@ -996,13 +984,11 @@ fn pin_button(p: Palette) -> impl IntoElement {
             (p.text_muted, p.surface)
         }
     });
-    view()
+    super::controls::button()
         .test_id("content-search-pin")
         .h(px(22.0))
         .px(px(8.0))
         .rounded(px(5.0))
-        .items_center()
-        .justify_center()
         .bg(bg)
         .cursor(Cursor::Pointer)
         .label("在查找窗口中打开")
@@ -1015,10 +1001,10 @@ fn pin_button(p: Palette) -> impl IntoElement {
 }
 
 fn preview_toggle(p: Palette, preview: Signal<bool>, id: &'static str) -> impl IntoElement {
-    view()
+    super::controls::button()
         .test_id(id)
         .w(px(25.0)).h(px(24.0)).flex_none()
-        .rounded(px(4.0)).justify_center().items_center()
+        .rounded(px(4.0))
         .cursor(Cursor::Pointer)
         .label(move || if preview.get() { "隐藏代码预览" } else { "显示代码预览" })
         .bg(move || if preview.get() { p.accent_soft } else { transparent_black() })
@@ -1313,7 +1299,7 @@ fn find_panel_body() -> impl IntoElement {
                 )
                 .child(preview_toggle(p, preview, "find-results-preview-toggle"))
                 .child(
-                    view().test_id("find-results-hide").cursor(Cursor::Pointer)
+                    super::controls::button().test_id("find-results-hide").cursor(Cursor::Pointer)
                         .label("隐藏查找结果").on_press(hide_find_panel)
                         .child(icons::icon(ICO_CLOSE, 12.0, p.text_muted)),
                 ),

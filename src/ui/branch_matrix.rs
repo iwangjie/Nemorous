@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use nsh_base::input;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
@@ -223,7 +222,7 @@ fn action(
     handler: impl Fn() + 'static,
 ) -> impl IntoElement {
     let label = label.into();
-    view()
+    super::controls::button()
         .test_id(test_id.as_ref())
         .label(label.clone())
         .cursor(Cursor::Pointer)
@@ -427,11 +426,9 @@ pub(super) fn layer() -> impl IntoElement {
                             .text_color(p.text_primary),
                     )
                     .child(
-                        input()
+                        super::controls::text_field(30.0, 12.0, 8.0)
                             .test_id("branch-filter-input")
                             .auto_focus(true)
-                            .h(px(30.0))
-                            .px(px(8.0))
                             .rounded(px(4.0))
                             .bg(p.surface2)
                             .text_color(p.text_primary)

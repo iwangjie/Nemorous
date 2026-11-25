@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use nsh_base::input;
 use nsh_core::prelude::*;
 
 use crate::git_credentials::{self, SshKey};
@@ -141,14 +140,12 @@ fn action(
     callback: impl Fn() + 'static,
 ) -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .test_id(id)
         .label(label)
         .h(px(27.0))
         .px(px(8.0))
         .rounded(px(4.0))
-        .items_center()
-        .justify_center()
         .bg(p.surface2)
         .cursor(Cursor::Pointer)
         .on_press(callback)
@@ -205,11 +202,9 @@ pub(super) fn layer() -> impl IntoElement {
                                 .flex_row()
                                 .gap(px(5.0))
                                 .child(
-                                    input()
+                                    super::controls::text_field(28.0, 12.0, 6.0)
                                         .test_id("credential-host")
                                         .flex_1()
-                                        .h(px(28.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("主机")
                                         .text_color(p.text_primary)
@@ -219,11 +214,9 @@ pub(super) fn layer() -> impl IntoElement {
                                         }),
                                 )
                                 .child(
-                                    input()
+                                    super::controls::text_field(28.0, 12.0, 6.0)
                                         .test_id("credential-user")
                                         .flex_1()
-                                        .h(px(28.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("用户名")
                                         .text_color(p.text_primary)
@@ -233,11 +226,9 @@ pub(super) fn layer() -> impl IntoElement {
                                         }),
                                 )
                                 .child(
-                                    input()
+                                    super::controls::text_field(28.0, 12.0, 6.0)
                                         .test_id("credential-secret")
                                         .flex_1()
-                                        .h(px(28.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("令牌")
                                         .masked(true)
@@ -265,11 +256,9 @@ pub(super) fn layer() -> impl IntoElement {
                                 .flex_row()
                                 .gap(px(5.0))
                                 .child(
-                                    input()
+                                    super::controls::text_field(28.0, 12.0, 6.0)
                                         .test_id("ssh-host")
                                         .flex_1()
-                                        .h(px(28.0))
-                                        .px(px(6.0))
                                         .bg(p.surface2)
                                         .placeholder("user@host")
                                         .text_color(p.text_primary)

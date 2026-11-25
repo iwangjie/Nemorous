@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use nsh_base::{EditorPosition, input};
+use nsh_base::{EditorPosition};
 use nsh_core::prelude::*;
 use regex::Regex;
 
@@ -464,7 +464,7 @@ fn scan_indicator() -> impl IntoElement {
 
 fn scan_button() -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .px(px(8.0))
         .py(px(4.0))
         .rounded(px(4.0))
@@ -475,7 +475,7 @@ fn scan_button() -> impl IntoElement {
 
 fn todo_query_row() -> impl IntoElement {
     view().px(px(14.0)).pb(px(8.0)).child(
-        input()
+        super::controls::text_field(28.0, 12.0, 8.0)
             .test_id("todo-query")
             .value(move || tools_signal().with(|s| s.todo_query.clone()))
             .placeholder(DEFAULT_TODO_PATTERN)
@@ -552,11 +552,9 @@ fn todo_row(index: usize, item: TodoItem) -> impl IntoElement {
 
 fn close_button() -> impl IntoElement {
     let p = current_palette();
-    view()
+    super::controls::button()
         .w(px(22.0))
         .h(px(22.0))
-        .items_center()
-        .justify_center()
         .rounded(px(4.0))
         .on_press(state::close_active_modal)
         .child(text("×").text_color(p.text_muted))
