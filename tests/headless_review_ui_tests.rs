@@ -6659,9 +6659,28 @@ fn ui_project_tree_real_fs_nested_repos_and_shortcuts() {
 
     // 嵌套 Git 仓库行内显示分支名，按需展开加载子文件
     app.wait_for("id:project-dir-sub-service >> text:feat/tree").unwrap();
-    assert!(!app.screen().matches("id:project-file-sub-service/service.rs").unwrap());
-    app.press("id:project-dir-toggle-sub-service").unwrap();
-    app.wait_for("id:project-file-sub-service/service.rs").unwrap();
+    let chevron = "id:project-dir-toggle-sub-service";
+    let file = "id:project-file-sub-service/service.rs";
+    assert!(!app.screen().matches(file).unwrap());
+    eprintln!(
+        "tree trace: before click target={:?}, service.rs exists={}",
+        app.screen().press_target(chevron),
+        sub_repo.join("service.rs").is_file(),
+    );
+    let press = app.press(chevron);
+    eprintln!(
+        "tree trace: after click result={press:?}, target={:?}, file visible={:?}",
+        app.screen().press_target(chevron),
+        app.screen().matches(file),
+    );
+    press.unwrap();
+    let visible = app.wait_for(file);
+    eprintln!(
+        "tree trace: wait succeeded={}, service.rs exists={}",
+        visible.is_ok(),
+        sub_repo.join("service.rs").is_file(),
+    );
+    visible.unwrap();
 
     // 快捷键复制 + 粘贴 + 重命名 + 删除
     app.press("id:project-file-scratch.txt").unwrap();

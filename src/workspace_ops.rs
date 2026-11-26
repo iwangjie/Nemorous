@@ -201,8 +201,14 @@ pub(crate) fn read_dir_entries(
     dir: &Path,
     repos: &[RepoInfo],
 ) -> Vec<FsEntry> {
-    let Ok(read_dir) = fs::read_dir(dir) else {
-        return Vec::new();
+    let read_dir = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            if dir.file_name().is_some_and(|name| name == "sub-service") {
+                eprintln!("tree trace: fs::read_dir failed: {err}");
+            }
+            return Vec::new();
+        }
     };
     let canon_ws = canonical_or(workspace_root);
     let mut raw_items = Vec::new();

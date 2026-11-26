@@ -405,7 +405,16 @@ fn children_of(ctx: &Ctx, rel: &str, abs: &Path) -> Vec<Child> {
     if let Some(map) = &ctx.virtual_children {
         return map.get(rel).cloned().unwrap_or_default();
     }
-    workspace_ops::read_dir_entries(&ctx.ws_root, abs, &ctx.repos)
+    let entries = workspace_ops::read_dir_entries(&ctx.ws_root, abs, &ctx.repos);
+    if rel == "sub-service" {
+        let paths = entries.iter().map(|entry| (entry.rel_path.as_str(), entry.ignored));
+        eprintln!(
+            "tree trace: filesystem entries (path, ignored)={:?}, show_ignored={}",
+            paths.collect::<Vec<_>>(),
+            ctx.show_ignored,
+        );
+    }
+    entries
         .into_iter()
         .filter(|entry| !entry.ignored || ctx.show_ignored)
         .map(|entry| Child {
@@ -471,6 +480,9 @@ fn push_dir_row(ctx: &Ctx, d: DirRow, out: &mut Vec<AnyElement>) {
             .cursor(Cursor::Pointer)
             .hover(move |s| if selected { s } else { s.bg(p.surface_hover) })
             .on_press(move |e: &PressEvent| {
+                if rel_press == "sub-service" {
+                    eprintln!("tree trace: directory row received clicks={}", e.clicks);
+                }
                 app_signal().update(|s| {
                     state::select_project_fs_node(s, &abs_press, true);
                     s.focus_zone = FocusZone::ProjectTree;
@@ -524,7 +536,19 @@ fn push_dir_row(ctx: &Ctx, d: DirRow, out: &mut Vec<AnyElement>) {
                     .w(px(14.0))
                     .h(px(16.0))
                     .on_press(move || {
-                        app_signal().update(|s| toggle_dir(s, &rel_chev, root_chev));
+                        if rel_chev == "sub-service" {
+                            eprintln!("tree trace: chevron callback entered");
+                        }
+                        app_signal().update(|s| {
+                            let was_expanded = s.expanded_project_dirs.contains(&rel_chev);
+                            toggle_dir(s, &rel_chev, root_chev);
+                            if rel_chev == "sub-service" {
+                                eprintln!(
+                                    "tree trace: expanded state {was_expanded} -> {}",
+                                    s.expanded_project_dirs.contains(&rel_chev),
+                                );
+                            }
+                        });
                     })
                     .child(icons::icon(
                         if d.expanded { ICO_CHEVRON_DOWN } else { ICO_CHEVRON_RIGHT },
@@ -702,7 +726,15 @@ fn push_file_row(ctx: &Ctx, child: &Child, depth: usize, out: &mut Vec<AnyElemen
 }
 
 fn render_children(ctx: &Ctx, rel: &str, abs: &Path, depth: usize, out: &mut Vec<AnyElement>) {
-    for child in children_of(ctx, rel, abs) {
+    let children = children_of(ctx, rel, abs);
+    if rel == "sub-service" {
+        eprintln!(
+            "tree trace: rendering nested directory backend={} entries={:?}",
+            if ctx.virtual_children.is_some() { "index" } else { "filesystem" },
+            children.iter().map(|child| child.rel.as_str()).collect::<Vec<_>>(),
+        );
+    }
+    for child in children {
         if child.is_dir {
             let expanded = ctx.force_expand || ctx.expanded.contains(&child.rel);
             let repo = abs_repo(ctx, &child.abs);
