@@ -35,6 +35,8 @@ jobs:
       - name: Repeat the project tree regression on macOS 15
         run: |
           set -euo pipefail
+          cargo +1.99.0 test --locked --release --test headless_review_ui_tests \
+            ui_project_tree_ignores_superseded_region_updates -- --exact --nocapture
           for ((trial = 1; trial <= 20; trial++)); do
             printf '\n--- Project tree trial %d/20 ---\n' "$trial"
             cargo +1.99.0 test --locked --release --test headless_review_ui_tests \
