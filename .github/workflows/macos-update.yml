@@ -1,122 +1,66 @@
-name: Prepare signed macOS update
+name: Verify project tree fix
+run-name: Verify Nemorous v0.10.29 project tree fix
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Rust version in Cargo.toml (without a leading v)
+        description: Release version to verify
         required: true
         type: string
 
 permissions:
   contents: read
 
-env:
-  VERSION: ${{ inputs.version }}
-  NEMOROUS_UPDATER_PUBLIC_KEY: 'ox37vmP3aFxe/cbZ19NuQUJd33TC0ZRn4TjtoCI1L2s='
-
 jobs:
-  package:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            machine: arm64
-            runner: macos-15
-          - arch: amd64
-            machine: x86_64
-            runner: macos-15-intel
-    runs-on: ${{ matrix.runner }}
+  macos:
+    if: github.ref == 'refs/heads/codex/verify-macos-project-tree' && inputs.version == '0.10.29'
+    runs-on: macos-15
     timeout-minutes: 35
     env:
-      ARCH: ${{ matrix.arch }}
-      MACHINE: ${{ matrix.machine }}
       MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Verify the requested version and prepare NSH
+      - name: Prepare Rust and NSH
         run: |
-          set -euo pipefail
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$(awk -F '"' '/^version = / {print $2; exit}' Cargo.toml)" = "$VERSION"
-          scripts/prepare-nsh.sh
-
-      - name: Build the macOS app
-        run: |
-          set -euo pipefail
           rustup toolchain install 1.99.0 --profile minimal
-          cargo +1.99.0 build --locked --release --bin nemorous
-          scripts/package-macos-app.sh "$PWD/image" "$PWD/target/release/nemorous"
-
-      - name: Verify and archive the macOS app
+          scripts/prepare-nsh.sh
+      - name: Configure Git for tests
+        run: |
+          git config --global user.name 'Nemorous CI'
+          git config --global user.email 'ci@nemorous.dev'
+          git config --global init.defaultBranch main
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - name: Repeat the project tree regression on macOS 15
         run: |
           set -euo pipefail
-          app=image/Nemorous.app
-          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$VERSION"
-          test "$(lipo -archs "$app/Contents/MacOS/Nemorous")" = "$MACHINE"
-          codesign --verify --deep --strict "$app"
-          mkdir -p update-assets
-          COPYFILE_DISABLE=1 tar --format ustar -czf "update-assets/nemorous-$VERSION-darwin-$ARCH.tar.gz" -C image Nemorous.app
-          ln -s /Applications image/Applications
-          dmg="update-assets/Nemorous-v$VERSION-darwin-$ARCH.dmg"
-          hdiutil create -volname "Nemorous $VERSION" -srcfolder image -format UDZO "$dmg"
-          hdiutil verify "$dmg" || {
-            sleep 3
-            hdiutil verify "$dmg"
-          }
+          for ((trial = 1; trial <= 20; trial++)); do
+            printf '\n--- Project tree trial %d/20 ---\n' "$trial"
+            cargo +1.99.0 test --locked --release --test headless_review_ui_tests \
+              ui_project_tree_real_fs_nested_repos_and_shortcuts -- --exact --nocapture
+          done
+      - name: Test Rust and headless UI
+        run: cargo +1.99.0 test --locked --release --lib --test domain_git_tests --test headless_review_ui_tests
+      - name: Build and validate the macOS bundle
+        run: |
+          cargo +1.99.0 build --locked --release --bin nemorous
+          scripts/package-macos-app.sh "$RUNNER_TEMP/nemorous-ci" target/release/nemorous
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: unsigned-mac-${{ matrix.arch }}
-          path: update-assets/*
-          if-no-files-found: error
-
-  sign:
-    if: github.repository == 'iwangjie/Nemorous' && github.ref == 'refs/heads/main'
-    needs: package
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+  portable-core:
+    if: github.ref == 'refs/heads/codex/verify-macos-project-tree' && inputs.version == '0.10.29'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache: false
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: unsigned-mac-*
-          path: update-assets
-          merge-multiple: true
-      - name: Build the signer
-        env:
-          GO111MODULE: "off"
-          GOTOOLCHAIN: local
-        run: go build -trimpath -o "$RUNNER_TEMP/sign-macos-update" ./scripts/sign-macos-update/main.go
-      - name: Sign the two Mac updates with the existing update key
-        env:
-          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+      - name: Check Rust core
+        shell: bash
         run: |
-          set -euo pipefail
-          awk -v version="$VERSION" '
-            $0 == "## " version { found=1; next }
-            found && /^## / { exit }
-            found { print }
-          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
-          test -s "$RUNNER_TEMP/notes.md"
-          for arch in arm64 amd64; do
-            "$RUNNER_TEMP/sign-macos-update" "$VERSION" "$arch" \
-              "update-assets/nemorous-$VERSION-darwin-$arch.tar.gz" "$RUNNER_TEMP/notes.md" "update-assets/update-darwin-$arch.json"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: signed-macos-update-${{ inputs.version }}
-          path: update-assets/*
-          if-no-files-found: error
+          git config --global core.autocrlf false
+          rustup toolchain install 1.99.0 --profile minimal
+          scripts/prepare-nsh.sh
+          cargo +1.99.0 check --locked --lib
