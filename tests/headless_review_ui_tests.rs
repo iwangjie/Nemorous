@@ -6626,6 +6626,44 @@ fn ui_project_tree_shows_filesystem_entries_and_file_actions() {
 }
 
 #[test]
+fn ui_project_tree_ignores_superseded_region_updates() {
+    use nsh_core::prelude::*;
+
+    #[component]
+    fn ProjectTreeRefreshProbe() -> impl IntoElement {
+        let revision = signal(0);
+        let expanded = signal(false);
+        view()
+            .flex_col()
+            .child(text("Refresh").test_id("refresh").on_press(move || {
+                revision.set(1);
+                revision.set(2);
+            }))
+            .child(dynamic(move || {
+                let current = revision.get();
+                (current != 1).then(|| {
+                    view()
+                        .key("directory")
+                        .test_id("directory")
+                        .on_press(move || expanded.update(|value| *value = !*value))
+                        .child(text(format!("Revision {current}")))
+                })
+            }))
+            .child(when(expanded, || text("service.rs")))
+    }
+
+    let mut app = Headless::start(EngineConfig::new(Root::of::<ProjectTreeRefreshProbe>())).unwrap();
+    let directory = "id:directory";
+    app.wait_for(directory).unwrap();
+    let node = app.screen().press_target(directory).unwrap().unwrap();
+    app.press("id:refresh").unwrap();
+    app.wait_for("Revision 2").unwrap();
+    assert_eq!(app.screen().press_target(directory).unwrap(), Some(node));
+    app.press(directory).unwrap();
+    app.wait_for("service.rs").unwrap();
+}
+
+#[test]
 fn ui_project_tree_real_fs_nested_repos_and_shortcuts() {
     let _guard = lock_env();
     let fx = Fixture::new("project-nested-shell");
