@@ -459,6 +459,7 @@ fn push_dir_row(ctx: &Ctx, d: DirRow, out: &mut Vec<AnyElement>) {
 
     out.push(
         view()
+            .key(format!("project-directory:{}", d.abs.display()))
             .test_id(&test_id)
             .when(selected, |row| row.element_ref(&ctx.located_row))
             .h(px(font_size + 12.5))
@@ -520,6 +521,7 @@ fn push_dir_row(ctx: &Ctx, d: DirRow, out: &mut Vec<AnyElement>) {
             })
             .child(
                 super::controls::button()
+                    .key("project-directory-toggle")
                     .test_id(&toggle_id)
                     .w(px(14.0))
                     .h(px(16.0))
@@ -594,6 +596,7 @@ fn push_file_row(ctx: &Ctx, child: &Child, depth: usize, out: &mut Vec<AnyElemen
 
     out.push(
         view()
+            .key(format!("project-file:{}", child.abs.display()))
             .test_id(&format!("project-file-{}", child.rel))
             .when(ctx.located.0.as_deref() == Some(child.rel.as_str()), |row| row.element_ref(&ctx.located_row))
             .h(px(font_size + 12.5))

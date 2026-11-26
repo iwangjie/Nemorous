@@ -6659,9 +6659,22 @@ fn ui_project_tree_real_fs_nested_repos_and_shortcuts() {
 
     // 嵌套 Git 仓库行内显示分支名，按需展开加载子文件
     app.wait_for("id:project-dir-sub-service >> text:feat/tree").unwrap();
-    assert!(!app.screen().matches("id:project-file-sub-service/service.rs").unwrap());
-    app.press("id:project-dir-toggle-sub-service").unwrap();
-    app.wait_for("id:project-file-sub-service/service.rs").unwrap();
+    let toggle = "id:project-dir-toggle-sub-service";
+    let nested_file = "id:project-file-sub-service/service.rs";
+    assert!(!app.screen().matches(nested_file).unwrap());
+    app.press(toggle).unwrap();
+    app.wait_for(nested_file).unwrap();
+
+    // 刷新插入排在前面的目录时，嵌套仓库的展开按钮仍是同一个节点。
+    let toggle_node = app.screen().press_target(toggle).unwrap().unwrap();
+    fs::create_dir(fx.repo_dir.join("assets")).unwrap();
+    app.press_key("mod+alt+y").unwrap();
+    app.wait_for("id:project-dir-assets").unwrap();
+    assert_eq!(app.screen().press_target(toggle).unwrap(), Some(toggle_node));
+    app.press(toggle).unwrap();
+    app.wait_for_gone(nested_file, Duration::from_secs(2)).unwrap();
+    app.press(toggle).unwrap();
+    app.wait_for(nested_file).unwrap();
 
     // 快捷键复制 + 粘贴 + 重命名 + 删除
     app.press("id:project-file-scratch.txt").unwrap();
