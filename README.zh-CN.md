@@ -4,9 +4,9 @@
 
 # Nemorous
 
-### 多仓 Git，不再来回切窗口
+### AI 时代的轻量级代码审阅器
 
-面向「一次改动跨多个仓库」的原生、键盘优先 Git 工作台。
+原生、键盘优先的代码 Diff 审阅、源码跳转与 Git 工作台 —— 基于 Rust 构建，帮你更快审阅 AI 生成与人工编写的每一行改动。
 
 [![Release](https://img.shields.io/github/v/release/iwangjie/Nemorous?label=release&color=10B981)](https://github.com/iwangjie/Nemorous/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iwangjie/Nemorous/ci.yml?branch=main&label=CI&color=10B981)](https://github.com/iwangjie/Nemorous/actions/workflows/ci.yml)
@@ -21,11 +21,12 @@
 <br>
 
 **[下载](https://github.com/iwangjie/Nemorous/releases/latest)** &nbsp;·&nbsp;
-**[功能](#功能)** &nbsp;·&nbsp;
-**[截图](#截图)** &nbsp;·&nbsp;
+**[为什么用 Nemorous](#为什么用-nemorous)** &nbsp;·&nbsp;
+**[核心功能](#核心功能)** &nbsp;·&nbsp;
+**[界面截图](#界面截图)** &nbsp;·&nbsp;
 **[安装](#安装)** &nbsp;·&nbsp;
 **[快捷键](#快捷键)** &nbsp;·&nbsp;
-**[构建](#从源码构建)** &nbsp;·&nbsp;
+**[从源码构建](#从源码构建)** &nbsp;·&nbsp;
 [English](README.md) · **简体中文**
 
 </div>
@@ -34,72 +35,56 @@
 
 ## 为什么用 Nemorous
 
-现代产品很少只有一个仓库。一个需求可能同时涉及 API、计费服务、共享库和网关。为了对齐分支、暂存改动、查看 Diff 和提交，在多个 IDE 窗口之间来回切换既慢又容易出错。
+在 AI 时代，Agent 几秒钟就能写出数百行代码，开发者的瓶颈不再是「写代码」，而是**审阅、验证并放心合入改动**。
 
-Nemorous 把整个工作区放在一个界面里：
+为了看一次 Diff、查一下上下文、微调几行代码并提交，打开笨重的完整 IDE 太慢；而命令行 `git diff` 或网页端 PR 视图又缺少即时源码跳转、微编辑和块/行级暂存。
 
-- **一张分支矩阵**：所有仓库的分支、ahead/behind 和脏状态一目了然，支持分支预设。
-- **一棵变更树**：已暂存 / 未暂存分组，文件、变更块和行级暂存。
-- **一条提交流程**：可选 AI 生成提交说明，支持多仓批量提交与推送。
-- **一套历史工具**：交互式 Rebase、Reflog、Worktree、显式合并策略。
-- **一个代码工作区**：可选 LSP 诊断、引用、快速修复和格式化。
-- **GitHub 审阅**：查看 PR 和 CI 结果。
+Nemorous 是专为这种工作流打造的**轻量级原生代码审阅器**：
 
-当前应用用 Rust 和 [NSH](https://github.com/longbridge/nsh) 原生桌面工具包构建。
+- **极速审阅闭环**：IDEA 风格的「已暂存 / 未暂存」分区树，双栏/单栏 Diff 支持上下左右同步滚动、语法高亮与直接微编辑。
+- **Diff 与源码无缝切换**：在 Diff 任意行按 `F4` 直达完整源码上下文，随时查看 Blame 或本地历史，再按 `⌘[` 原路返回。
+- **精细化暂存与回滚**：在 Diff 视图内按文件、变更块（Hunk）或选中行直接暂存、取消暂存或还原。
+- **轻快的代码浏览**：内置文件树、全局正则搜索、`路径:行号:列号` 跳转、书签，以及按需开启的 LSP（默认关闭，不拖慢大仓库）。
+- **完整的 Git 与 PR 工具链**：提交图历史、交互式 Rebase、Reflog 恢复、分支矩阵、GitHub PR/CI 视图与多标签内置终端。
+- **单仓/多仓皆宜**：既适合日常单仓库快速审阅，也能无缝覆盖跨多个服务仓库的协同改动。
 
-## 功能
+基于 Rust 与 [NSH](https://github.com/longbridge/nsh) 原生桌面工具包构建。
 
-### 多仓协同
-- 分支矩阵、ahead/behind、脏状态与一键切换。
-- 分支预设与按仓库指定目标分支。
-- 安全 Pull：自动 stash/pop、仅允许 fast-forward。
-- Fetch / Pull / Commit / Push 批量执行，逐仓展示结果。
+## 核心功能
 
-### 变更与提交
-- IDEA 风格已暂存 / 未暂存树，三态勾选与键盘导航。
-- 双栏 / 单栏 Diff、语法高亮、微编辑与本地历史。
-- 在 Diff 中暂存或取消暂存变更块，也可按行处理新增、删除和替换。
-- 可选 AI 生成提交说明，基于勾选文件的真实 Patch。
-- Amend、Revert、Cherry-pick、变更列表与提交信息历史。
+### Diff 与代码审阅
+- IDEA 风格的**已暂存的更改 / 未暂存的更改**独立分区树，支持三态勾选与键盘导航。
+- 双栏对比 / 单栏内联 Diff，支持上下左右同步滚动、未改动区域折叠与空白字符显示。
+- 在 Diff 视图中直接按块（Hunk）或按行暂存、取消暂存与回滚。
+- 支持在 Diff 面板中直接微编辑并保存，支持本地历史对比、`F4` / `⌘[` / `⌘]` 源码往返跳转。
+- `F7` / `⇧F7` 逐处浏览差异，到达文件末尾后自动切换下一文件。
 
-### 历史与恢复
-- 跨仓 Commit Forest。
-- 交互式 Rebase：pick、squash、reword、drop、调整顺序。
-- Reflog 浏览与 soft / mixed / hard / keep Reset（二次确认）。
-- 合并策略：default、`--no-ff`、`--ff-only`、squash。
-- `--force-with-lease` 安全强推。
-- 任意两个 ref 的双点 / 三点对比。
-- Worktree 隔离合并与 AI 冲突解决、机器校验。
+### 代码浏览与可选 LSP
+- 文件树、命令面板（`⌘⇧P`）、转到文件（`⌘⇧O`，支持 `路径:行号:列号`）、最近文件/位置与全局搜索（`⌘⇧F`）。
+- 触控板双指捏合缩放代码字号，行距同步缩放且保留语法高亮。
+- **LSP 默认关闭**，不让大仓库白白承担语言服务开销。在设置中启用后，可为 Go、TypeScript/JavaScript、Python、Rust、C/C++、Java 提供补全、悬停、跳转定义、查找引用、实时诊断、Inlay Hints、格式化与重命名。
 
-### 代码智能
-LSP **默认关闭**，避免大型仓库在未启用时承担语言服务器的内存与 CPU 开销。
+### Git 工作流与恢复
+- 全局 Commit Graph / Forest，支持**多仓库多选筛选**、分支/日期/路径筛选，以及作者筛选一键选中**「我」**。
+- `⌘T` 后台拉取更新，在右下角状态栏显示实时进度条，完成后弹出通知结果。
+- 交互式 Rebase（pick、squash、reword、drop、调整顺序）、Reflog 浏览恢复、显式合并策略（`--no-ff`、`--ff-only`、squash）及 `--force-with-lease` 安全强推。
+- 任意两个 ref 的双点 / 三点差异对比；Worktree 隔离合并与可选 AI 冲突解决。
 
-启用后，已安装的语言服务可提供：
-- 补全、悬停、跳转定义
-- 引用查找与快速修复
-- 实时诊断与 Problems 面板
-- 文档格式化
-- Inlay Hints
-- 符号重命名与工作区编辑
+### AI 辅助与集成终端
+- **可选本地 AI CLI**：仅在明确操作时调用本机安装的 `omp`、`pi`、`claude` 或 `codex`（如基于选中 Patch 生成提交说明、辅助解决合并冲突），绝不后台静默请求。
+- **多标签集成终端**：自动适配浅色/深色主题配色，精准等宽字符渲染，支持标签切换、标签右键重启 Shell 及 `+` 新建标签。
+- **GitHub PR 与 CI**：应用内直接查看 Pull Request、检查 CI 状态并发表评论。
 
-内置识别 Go、TypeScript/JavaScript、Python、Rust、C/C++、Java；可在配置的 `lsp_servers` 中覆盖命令。
+### 凭据与安全
+- HTTPS 凭据交由系统 Git credential helper（macOS 默认钥匙串）。
+- SSH 密钥管理、ed25519 生成、连通性测试及 GPG / SSH 提交签名。
+- 密钥与 Token 永不写入 Nemorous 配置文件。
 
-### 工作区与安全
-- 应用内克隆、初始化、导入和隐藏仓库。
-- HTTPS 凭据交给系统 Git credential helper；macOS 默认写入钥匙串。
-- SSH key 列表、ed25519 生成、连接测试与 SSH 提交签名。
-- 按仓库配置 GPG 或 SSH 提交签名。
-- Git LFS、Sparse Checkout、Worktree 管理。
-- 密钥与 Token 不写入 Nemorous 配置。
-
-### 集成
-内置 GitHub PR 和 CI 视图、终端，以及可保存的运行、测试和调试配置。
-
-## 截图
+## 界面截图
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/demo_git.png" alt="IDEA 风格 Git 操作"></td>
+    <td width="50%"><img src="docs/screenshots/demo_git.png" alt="Git 历史与审阅"></td>
     <td width="50%"><img src="docs/screenshots/demo_code.png" alt="代码浏览"></td>
   </tr>
   <tr>
@@ -116,17 +101,15 @@ LSP **默认关闭**，避免大型仓库在未启用时承担语言服务器的
 | Windows（arm64 / amd64） | [Go v0.10.21](https://github.com/iwangjie/Nemorous/releases/tag/v0.10.21)，`.exe` 或 `.tar.gz` |
 | Linux（arm64 / amd64） | [Go v0.10.21](https://github.com/iwangjie/Nemorous/releases/tag/v0.10.21)，`.deb` 或 `.tar.gz` |
 
-macOS 通过签名清单获取更新。最新正式版也保留 Windows 和 Linux 客户端使用的 v0.10.21 更新清单与归档包。
+macOS 通过签名清单获取更新。最新正式版同时保留 Windows 和 Linux 客户端使用的 v0.10.21 更新清单与归档包。
 
 ## 快速开始
 
-1. 打开 Nemorous，选择工作区目录。
-2. 点击工作区名称，在「添加仓库」中克隆、初始化或导入仓库。
-3. 私有仓库先在「凭据」中添加 HTTPS Token 或 SSH Key。
-4. 勾选变更，编写或 AI 生成提交说明，然后提交；「提交并推送」一次完成。
-5. `⌘9` / `Ctrl+9` 查看提交历史，`⌘B` / `Ctrl+B` 打开分支矩阵。
-
-`mani.yaml` 可选；存在时会用于项目名称、描述与 Mani 任务。
+1. 打开 Nemorous，选择本地仓库或工作区目录。
+2. 按 `⌘0` / `Ctrl+0` 查看本地变更，选中文件按 `⌘D` 打开 Diff，用 `F7` 逐处审阅。
+3. 在任意行按 `F4` 跳到完整源码查看上下文，用 `S` / `U` 暂存或取消暂存改动。
+4. 编写或 AI 生成提交说明后，按 `⌘↩` 提交（`⌘⇧↩` 提交并推送）。
+5. 按 `⌘9` 查看提交历史，`⌘B` 打开分支矩阵，`⌘⇧O` 快速跳转到任意文件。
 
 ## 快捷键
 
@@ -135,8 +118,8 @@ macOS 通过签名清单获取更新。最新正式版也保留 Windows 和 Linu
 | 快捷键 | 操作 |
 |---|---|
 | `⌘K` | 聚焦提交说明 / 打开提交视图 |
-| `⌘⇧K` | 推送所有有未推送提交的仓库 |
-| `⌘T` | 更新全部仓库（Fetch + fast-forward Pull） |
+| `⌘⇧K` | 推送有未推送提交的仓库 |
+| `⌘T` | 后台拉取更新（右下角状态栏显示进度） |
 | `⌘↩` | 提交勾选文件 |
 | `⌘⇧↩` | 提交并推送 |
 | `⌘0` / `⌘1` / `⌘9` / `⌘4` | Commit / Project / Git / Mani |
@@ -147,14 +130,11 @@ macOS 通过签名清单获取更新。最新正式版也保留 Windows 和 Linu
 | `⌘L` | 转到行列（Windows / Linux 用 `Ctrl+G`） |
 | `⌘F` / `⌘G` / `⇧⌘G` / `⌘R` | 编辑器内查找 / 下一项 / 上一项 / 替换 |
 | `⌘⌥Y` | 刷新工作区 |
-| `⌘S` | 保存编辑器或 Diff 微编辑 |
-| `⌘D` | 打开 Commit 选中文件的 Diff |
-| `F7` / `⇧F7` | 下一个 / 上一个差异，文件边界提示后再按一次跨文件 |
+| `⌘D` | 打开选中文件的 Diff |
+| `F7` / `⇧F7` | 下一个 / 上一个差异（自动跨文件） |
 | `⌥←` / `⌥→` | 上一个 / 下一个 Diff 文件 |
 | `F4` / `⌘[` / `⌘]` | 跳到源码 / 返回原 Diff / 前进到源码 |
-| `⌘C` | 复制选中项。Commit 的未跟踪文件使用 `~/…` 路径，Project 使用名称 |
-| `⌘⇧C` / `⌘⌥⇧C` | 复制绝对路径 / 工作区文件与行号 |
-| `⌥F1` | 打开「选择定位位置」，选 Project 在文件树中定位 |
+| `⌘S` | 保存编辑器或 Diff 微编辑 |
 | `Space` | 切换当前文件勾选 |
 | `S` / `U` | 暂存 / 取消暂存当前文件 |
 | `⌥F7` | 查找引用（LSP） |
@@ -162,11 +142,7 @@ macOS 通过签名清单获取更新。最新正式版也保留 Windows 和 Linu
 | `⌘⌥L` | 格式化当前文件 |
 | `⌘⌥Z` | 还原当前变更 |
 
-文件、仓库分组和提交行也提供右键菜单。
-变更树、文件树和编辑器标签的「复制路径／引用」可复制名称、所在目录和相对路径。右键目录可在该目录内查找。
-在文件树中单击选择，双击或按 Enter 打开文件。点击目录箭头或双击目录可展开和收起。
-
-[IDEA 审阅操作对照清单](docs/idea-review-checklist.zh-CN.md)
+更多操作详见 [IDEA 审阅操作对照清单](docs/idea-review-checklist.zh-CN.md)。
 
 ## 可选 AI
 
@@ -178,11 +154,11 @@ Nemorous 不内置模型，只调用本机安装的 CLI：
 }
 ```
 
-支持 `omp`、`pi`、`claude`、`codex`。AI 仅在明确动作（生成提交说明、解决冲突）时调用，不会后台请求。
+支持 `omp`、`pi`、`claude`、`codex`。AI 仅在明确动作（生成提交说明、解决冲突）时调用，不会后台静默请求。
 
 ## 可选 LSP
 
-在 **设置 → 可选代码智能 (LSP)** 中启用。只有打开匹配文件时才会启动对应语言服务。可以在配置中覆盖命令：
+在 **设置 → 通用 → 启用语言服务** 中开启。只有打开匹配文件时才会启动对应语言服务，可在配置中覆盖命令：
 
 ```json
 {
@@ -208,14 +184,6 @@ scripts/package-macos-app.sh build/out target/release/nemorous
 ```
 
 Linux 和 Windows 的 Rust 入口见[平台构建说明](platforms/README.md)。
-
-## 工程说明
-
-- 应用状态、Git 操作和 NSH 原生界面均由 Rust 实现。
-- Git 操作走 Git CLI，兼容 credential helper 与现有 Git 配置。
-- AI 与 LSP 请求带超时和结果上限。
-- CI 在 macOS 运行 Rust 测试并构建应用包，在 Linux 和 Windows 检查 Rust 核心模块。
-- macOS 发布工作流生成签名更新清单与安装包。见[发布流程](CONTRIBUTING.md#release-process)。
 
 ## 安全
 

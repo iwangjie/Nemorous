@@ -4,9 +4,9 @@
 
 # Nemorous
 
-### Multi-repository Git, without the tab maze
+### A lightweight code reviewer for the AI era
 
-A native, keyboard-first Git cockpit for workspaces where one change spans several repositories.
+Native, keyboard-first diff review, code navigation, and Git workflow — built in Rust for reviewing AI-generated and human-written changes fast.
 
 [![Release](https://img.shields.io/github/v/release/iwangjie/Nemorous?label=release&color=10B981)](https://github.com/iwangjie/Nemorous/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/iwangjie/Nemorous/ci.yml?branch=main&label=CI&color=10B981)](https://github.com/iwangjie/Nemorous/actions/workflows/ci.yml)
@@ -21,6 +21,7 @@ A native, keyboard-first Git cockpit for workspaces where one change spans sever
 <br>
 
 **[Download](https://github.com/iwangjie/Nemorous/releases/latest)** &nbsp;·&nbsp;
+**[Why Nemorous](#why-nemorous)** &nbsp;·&nbsp;
 **[Features](#features)** &nbsp;·&nbsp;
 **[Screenshots](#screenshots)** &nbsp;·&nbsp;
 **[Install](#install)** &nbsp;·&nbsp;
@@ -34,72 +35,57 @@ A native, keyboard-first Git cockpit for workspaces where one change spans sever
 
 ## Why Nemorous
 
-Modern products are rarely one repository. A feature can touch an API, a billing service, a shared library and a deployment gateway. Switching between IDE windows to keep branches, stashes, diffs and commits aligned is slow and easy to get wrong.
+AI coding agents can produce hundreds of lines of changes in seconds. The bottleneck is no longer typing — it is **reviewing, verifying, and landing** code with confidence.
 
-Nemorous puts the whole workspace in one place:
+Full IDEs are heavy when all you want is to inspect diffs, trace context, tweak a line, and commit. Plain `git diff` or web PR views lack instant source jumping, micro-editing, and hunk/line staging.
 
-- **One branch matrix** for every repository, with presets for repeatable feature stacks.
-- **One changes tree** with staged/unstaged separation, hunk and line staging.
-- **One commit flow** with optional AI-generated messages and batch commit/push.
-- **One history view** with interactive rebase, reflog, worktrees and explicit merge strategies.
-- **One code surface** with optional LSP diagnostics, references, quick fixes and formatting.
-- **GitHub review** with pull requests and CI results.
+Nemorous is a **lightweight, native code reviewer** built for this workflow:
 
-The current application is built in Rust with the [NSH](https://github.com/longbridge/nsh) native desktop toolkit.
+- **Instant review loop**: IDEA-style staged/unstaged tree, side-by-side or unified diff with synchronized scrolling, syntax highlighting, and inline micro-editing.
+- **Seamless diff-to-source**: Jump straight from any diff line to full file context (`F4`), inspect blame or local history, and hop back (`⌘[`) without losing your place.
+- **Surgical staging**: Stage, unstage, or roll back individual hunks and selected lines directly from the diff view.
+- **Fast code exploration**: File tree, global search, `path:line:column` navigation, bookmarks, and optional on-demand LSP (off by default).
+- **Complete Git & PR cockpit**: Commit history across branches, interactive rebase, reflog, branch matrix, GitHub PR/CI views, and a multi-tab terminal.
+- **Multi-repo ready**: Scales cleanly from a single repository to multi-repository workspaces when a change spans services.
+
+Built in Rust with the [NSH](https://github.com/longbridge/nsh) native desktop toolkit.
 
 ## Features
 
-### Multi-repository workflow
-- Branch matrix with ahead/behind, dirty flags and one-click switching.
-- Branch presets and per-repository targeting.
-- Safe pull with automatic stash/pop and fast-forward-only updates.
-- Batch fetch, pull, commit and push with per-repository results.
+### Diff & Code Review
+- IDEA-style separated **Staged** and **Unstaged** change trees with tri-state checkboxes and keyboard navigation.
+- Side-by-side and unified diff modes with synchronized vertical & horizontal scrolling, unchanged-region folding, and whitespace visualization.
+- Stage, unstage, or revert by file, hunk, or selected lines directly inside the diff view.
+- Direct micro-editing inside the diff pane with undo/redo, local file history, and `F4` / `⌘[` / `⌘]` jump-to-source navigation.
+- `F7` / `⇧F7` difference stepping that flows across file boundaries.
 
-### Changes and commits
-- IDEA-style staged/unstaged tree with tri-state checkboxes and keyboard navigation.
-- Side-by-side or unified diff, syntax highlighting, micro-editing and local history.
-- Stage or unstage hunks and selected lines from the Diff view.
-- Optional AI commit message generation grounded in the selected patches.
-- Amend, revert, cherry-pick, change lists and commit-message history.
+### Code Navigation & Optional LSP
+- Fast file tree, command palette (`⌘⇧P`), go-to-file (`⌘⇧O` with `path:line:column`), recent files/locations, and global text/regex search (`⌘⇧F`).
+- Trackpad pinch-to-zoom font scaling with preserved syntax highlighting.
+- **LSP is optional and off by default**, keeping startup instant on large codebases. Enable it in Settings to get completion, hover, go-to-definition, references, diagnostics, inlay hints, formatting, and workspace rename for Go, TypeScript/JavaScript, Python, Rust, C/C++, and Java.
 
-### History and recovery
-- Global commit forest across repositories.
-- Interactive rebase plan: pick, squash, reword, drop and reorder.
-- Reflog browser with soft / mixed / hard / keep reset and confirmation.
-- Explicit merge strategies: default, `--no-ff`, `--ff-only`, squash.
-- Safe force push with `--force-with-lease`.
+### Git Workflow & Recovery
+- Global commit graph/forest with multi-repository filtering, branch filtering, date/path filters, and one-click **"Me"** author filtering.
+- Background `⌘T` pull with bottom-right status-bar progress and toast notifications.
+- Interactive rebase plan (pick, squash, reword, drop, reorder), reflog recovery, explicit merge strategies (`--no-ff`, `--ff-only`, squash), and `--force-with-lease` push.
 - Compare any two refs with two-dot or three-dot diff.
-- Worktree-isolated merge workflow with AI conflict resolution and verification.
+- Worktree-isolated merge workflow with optional AI conflict resolution.
 
-### Code intelligence
-LSP is **optional and off by default**, so large repositories do not pay for a language server unless you enable one.
+### AI & Terminal Integration
+- **Optional local AI CLI**: Connects to `omp`, `pi`, `claude`, or `codex` only on explicit actions (commit message generation from selected patches, merge conflict resolution) — never runs silently in the background.
+- **Multi-tab integrated terminal**: Theme-adaptive colors, accurate monospace metrics, tab management, and right-click shell restart.
+- **GitHub PR & CI**: Review pull requests, inspect check runs, and post comments right inside the workspace.
 
-When enabled, installed servers provide:
-- completion, hover and go-to-definition
-- references and quick fixes
-- live diagnostics and a Problems view
-- document formatting
-- inlay hints
-- symbol rename with workspace edits
-
-Built-in detection covers Go, TypeScript/JavaScript, Python, Rust, C/C++, and Java. Commands can be overridden in `lsp_servers` in the config file.
-
-### Workspace and security
-- Clone, initialize, import and hide repositories without leaving the app.
-- HTTPS credentials through the system Git credential helper; macOS Keychain by default.
-- SSH key listing, ed25519 generation, connection testing and SSH commit signing.
-- GPG or SSH commit signing per repository.
-- Git LFS, sparse checkout and worktree management.
-- Secrets are not written to the Nemorous config.
-
-### Integrations
-Built-in GitHub PR and CI views sit alongside the terminal and saved run, test and debug configurations.
+### Credentials & Security
+- HTTPS credentials delegated to the system Git credential helper (macOS Keychain by default).
+- SSH key listing, ed25519 generation, connection testing, and GPG/SSH commit signing.
+- Secrets and tokens are never written to Nemorous config files.
 
 ## Screenshots
 
 <table>
   <tr>
-    <td width="50%"><img src="docs/screenshots/demo_git.png" alt="Git operations with IDEA-style navigation"></td>
+    <td width="50%"><img src="docs/screenshots/demo_git.png" alt="Git history and review"></td>
     <td width="50%"><img src="docs/screenshots/demo_code.png" alt="Code explorer"></td>
   </tr>
   <tr>
@@ -120,13 +106,11 @@ macOS uses the signed update feed. The latest stable release also carries the v0
 
 ## Quick start
 
-1. Open Nemorous and select a workspace directory.
-2. Click the workspace name, then **Add repository** to clone, initialize or import a repository.
-3. Add an HTTPS token or SSH key under **Credentials** if the remote is private.
-4. Select changes, write or generate a commit message, and commit. Use **Commit and Push** for the full flow.
-5. Press `⌘9` / `Ctrl+9` for the commit history, or `⌘B` / `Ctrl+B` for the branch matrix.
-
-`mani.yaml` is optional. When present, Nemorous uses it for project names, descriptions and Mani tasks.
+1. Open Nemorous and select a repository or workspace directory.
+2. Press `⌘0` / `Ctrl+0` to inspect local changes, press `⌘D` to open the diff, and step through hunks with `F7`.
+3. Press `F4` on any line to jump into full source context, or `S` / `U` to stage and unstage changes.
+4. Write or AI-generate a commit message and press `⌘↩` to commit (`⌘⇧↩` to commit and push).
+5. Press `⌘9` for Git history, `⌘B` for the branch matrix, or `⌘⇧O` to jump to any file.
 
 ## Keyboard shortcuts
 
@@ -135,8 +119,8 @@ macOS uses the signed update feed. The latest stable release also carries the v0
 | Shortcut | Action |
 |---|---|
 | `⌘K` | Focus the commit message / open the commit view |
-| `⌘⇧K` | Push all repositories with unpushed commits |
-| `⌘T` | Update all repositories (fetch + fast-forward pull) |
+| `⌘⇧K` | Push repositories with unpushed commits |
+| `⌘T` | Pull updates in the background (progress in bottom-right status bar) |
 | `⌘↩` | Commit selected files |
 | `⌘⇧↩` | Commit and push |
 | `⌘0` / `⌘1` / `⌘9` / `⌘4` | Commit / Project / Git / Mani |
@@ -147,26 +131,21 @@ macOS uses the signed update feed. The latest stable release also carries the v0
 | `⌘L` | Go to line and column (`Ctrl+G` on Windows and Linux) |
 | `⌘F` / `⌘G` / `⇧⌘G` / `⌘R` | Find / next match / previous match / replace in the editor |
 | `⌘⌥Y` | Refresh workspace |
-| `⌘D` | Open the diff for the selected Commit file |
-| `F7` / `⇧F7` | Next / previous difference. Press again at the file boundary to switch files |
+| `⌘D` | Open the diff for the selected file |
+| `F7` / `⇧F7` | Next / previous difference (crosses file boundaries) |
 | `⌥←` / `⌥→` | Previous / next diff file |
-| `F4` / `⌘[` / `⌘]` | Jump to source / return to the diff / go forward to the source |
-| `⌘C` | Copy the selected item. Untracked Commit files use `~/…` paths and Project uses names |
-| `⌘⇧C` / `⌘⌥⇧C` | Copy absolute path / workspace path and line |
-| `⌥F1` | Open Select In and choose Project to reveal the file in the tree |
+| `F4` / `⌘[` / `⌘]` | Jump to source / return to diff / forward to source |
 | `⌘S` | Save editor or diff micro-edit |
-| `Space` | Toggle selected file |
+| `Space` | Toggle selected file checkbox |
 | `S` / `U` | Stage / unstage selected file |
 | `⌥F7` | Find references (LSP) |
 | `⌥↩` | Quick fixes / code actions (LSP) |
 | `⌘⌥L` | Reformat current file |
 | `⌘⌥Z` | Roll back selected change |
 
-Git actions are also available from the right-click menus on files, repository groups and commits.
-
 ## Optional AI
 
-Nemorous does not ship a model. It uses a locally installed CLI when you configure one:
+Nemorous does not ship a model. It uses a locally installed CLI when configured:
 
 ```json
 {
@@ -174,11 +153,11 @@ Nemorous does not ship a model. It uses a locally installed CLI when you configu
 }
 ```
 
-Supported agents: `omp`, `pi`, `claude`, `codex`. AI is used only for explicit actions such as commit-message generation or conflict resolution. It is never called in the background.
+Supported agents: `omp`, `pi`, `claude`, `codex`. AI is invoked only for explicit actions such as commit-message generation or conflict resolution, never in the background.
 
 ## Optional LSP
 
-Enable LSP under **Settings → Optional Code Intelligence (LSP)**. Servers are started only when a matching file is opened. Override a command without changing code:
+Enable LSP under **Settings → General → Enable Language Server**. Servers start only when a matching file is opened. Override commands in config without changing code:
 
 ```json
 {
@@ -192,7 +171,7 @@ Enable LSP under **Settings → Optional Code Intelligence (LSP)**. Servers are 
 
 ## Build from source
 
-Building the macOS app requires Rust 1.99+, Git and the Xcode command-line tools.
+Building the macOS app requires Rust 1.99+, Git, and Xcode command-line tools.
 
 ```bash
 git clone https://github.com/iwangjie/Nemorous.git
@@ -203,15 +182,7 @@ cargo build --locked --release --bin nemorous
 scripts/package-macos-app.sh build/out target/release/nemorous
 ```
 
-For the Linux and Windows Rust entry points, see [platform build notes](platforms/README.md).
-
-## Engineering notes
-
-- Rust owns application state, Git operations and the native NSH UI.
-- Git operations go through the Git CLI for predictable behaviour and credential-helper compatibility.
-- AI and LSP work is bounded by timeouts and result caps.
-- CI runs Rust tests and builds the app bundle on macOS. It also checks the Rust core on Linux and Windows.
-- The macOS release workflow prepares signed update manifests and packages. See the [release process](CONTRIBUTING.md#release-process).
+For Linux and Windows Rust entry points, see [platform build notes](platforms/README.md).
 
 ## Security
 
@@ -219,7 +190,7 @@ Please report vulnerabilities through [GitHub Security Advisories](https://githu
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, test expectations and code style.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, test expectations, and code style.
 
 ## License
 

@@ -2,7 +2,7 @@
 name = "nemorous"
 version = "0.10.29"
 edition = "2024"
-description = "Nemorous native multi-repo Git client and code review workspace (NSH Rust)"
+description = "A lightweight, native, keyboard-first code reviewer for the AI era (Rust + NSH)"
 license = "MIT"
 publish = false
 
