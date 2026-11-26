@@ -42,10 +42,22 @@ pub(crate) fn run_batch(
     cancel: &AtomicBool,
     parallelism: usize,
 ) -> Vec<Report> {
+    run_batch_with_progress(repos, action, cancel, parallelism, |_, _, _| {})
+}
+
+pub(crate) fn run_batch_with_progress(
+    repos: &[RepoInfo],
+    action: RemoteAction,
+    cancel: &AtomicBool,
+    parallelism: usize,
+    on_progress: impl Fn(usize, usize, &str) + Sync,
+) -> Vec<Report> {
     let next = AtomicUsize::new(0);
-    let reports = Mutex::new(Vec::with_capacity(repos.len()));
+    let completed = AtomicUsize::new(0);
+    let total = repos.len();
+    let reports = Mutex::new(Vec::with_capacity(total));
     std::thread::scope(|scope| {
-        for _ in 0..parallelism.clamp(1,32).min(repos.len()) {
+        for _ in 0..parallelism.clamp(1, 32).min(total) {
             scope.spawn(|| {
                 loop {
                     let index = next.fetch_add(1, Ordering::Relaxed);
@@ -78,6 +90,8 @@ pub(crate) fn run_batch(
                             detail,
                         },
                     ));
+                    let done = completed.fetch_add(1, Ordering::AcqRel) + 1;
+                    on_progress(done, total, repo.label());
                 }
             });
         }

@@ -1,0 +1,36 @@
+diff --git a/crates/nsh-base/src/editor/state.rs b/crates/nsh-base/src/editor/state.rs
+index 071cba4..c3c26e7 100644
+--- a/crates/nsh-base/src/editor/state.rs
++++ b/crates/nsh-base/src/editor/state.rs
+@@ -341,6 +346,18 @@ impl State {
+ 
+     /// Lays everything out and highlights again (a new text, font or
+     /// language).
++    /// Lays the rows out again, keeping the highlights (a new font changes
++    /// no token).
++    pub(crate) fn relayout_display(&mut self) {
++        let lines = self.buffer.line_count();
++        if self.folded.iter().any(|f| f.end >= lines) {
++            self.folded = fold_set::normalize(std::mem::take(&mut self.folded), lines);
++            self.display.set_folds(fold_set::outermost(&self.folded));
++        }
++        self.display.rebuild(&self.buffer);
++        self.fold_candidates = None;
++    }
++
+     pub(crate) fn relayout(&mut self) {
+         // The folds past the text's lines (a new text) go.
+         let lines = self.buffer.line_count();
+diff --git a/crates/nsh-base/src/editor/controller.rs b/crates/nsh-base/src/editor/controller.rs
+index 8b3312d..06e1c68 100644
+--- a/crates/nsh-base/src/editor/controller.rs
++++ b/crates/nsh-base/src/editor/controller.rs
+@@ -312,7 +318,7 @@ impl Ed {
+             if st.font != font {
+                 st.display.set_measure(measurer(&font));
+                 st.font = font;
+-                st.relayout();
++                st.relayout_display();
+                 drop(st);
+                 ed.bump_text();
+             }

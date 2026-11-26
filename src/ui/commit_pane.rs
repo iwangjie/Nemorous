@@ -546,7 +546,7 @@ pub fn commit_pane() -> impl IntoElement {
                     if !unstaged_repos.is_empty() {
                         sections.push(
                             render_section(
-                                "变更",
+                                "未暂存的更改",
                                 false,
                                 collapsed_unstaged,
                                 &unstaged_repos,
@@ -602,6 +602,9 @@ fn render_section(
             .items_center()
             .gap(px(5.0))
             .cursor(Cursor::Pointer)
+            .bg(p.surface2)
+            .border_b_1()
+            .border_color(p.border)
             .hover(move |s| s.bg(p.surface_hover))
             .on_press(move || {
                 app_signal().update(|s| {
@@ -622,6 +625,14 @@ fn render_section(
                 p.text_muted,
             ))
             .child(
+                view()
+                    .w(px(7.0))
+                    .h(px(7.0))
+                    .flex_none()
+                    .rounded(px(4.0))
+                    .bg(if is_staged { p.green } else { p.amber }),
+            )
+            .child(
                 text(title)
                     .text_size(px(font_size))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -629,9 +640,15 @@ fn render_section(
                     .number_of_lines(1u32),
             )
             .child(
-                text(format!("{count}"))
-                    .text_size(px(10.5))
-                    .text_color(p.text_muted),
+                view()
+                    .px(px(5.0))
+                    .rounded(px(7.0))
+                    .bg(if is_staged { p.green_soft } else { p.amber_soft })
+                    .child(
+                        text(format!("{count}"))
+                            .text_size(px(10.5))
+                            .text_color(if is_staged { p.green } else { p.amber }),
+                    ),
             )
             .into_element(),
     );

@@ -38,6 +38,10 @@ impl FontArea {
             .unwrap_or_else(|| app_signal().with(|state| self.size(&state.cfg)))
     }
 
+    pub(super) fn line_height(self) -> f32 {
+        (self.current() * 1.45).round()
+    }
+
     fn field(self, config: &mut Config) -> &mut f32 {
         match self {
             Self::Source => &mut config.editor_font_size,

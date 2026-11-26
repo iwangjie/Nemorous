@@ -1,0 +1,54 @@
+diff --git a/crates/nsh-base/src/editor/mod.rs b/crates/nsh-base/src/editor/mod.rs
+index dbc8320..9140b1c 100644
+--- a/crates/nsh-base/src/editor/mod.rs
++++ b/crates/nsh-base/src/editor/mod.rs
+@@ -647,6 +692,49 @@ impl EditorApi {
+         self.ed.visible_range()
+     }
+ 
++    /// The row at this position measured from the vertical scroll origin,
++    /// before applying the current offset. None before viewport layout.
++    pub fn scroll_y_for_position(&self, position: EditorPosition) -> Option<Points> {
++        (self.ed.viewport.get_untracked().height > px(0.0)).then(|| {
++            let state = self.ed.st.borrow();
++            self.ed.rows_top.get_untracked() + state.caret_point(state.offset_of(position)).y
++        })
++    }
++
++    /// The current vertical offset. Tracks changes when read in an effect.
++    pub fn vertical_scroll_offset(&self) -> Points {
++        self.ed.scroll_y.get()
++    }
++
++    /// The current horizontal offset. Tracks changes when read in an effect.
++    pub fn horizontal_scroll_offset(&self) -> Points {
++        self.ed.scroll_x.get()
++    }
++
++    /// Scrolls horizontally, preserving the vertical offset and selection
++    /// (ignored while lines wrap).
++    pub fn set_horizontal_scroll_offset(&self, offset: Points) {
++        if self.ed.props.soft_wrap.get_untracked() {
++            return;
++        }
++        let x = offset.max(px(0.0));
++        self.ed.scroll_x.set(x);
++        self.ed.hscroll.scroll_to(Point::new(x, px(0.0)), false);
++    }
++
++    /// The last reachable vertical offset for the current viewport.
++    pub fn max_vertical_scroll_offset(&self) -> Points {
++        (self.ed.content_height.get_untracked() - self.ed.viewport.get_untracked().height)
++            .max(px(0.0))
++    }
++
++    /// Scrolls vertically, preserving the horizontal offset and selection.
++    pub fn set_vertical_scroll_offset(&self, offset: Points) {
++        let y = offset.clamp(px(0.0), self.max_vertical_scroll_offset());
++        self.ed.scroll_y.set(y);
++        self.ed.vscroll.scroll_to(Point::new(px(0.0), y), false);
++    }
++
+     /// The primary selection's text.
+     pub fn selected_text(&self) -> String {
+         self.ed.selected_text()

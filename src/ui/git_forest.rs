@@ -41,7 +41,7 @@ impl Grouping {
 
 #[derive(Clone, Default)]
 struct Filters {
-    repo_id: String,
+    repo_ids: HashSet<String>,
     branch_name: String,
     query: Query,
 }
@@ -171,7 +171,8 @@ pub(crate) fn repository_history_changed(repo_ids: &HashSet<String>) {
     let open_log = app_signal().with_untracked(|s| s.show_git_panel && s.file_history.is_none());
     if open_log
         && forest().with_untracked(|s| {
-            s.filters.repo_id.is_empty() || repo_ids.contains(&s.filters.repo_id)
+            s.filters.repo_ids.is_empty()
+                || s.filters.repo_ids.iter().any(|id| repo_ids.contains(id))
         })
     {
         request(Request::RepositoryRefresh);
@@ -294,7 +295,7 @@ fn fetch(repos: &[RepoInfo], mut filters: Filters) -> Results {
     let mut errors = Vec::new();
     for repo in repos
         .iter()
-        .filter(|repo| filters.repo_id.is_empty() || filters.repo_id == repo.id)
+        .filter(|repo| filters.repo_ids.is_empty() || filters.repo_ids.contains(&repo.id))
     {
         match git_log_query::query(repo, &filters.query) {
             Ok(page) => {
@@ -443,6 +444,7 @@ fn text_filter(
     input_id: &'static str,
     label: &'static str,
     hint: &'static str,
+    allow_me: bool,
     read: fn(&Query) -> &String,
     write: fn(&mut Query, String),
 ) -> impl IntoElement {
@@ -484,7 +486,7 @@ fn text_filter(
                 .on_press_outside(move |_: &Point<Points>| close())
                 .child(
                     view()
-                        .w(px(245.0))
+                        .w(px(260.0))
                         .p(px(6.0))
                         .gap(px(4.0))
                         .flex_row()
@@ -493,6 +495,33 @@ fn text_filter(
                         .border_1()
                         .border_color(p.border_strong)
                         .rounded(px(5.0))
+                        .when(allow_me, |row| {
+                            row.child(
+                                super::controls::button()
+                                    .test_id("git-author-filter-me")
+                                    .label("我")
+                                    .h(px(22.0))
+                                    .px(px(7.0))
+                                    .rounded(px(4.0))
+                                    .bg(if value().as_deref() == Some("我") {
+                                        p.accent_soft
+                                    } else {
+                                        p.surface2
+                                    })
+                                    .cursor(Cursor::Pointer)
+                                    .hover(move |s| s.bg(p.surface_hover))
+                                    .on_press(move || apply("我"))
+                                    .child(
+                                        text("我")
+                                            .text_size(px(11.0))
+                                            .text_color(if value().as_deref() == Some("我") {
+                                                p.accent_soft_text
+                                            } else {
+                                                p.text_primary
+                                            }),
+                                    ),
+                            )
+                        })
                         .child(
                             super::controls::text_field(24.0, 11.0, 6.0)
                                 .test_id(input_id)
@@ -564,6 +593,7 @@ pub(super) fn controls() -> impl IntoElement {
         }), branch_menu))
         .child(text_filter(
             "git-author-filter-button", "git-author-filter", "作者", "作者姓名、邮箱或我",
+            true,
             |q| &q.author,
             |q, value| q.author = value,
         ))
@@ -572,13 +602,24 @@ pub(super) fn controls() -> impl IntoElement {
         }), period_menu))
         .child(text_filter(
             "git-path-filter-button", "git-path-filter", "路径", "仓库相对路径或 glob",
+            false,
             |q| &q.path,
             |q, value| q.path = value,
         ))
         .child(when(|| app_signal().with(|s| s.repos.len() > 1), || {
             filter_button("git-repo-filter", "仓库", || {
-                let id = forest().with(|s| s.filters.repo_id.clone());
-                app_signal().with(|s| s.repos.iter().find(|repo| repo.id == id).map(|repo| repo.label().to_owned()))
+                let ids = forest().with(|s| s.filters.repo_ids.clone());
+                if ids.is_empty() {
+                    return None;
+                }
+                app_signal().with(|s| {
+                    let selected: Vec<_> = s.repos.iter().filter(|repo| ids.contains(&repo.id)).collect();
+                    match selected.as_slice() {
+                        [] => None,
+                        [only] => Some(only.label().to_owned()),
+                        [first, ..] => Some(format!("{} 等 {} 个", first.label(), selected.len())),
+                    }
+                })
             }, repo_menu)
         }))
         .child(dynamic(|| {
@@ -589,7 +630,7 @@ pub(super) fn controls() -> impl IntoElement {
         .child(dynamic(|| {
             let active = forest().with(|s| {
                 let q = &s.filters.query;
-                !s.filters.repo_id.is_empty() || !q.branch.is_empty() || !q.text.is_empty()
+                !s.filters.repo_ids.is_empty() || !q.branch.is_empty() || !q.text.is_empty()
                     || !q.author.is_empty() || !q.path.is_empty() || q.since_days > 0
             });
             icon_action("git-clear-filters", "清除筛选", ICO_CLOSE, false, active, clear)
@@ -604,38 +645,43 @@ pub(super) fn controls() -> impl IntoElement {
 }
 
 fn open_github() {
-    let filter = forest().with_untracked(|s| s.filters.repo_id.clone());
+    let filter = forest().with_untracked(|s| s.filters.repo_ids.clone());
     let selected = app_signal().with_untracked(|s| {
         s.selected_commit.as_ref().map(|commit| commit.repo_id.clone())
     });
     let repo_id = if filter.is_empty() {
         selected.as_deref()
+    } else if let Some(sel) = selected.as_deref().filter(|id| filter.contains(*id)) {
+        Some(sel)
     } else {
-        Some(filter.as_str())
+        filter.iter().next().map(String::as_str)
     };
     super::github_panel::open_for_repository(repo_id);
 }
 
 fn repo_menu() {
-    let current = forest().with_untracked(|s| s.filters.repo_id.clone());
+    let current = forest().with_untracked(|s| s.filters.repo_ids.clone());
     let repos = app_signal().with_untracked(|s| s.repos.clone());
     let mut items = vec![
         MenuItem::new("全部仓库")
             .checked(current.is_empty())
             .on_select(|| {
                 change(|s| {
-                    s.repo_id.clear();
+                    s.repo_ids.clear();
                     s.branch_name.clear();
                     s.query.branch.clear();
                 })
             }),
     ];
     items.extend(repos.into_iter().map(|repo| {
+        let checked = current.contains(&repo.id);
         MenuItem::new(repo.label().to_owned())
-            .checked(current == repo.id)
+            .checked(checked)
             .on_select(move || {
                 change(|s| {
-                    s.repo_id = repo.id.clone();
+                    if !s.repo_ids.remove(&repo.id) {
+                        s.repo_ids.insert(repo.id.clone());
+                    }
                     s.branch_name.clear();
                     s.query.branch.clear();
                 });
@@ -703,7 +749,7 @@ fn show_branch_menu(branches: &[(RepoInfo, Vec<Branch>)]) {
     ];
     for (repo, entries) in branches
         .iter()
-        .filter(|(repo, _)| filter.repo_id.is_empty() || filter.repo_id == repo.id)
+        .filter(|(repo, _)| filter.repo_ids.is_empty() || filter.repo_ids.contains(&repo.id))
     {
         let options: Vec<_> = entries
             .iter()
@@ -711,10 +757,10 @@ fn show_branch_menu(branches: &[(RepoInfo, Vec<Branch>)]) {
                 let repo_id = repo.id.clone();
                 let branch = branch.clone();
                 MenuItem::new(branch.name.clone())
-                    .checked(filter.repo_id == repo_id && filter.query.branch == branch.full_ref)
+                    .checked(filter.repo_ids.contains(&repo_id) && filter.query.branch == branch.full_ref)
                     .on_select(move || {
                         change(|s| {
-                            s.repo_id = repo_id.clone();
+                            s.repo_ids = HashSet::from([repo_id.clone()]);
                             s.branch_name = branch.name.clone();
                             s.query.branch = branch.full_ref.clone();
                         })

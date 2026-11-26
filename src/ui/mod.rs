@@ -937,6 +937,7 @@ fn top_header_bar() -> impl IntoElement {
                     .window_drag(false)
                     .child(
                         controls::button()
+
                             .test_id("top-search-btn")
                             .w(px(26.0))
                             .h(px(26.0))
@@ -1138,6 +1139,7 @@ fn status_bar() -> impl IntoElement {
                         row.child(text("正在读取审阅内容…").test_id("diff-read-status")
                             .px(px(6.0)).text_size(px(11.0)).text_color(p.text_muted))
                     })
+                    .child(sync_dialog::status_progress())
                     .child(cursor_text.map(|pos_txt| {
                         controls::button()
                             .test_id("status-cursor-pos")
@@ -1358,9 +1360,19 @@ pub fn shell() -> impl IntoElement {
                                     .size(workbench::height)
                                     .size_range(px(130.0)..px(600.0))
                                     .on_resize(workbench::resize)
-                                    .child(workbench::layer())),
-                        )
-                        .child(when(move || show_git_memo.get(), git_pane::git_pane)),
+                                    .child(workbench::layer()))
+                                .child(resizable_panel()
+                                    .visible(move || show_git_memo.get())
+                                    .size(|| px(app_signal().with(|s| s.cfg.git_panel_height)))
+                                    .size_range(px(120.0)..px(700.0))
+                                    .on_resize(|sz: &Points| {
+                                        app_signal().update(|s| {
+                                            s.cfg.git_panel_height = sz.0.clamp(120.0, 700.0);
+                                        });
+                                        state::save_config_quiet();
+                                    })
+                                    .child(git_pane::git_pane())),
+                        ),
                 ),
         )
         .child(content_search::find_panel())

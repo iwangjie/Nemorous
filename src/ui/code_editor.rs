@@ -478,6 +478,8 @@ pub fn code_editor_pane() -> impl IntoElement {
                 })
                 .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
                 .font_size(move || px(super::font_zoom::FontArea::Source.current()))
+                .line_height(move || px(super::font_zoom::FontArea::Source.line_height()))
+                .scroll_beyond_last_line(false)
                 .search(move || {
                     app_signal().with(|s| {
                         (s.code_find_open && !s.code_search.query.is_empty()).then(|| s.code_search.clone())

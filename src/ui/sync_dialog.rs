@@ -1,11 +1,13 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use std::time::Duration;
 
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
+use super::icons::{self, ICO_CLOSE};
 use crate::git::RepoInfo;
 use crate::git_remotes::{self, RemoteAction, RemoteStatus, Report};
 use crate::state::{self, app_signal, current_palette};
@@ -21,6 +23,14 @@ struct SyncState {
     action: RemoteAction,
     stop: Arc<AtomicBool>,
     reports: Option<Vec<Report>>,
+}
+
+#[derive(Clone)]
+struct PullProgress {
+    done: usize,
+    total: usize,
+    current: String,
+    stop: Arc<AtomicBool>,
 }
 
 pub(super) fn label(action: RemoteAction) -> &'static str {
@@ -45,9 +55,26 @@ pub(super) fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
     let worker = stop.clone();
     let parallelism = app_signal().with_untracked(|s| s.cfg.parallelism());
     let dialog = global::<SyncDialog>();
+    let progress_signal = global::<Option<PullProgress>>();
+    let background = action == RemoteAction::Pull;
+    let total = repos.len();
+    let shared_progress = Arc::new(Mutex::new((0usize, String::new())));
+    let worker_progress = shared_progress.clone();
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_flag = finished.clone();
+
     if !state::run_git_action(
-        move || git_remotes::run_batch(&repos, action, &worker, parallelism),
+        move || {
+            git_remotes::run_batch_with_progress(&repos, action, &worker, parallelism, |done, _, name| {
+                let mut guard = worker_progress.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = (done, name.to_owned());
+            })
+        },
         move |reports| {
+            finished_flag.store(true, Ordering::Release);
+            if background {
+                progress_signal.set(None);
+            }
             let problems = reports
                 .iter()
                 .filter(|report| report.status == RemoteStatus::Failed)
@@ -68,6 +95,20 @@ pub(super) fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
             for report in reports.iter().filter(|report| report.status == RemoteStatus::Failed) {
                 super::workbench::runtime_log(format!("{} · {}", report.repo.label(), report.detail));
             }
+            let toast_msg = if background && reports.len() == 1 {
+                let report = &reports[0];
+                format!("拉取{}：{} · {}", match report.status {
+                    RemoteStatus::Done => "完成",
+                    RemoteStatus::Skipped => "已跳过",
+                    RemoteStatus::Failed => "失败",
+                    RemoteStatus::Cancelled => "已取消",
+                }, report.repo.label(), report.detail)
+            } else {
+                format!(
+                    "{}完成：成功 {done}，跳过 {skipped}，失败 {problems}，取消 {cancelled}",
+                    label(action)
+                )
+            };
             dialog.update(|dialog| {
                 if let Some(batch) = &mut dialog.state {
                     batch.reports = Some(reports);
@@ -75,24 +116,117 @@ pub(super) fn start(repos: Vec<RepoInfo>, action: RemoteAction) {
             });
             state::show_toast(
                 if problems > 0 { "warn" } else { "ok" },
-                format!(
-                    "{}完成：成功 {done}，跳过 {skipped}，失败 {problems}，取消 {cancelled}",
-                    label(action)
-                ),
+                toast_msg,
             );
         },
     ) {
         return;
     }
+
     dialog.set(SyncDialog {
-        open: true,
+        open: !background,
         state: Some(SyncState {
             action,
-            stop,
+            stop: stop.clone(),
             reports: None,
         }),
     });
-    app_signal().update(state::enter_modal_focus);
+    if background {
+        progress_signal.set(Some(PullProgress {
+            done: 0,
+            total,
+            current: String::new(),
+            stop,
+        }));
+        let finished_timer = finished.clone();
+        let timer = set_interval(Duration::from_millis(80), move || {
+            if finished_timer.load(Ordering::Acquire) {
+                return;
+            }
+            let (done, current) = {
+                let guard = shared_progress.lock().unwrap_or_else(|e| e.into_inner());
+                guard.clone()
+            };
+            progress_signal.update(|slot| {
+                if let Some(progress) = slot {
+                    progress.done = done;
+                    progress.current = current;
+                }
+            });
+        });
+        state::spawn_from_root(async move {
+            while !finished.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+            }
+            timer.cancel();
+        });
+    } else {
+        app_signal().update(state::enter_modal_focus);
+    }
+}
+
+pub(super) fn status_progress() -> impl IntoElement {
+    dynamic(|| {
+        let Some(progress) = global::<Option<PullProgress>>().get() else {
+            return view().into_element();
+        };
+        let p = current_palette();
+        let ratio = if progress.total <= 1 || progress.done == 0 {
+            0.25
+        } else {
+            (progress.done as f32 / progress.total as f32).clamp(0.12, 1.0)
+        };
+        let label = if progress.total > 1 {
+            format!("拉取中 {}/{}", progress.done, progress.total)
+        } else {
+            "拉取中…".to_owned()
+        };
+        let stop = progress.stop;
+        view()
+            .test_id("git-pull-progress")
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .mr(px(8.0))
+            .px(px(7.0))
+            .h(px(19.0))
+            .rounded(px(4.0))
+            .bg(p.surface2)
+            .child(
+                text(label)
+                    .text_size(px(10.5))
+                    .text_color(p.text_secondary)
+                    .number_of_lines(1u32),
+            )
+            .child(
+                view()
+                    .w(px(68.0))
+                    .h(px(4.0))
+                    .rounded(px(2.0))
+                    .bg(p.surface3)
+                    .overflow_hidden()
+                    .child(
+                        view()
+                            .w(px((68.0 * ratio).round()))
+                            .h(px(4.0))
+                            .rounded(px(2.0))
+                            .bg(p.accent),
+                    ),
+            )
+            .child(
+                super::controls::button()
+                    .test_id("git-pull-cancel")
+                    .label("取消拉取")
+                    .w(px(14.0))
+                    .h(px(14.0))
+                    .rounded(px(3.0))
+                    .cursor(Cursor::Pointer)
+                    .hover(move |s| s.bg(p.surface_hover))
+                    .on_press(move || stop.store(true, Ordering::Release))
+                    .child(icons::icon(ICO_CLOSE, 9.0, p.text_muted)),
+            )
+            .into_element()
+    })
 }
 
 pub(crate) fn close_active() -> bool {

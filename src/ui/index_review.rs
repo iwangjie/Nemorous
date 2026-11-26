@@ -382,6 +382,7 @@ pub(super) fn layer() -> impl IntoElement {
                             .flex_1()
                             .default_value(Some(data.texts[column].clone().into()))
                             .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
+                            .line_height(move || px(super::font_zoom::FontArea::Diff.line_height()))
                             .read_only(move || {
                                 column != 1 || !editable || signal().with(|r| r.saving)
                             })

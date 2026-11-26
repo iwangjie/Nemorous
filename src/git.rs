@@ -986,6 +986,9 @@ pub fn inspect_repo(repo: &RepoInfo) -> RepoStatus {
         };
         let x = if x == '.' { ' ' } else { x };
         let y = if y == '.' { ' ' } else { y };
+        if untracked && path.ends_with(b"/") {
+            continue;
+        }
         let path = String::from_utf8_lossy(path).into_owned();
 
         let conflict = matches!(

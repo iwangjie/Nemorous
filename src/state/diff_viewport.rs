@@ -327,6 +327,7 @@ pub(crate) fn sync_diff_scroll(tab: EditorTabKind, old: Rc<EditorApi>, new: Rc<E
                 .map(|diff| (diff.revision, s.cfg.diff_collapse_unchanged))
         })
     });
+    let (old_x, new_x) = (old.clone(), new.clone());
     let previous = stored(None);
     effect(move || {
         let Some(settings) = settings.get() else {
@@ -379,6 +380,24 @@ pub(crate) fn sync_diff_scroll(tab: EditorTabKind, old: Rc<EditorApi>, new: Rc<E
         previous.replace(Some((settings, offsets)));
         companion.invalidate_hover();
         companion.set_vertical_scroll_offset(target_y);
+    });
+    let horizontal = stored(None::<(Points, Points)>);
+    effect(move || {
+        if settings.get().is_none() {
+            horizontal.replace(None);
+            return;
+        }
+        let now = (old_x.horizontal_scroll_offset(), new_x.horizontal_scroll_offset());
+        let last = horizontal.get().unwrap_or(now);
+        horizontal.replace(Some(now));
+        let (from, to) = match (last.0 != now.0, last.1 != now.1) {
+            (true, false) => (&old_x, &new_x),
+            (false, true) => (&new_x, &old_x),
+            _ => return,
+        };
+        let x = from.horizontal_scroll_offset();
+        to.set_horizontal_scroll_offset(x);
+        horizontal.replace(Some((x, x)));
     });
 }
 

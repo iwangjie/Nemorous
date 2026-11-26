@@ -101,6 +101,7 @@ pub struct Config {
     pub diff_whitespace_mode: String,
     pub diff_show_whitespaces: bool,
     pub diff_collapse_unchanged: bool,
+    #[serde(rename = "diff_sync_scroll_v2")]
     pub diff_sync_scroll: bool,
     pub commit_left_width: f32,
     pub code_left_width: f32,
@@ -146,7 +147,7 @@ impl Default for Config {
             diff_whitespace_mode: "none".to_string(),
             diff_show_whitespaces: false,
             diff_collapse_unchanged: false,
-            diff_sync_scroll: false,
+            diff_sync_scroll: true,
             commit_left_width: 320.0,
             code_left_width: 260.0,
             git_panel_height: 290.0,

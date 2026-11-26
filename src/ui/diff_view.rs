@@ -1092,6 +1092,7 @@ fn render_side_by_side_diff(
                         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
                         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
                         .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
+                        .line_height(move || px(super::font_zoom::FontArea::Diff.line_height()))
                         .decorations(move || old_decs.get())
                         .search(move || diff_search(tab, Some(DiffSide::Old)))
                         .on_focus(move || {
@@ -1199,6 +1200,7 @@ fn render_side_by_side_diff(
                         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
                         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
                         .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
+                        .line_height(move || px(super::font_zoom::FontArea::Diff.line_height()))
                         .decorations(move || new_decs.get())
                         .search(move || diff_search(tab, Some(DiffSide::New)))
                         .on_focus(move || {
@@ -1358,6 +1360,7 @@ fn render_single_column_diff(
         .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
         .show_whitespaces(move || app_signal().with(|s| s.cfg.diff_show_whitespaces))
         .font_size(move || px(super::font_zoom::FontArea::Diff.current()))
+        .line_height(move || px(super::font_zoom::FontArea::Diff.line_height()))
         .decorations(move || doc.with(|doc| doc.decorations_with_inline(inline_mode.get(), p)))
         .search(move || diff_search(tab, None))
         .on_search_change(move |res: &EditorSearchResult| record_diff_search(tab, None, res))

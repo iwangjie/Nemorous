@@ -213,6 +213,8 @@ fn split_code_pane(side: PaneId) -> impl IntoElement {
                 })
                 .soft_wrap(move || app_signal().with(|s| s.cfg.editor_soft_wrap))
                 .font_size(move || px(super::font_zoom::FontArea::Source.current()))
+                .line_height(move || px(super::font_zoom::FontArea::Source.line_height()))
+                .scroll_beyond_last_line(false)
                 .decorations(move || crate::ui::bookmarks::editor_decorations_for_split(side))
                 .search(move || {
                     app_signal().with(|s| {

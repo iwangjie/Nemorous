@@ -530,6 +530,7 @@ fn compare_side(
                 .decorations(decorations)
                 .soft_wrap(|| app_signal().with(|s| s.cfg.editor_soft_wrap))
                 .font_size(|| px(super::font_zoom::FontArea::Diff.current()))
+                .line_height(|| px(super::font_zoom::FontArea::Diff.line_height()))
                 .search(move || diff_search(EditorTabKind::Comparison, side))
                 .on_search_change(move |result: &EditorSearchResult| {
                     record_diff_search(EditorTabKind::Comparison, side, result);

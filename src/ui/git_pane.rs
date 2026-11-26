@@ -387,7 +387,7 @@ pub fn git_pane() -> impl IntoElement {
     });
     view()
         .test_id("git-bottom-pane")
-        .h(move || px(app_signal().with(|s| s.cfg.git_panel_height)))
+        .h_full()
         .w_full()
         .flex_col()
         .border_t_1()

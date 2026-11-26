@@ -4901,8 +4901,6 @@ fn ui_split_diff_synchronizes_matching_lines_on_either_pane() {
         }
         app.wait_for(&in_pane(&new, "added 001")).unwrap();
         if kind == "working" {
-            app.press("id:diff-options-btn").unwrap();
-            app.choose_menu_item("同步滚动").unwrap();
             assert!(nemorous::config::load_from(&fx.config_file).unwrap().diff_sync_scroll);
         }
         app.scroll(&old, px(1_620.0)).unwrap();
@@ -5128,6 +5126,8 @@ fn ui_working_diff_tabs_and_history_keep_independent_pane_scroll() {
 
     let left = "id:working-diff-old-editor";
     let right = "id:working-diff-new-editor";
+    app.press("id:diff-options-btn").unwrap();
+    app.choose_menu_item("同步滚动").unwrap();
     app.press_key("mod+l").unwrap();
     app.wait_for("id:goto-line-modal").unwrap();
     app.type_text("id:goto-line-input", "190:1").unwrap();

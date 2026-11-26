@@ -305,29 +305,29 @@ pub(super) fn body() -> impl IntoElement {
     let p = current_palette();
     view()
         .flex_col()
-        .gap(px(10.0))
+        .child(settings::section(
+            "自动更新",
+            vec![
+                settings::extra_toggle("自动检查更新", "auto_update", true).into_element(),
+                settings::extra_toggle("后台空闲时安装", "auto_update_idle", true).into_element(),
+                settings::extra_number("检查间隔（分钟）", "update_check_minutes", 30, 5, 1440)
+                    .into_element(),
+                settings::extra_text("更新镜像", "update_mirror", "").into_element(),
+            ],
+        ))
         .child(
             text(format!("当前版本 {}", update_runtime::current_version()))
-                .text_color(p.text_primary),
+                .text_color(p.text_secondary)
+                .text_size(px(12.0))
+                .px(px(8.0))
+                .pb(px(8.0)),
         )
-        .child(settings::extra_toggle("自动检查更新", "auto_update", true))
-        .child(settings::extra_toggle(
-            "后台空闲时安装",
-            "auto_update_idle",
-            true,
-        ))
-        .child(settings::extra_number(
-            "检查间隔（分钟）",
-            "update_check_minutes",
-            30,
-            5,
-            1440,
-        ))
-        .child(settings::extra_text("更新镜像", "update_mirror", ""))
         .child(
             view()
                 .flex_row()
                 .gap(px(5.0))
+                .px(px(8.0))
+                .pb(px(8.0))
                 .child(button("立即检查", "update-check", || check(true)))
                 .child(dynamic(|| {
                     let (pending, loading, staged) =
@@ -361,6 +361,7 @@ pub(super) fn body() -> impl IntoElement {
         .child(
             text(|| status().with(|s| s.status.clone()))
                 .test_id("update-status")
+                .px(px(8.0))
                 .text_color(p.text_muted),
         )
         .child(
@@ -372,6 +373,8 @@ pub(super) fn body() -> impl IntoElement {
                         .unwrap_or_default()
                 })
             })
+            .px(px(8.0))
+            .pt(px(8.0))
             .text_color(p.text_primary),
         )
 }

@@ -4,10 +4,12 @@ use std::path::Path;
 use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
+use super::icons::{self, ICO_BRANCH, ICO_CHECK, ICO_PLUS};
 use crate::config::BranchPreset;
 use crate::git::RepoInfo;
 use crate::git_branches::{self, BranchCandidate, BranchTarget};
 use crate::state::{self, app_signal, current_palette};
+use crate::theme::repo_badge_colors;
 
 #[derive(Clone)]
 struct BranchRow {
@@ -226,13 +228,68 @@ fn action(
         .test_id(test_id.as_ref())
         .label(label.clone())
         .cursor(Cursor::Pointer)
-        .px(px(7.0))
-        .py(px(4.0))
-        .rounded(px(4.0))
+        .h(px(26.0))
+        .px(px(9.0))
+        .rounded(px(5.0))
         .bg(p.surface2)
+        .border_1()
+        .border_color(p.border)
         .hover(move |s| s.bg(p.surface_hover))
         .on_press(handler)
-        .child(text(label).text_size(px(11.0)).text_color(p.text_primary))
+        .child(text(label).text_size(px(11.5)).text_color(p.text_control))
+}
+
+fn branch_row_button(
+    test_id: String,
+    label: String,
+    current: bool,
+    badge: Option<String>,
+    p: crate::theme::Palette,
+    handler: impl Fn() + 'static,
+) -> impl IntoElement {
+    super::controls::button()
+        .test_id(&test_id)
+        .label(label.clone())
+        .w_full()
+        .h(px(30.0))
+        .px(px(10.0))
+        .rounded(px(5.0))
+        .flex_row()
+        .items_center()
+        .justify_start()
+        .gap(px(8.0))
+        .cursor(Cursor::Pointer)
+        .bg(if current { p.accent_soft } else { transparent_black() })
+        .hover(move |s| s.bg(if current { p.accent_soft } else { p.surface_hover }))
+        .on_press(handler)
+        .child(icons::icon(
+            if current { ICO_CHECK } else { ICO_BRANCH },
+            12.0,
+            if current { p.accent_soft_text } else { p.text_muted },
+        ))
+        .child(
+            text(label)
+                .flex_1()
+                .text_left()
+                .text_size(px(12.5))
+                .font_weight(if current { FontWeight::MEDIUM } else { FontWeight::NORMAL })
+                .text_color(if current { p.accent_soft_text } else { p.text_primary })
+                .number_of_lines(1u32),
+        )
+        .when_some(badge, |row, badge| {
+            row.child(
+                view()
+                    .px(px(6.0))
+                    .py(px(1.5))
+                    .rounded(px(4.0))
+                    .bg(if current { p.green_soft } else { p.surface2 })
+                    .child(
+                        text(badge)
+                            .text_size(px(10.5))
+                            .text_color(if current { p.green } else { p.text_muted }),
+                    ),
+            )
+        })
 }
 
 fn matrix_rows() -> impl IntoElement {
@@ -242,11 +299,13 @@ fn matrix_rows() -> impl IntoElement {
         global::<Matrix>().with(|m| {
             let Some(rows) = &m.rows else {
                 return text("正在读取分支…")
+                    .text_size(px(12.5))
                     .text_color(p.text_muted)
                     .into_element();
             };
             if rows.is_empty() {
                 return text("工作区没有可用仓库")
+                    .text_size(px(12.5))
                     .text_color(p.text_muted)
                     .into_element();
             }
@@ -254,28 +313,8 @@ fn matrix_rows() -> impl IntoElement {
             let mut result = Vec::new();
             for row in rows {
                 let repo = row.repo.clone();
-                let mut entry = view()
-                    .flex_col()
-                    .py(px(8.0))
-                    .gap(px(5.0))
-                    .border_b_1()
-                    .border_color(p.border)
-                    .child(
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                text(format!("{} · {}", row.repo.label(), row.current))
-                                    .text_color(p.text_primary),
-                            )
-                            .child(action(
-                                "新建…",
-                                format!("branch-new-{}", row.repo.id),
-                                p,
-                                move || create(vec![repo.clone()]),
-                            )),
-                    );
+                let badge = repo_badge_colors(row.repo.color_idx, p.is_dark);
+                let mut branch_list = view().flex_col().gap(px(2.0)).p(px(4.0));
                 match &row.branches {
                     Ok(branches) => {
                         for branch in branches {
@@ -290,15 +329,10 @@ fn matrix_rows() -> impl IntoElement {
                                 .push(row.repo.clone());
                             let target = BranchTarget::Existing(branch.name.clone());
                             let repo = row.repo.clone();
-                            let label = if branch.current {
-                                format!("✓ {}", branch.name)
-                            } else {
-                                branch.name.clone()
-                            };
                             let subject = branch.name.clone();
                             let current = row.current.clone();
                             let owner = repo.clone();
-                            entry = entry.child(
+                            branch_list = branch_list.child(
                                 view()
                                     .on_context_menu(move |event: &ContextMenuEvent| {
                                         if current == subject || current.is_empty() {
@@ -344,9 +378,11 @@ fn matrix_rows() -> impl IntoElement {
                                             event.page_position,
                                         );
                                     })
-                                    .child(action(
-                                        label,
+                                    .child(branch_row_button(
                                         format!("branch-switch-{}-{}", row.repo.id, branch.name),
+                                        branch.name.clone(),
+                                        branch.current,
+                                        branch.current.then(|| "当前".to_owned()),
                                         p,
                                         move || {
                                             state::close_active_modal();
@@ -357,31 +393,144 @@ fn matrix_rows() -> impl IntoElement {
                         }
                     }
                     Err(err) => {
-                        entry = entry.child(
+                        branch_list = branch_list.child(
                             text(err.to_string())
+                                .px(px(10.0))
+                                .py(px(6.0))
                                 .text_color(p.danger)
-                                .text_size(px(11.0)),
+                                .text_size(px(11.5)),
                         );
                     }
                 }
+                let entry = view()
+                    .flex_col()
+                    .mb(px(10.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(p.border)
+                    .overflow_hidden()
+                    .child(
+                        view()
+                            .h(px(34.0))
+                            .px(px(10.0))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .bg(p.surface2)
+                            .border_b_1()
+                            .border_color(p.border)
+                            .child(
+                                view()
+                                    .w(px(18.0))
+                                    .h(px(18.0))
+                                    .rounded(px(4.0))
+                                    .bg(badge.bg)
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text(row.repo.monogram.clone())
+                                            .text_size(px(9.5))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(badge.text),
+                                    ),
+                            )
+                            .child(
+                                text(row.repo.label().to_owned())
+                                    .text_left()
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.text_primary),
+                            )
+                            .child(
+                                view()
+                                    .px(px(6.0))
+                                    .py(px(1.5))
+                                    .rounded(px(4.0))
+                                    .bg(p.accent_soft)
+                                    .child(
+                                        text(row.current.clone())
+                                            .text_size(px(11.0))
+                                            .text_color(p.accent_soft_text),
+                                    ),
+                            )
+                            .child(view().flex_1())
+                            .child(
+                                super::controls::button()
+                                    .test_id(&format!("branch-new-{}", row.repo.id))
+                                    .label("新建…")
+                                    .cursor(Cursor::Pointer)
+                                    .h(px(22.0))
+                                    .px(px(7.0))
+                                    .gap(px(4.0))
+                                    .rounded(px(4.0))
+                                    .bg(p.surface)
+                                    .border_1()
+                                    .border_color(p.border)
+                                    .hover(move |s| s.bg(p.surface_hover))
+                                    .on_press(move || create(vec![repo.clone()]))
+                                    .child(icons::icon(ICO_PLUS, 11.0, p.text_control))
+                                    .child(
+                                        text("新建")
+                                            .text_size(px(11.0))
+                                            .text_color(p.text_control),
+                                    ),
+                            ),
+                    )
+                    .child(branch_list);
                 result.push(entry.into_element());
             }
-            let mut combined = view().flex_col().gap(px(4.0));
-            for (name, repos) in common.into_iter().filter(|(_, repos)| repos.len() > 1) {
-                let operations = repos
-                    .iter()
-                    .cloned()
-                    .map(|repo| (repo, Some(BranchTarget::Existing(name.clone()))))
-                    .collect::<Vec<_>>();
-                combined = combined.child(action(
-                    format!("切换 {name} · {} 个仓库", repos.len()),
-                    format!("branch-multi-{name}"),
-                    p,
-                    move || {
-                        state::close_active_modal();
-                        run(operations.clone());
-                    },
-                ));
+            let common_rows: Vec<_> = common
+                .into_iter()
+                .filter(|(_, repos)| repos.len() > 1)
+                .collect();
+            let mut combined = view().flex_col();
+            if !common_rows.is_empty() {
+                let mut list = view().flex_col().gap(px(2.0)).p(px(4.0));
+                for (name, repos) in common_rows {
+                    let count = repos.len();
+                    let operations = repos
+                        .into_iter()
+                        .map(|repo| (repo, Some(BranchTarget::Existing(name.clone()))))
+                        .collect::<Vec<_>>();
+                    list = list.child(branch_row_button(
+                        format!("branch-multi-{name}"),
+                        name.clone(),
+                        false,
+                        Some(format!("{count} 个仓库")),
+                        p,
+                        move || {
+                            state::close_active_modal();
+                            run(operations.clone());
+                        },
+                    ));
+                }
+                combined = combined.child(
+                    view()
+                        .flex_col()
+                        .mb(px(12.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(p.border)
+                        .overflow_hidden()
+                        .child(
+                            view()
+                                .h(px(30.0))
+                                .px(px(10.0))
+                                .flex_row()
+                                .items_center()
+                                .bg(p.surface2)
+                                .border_b_1()
+                                .border_color(p.border)
+                                .child(
+                                    text("跨仓库批量切换")
+                                        .text_left()
+                                        .text_size(px(11.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(p.text_secondary),
+                                ),
+                        )
+                        .child(list),
+                );
             }
             view()
                 .flex_col()
@@ -404,63 +553,96 @@ pub(super) fn layer() -> impl IntoElement {
         view()
             .absolute()
             .inset_0()
-            .bg(rgba(0x00000070))
+            .bg(rgba(0x00000078))
+            .p(px(14.0))
             .items_center()
             .justify_center()
             .child(
                 view()
                     .test_id("branch-matrix")
-                    .w(px(600.0))
-                    .h(px(460.0))
-                    .px(px(15.0))
-                    .py(px(12.0))
-                    .gap(px(8.0))
-                    .rounded(px(8.0))
+                    .w_full()
+                    .h_full()
+                    .max_w(px(680.0))
+                    .max_h(px(540.0))
+                    .rounded(px(9.0))
                     .bg(p.surface)
                     .border_1()
                     .border_color(p.border_strong)
                     .flex_col()
-                    .child(
-                        text("分支矩阵")
-                            .text_size(px(14.0))
-                            .text_color(p.text_primary),
-                    )
-                    .child(
-                        super::controls::text_field(30.0, 12.0, 8.0)
-                            .test_id("branch-filter-input")
-                            .auto_focus(true)
-                            .rounded(px(4.0))
-                            .bg(p.surface2)
-                            .text_color(p.text_primary)
-                            .placeholder("搜索分支或仓库…")
-                            .value(|| global::<BranchFilter>().with(|f| f.0.clone()))
-                            .on_change(|query: &str| {
-                                global::<BranchFilter>().set(BranchFilter(query.to_owned()))
-                            }),
-                    )
+                    .overflow_hidden()
                     .child(
                         view()
                             .flex_row()
-                            .gap(px(5.0))
-                            .child(action(
-                                "在所有仓库新建…",
-                                "branch-new-all",
-                                p,
-                                move || create(repos.clone()),
-                            ))
-                            .child(action("分支组合", "branch-presets", p, open_presets))
-                            .child(action(
-                                "全部回默认分支",
-                                "branch-default-all",
-                                p,
-                                move || {
-                                    state::close_active_modal();
-                                    run(reset.iter().cloned().map(|repo| (repo, None)).collect());
-                                },
-                            ))
+                            .flex_none()
+                            .h(px(44.0))
+                            .px(px(16.0))
+                            .items_center()
+                            .border_b_1()
+                            .border_color(p.border)
+                            .child(
+                                text("分支矩阵")
+                                    .flex_1()
+                                    .text_left()
+                                    .text_size(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.text_primary),
+                            )
                             .child(action("关闭", "branch-close", p, state::close_active_modal)),
                     )
-                    .child(scroll().flex_1().child(matrix_rows())),
+                    .child(
+                        view()
+                            .flex_col()
+                            .flex_none()
+                            .gap(px(8.0))
+                            .px(px(16.0))
+                            .py(px(10.0))
+                            .bg(p.rail_bg)
+                            .border_b_1()
+                            .border_color(p.border)
+                            .child(
+                                super::controls::text_field(32.0, 12.5, 8.0)
+                                    .test_id("branch-filter-input")
+                                    .auto_focus(true)
+                                    .rounded(px(5.0))
+                                    .bg(p.surface)
+                                    .border_1()
+                                    .border_color(p.border)
+                                    .text_color(p.text_primary)
+                                    .placeholder("搜索分支或仓库…")
+                                    .value(|| global::<BranchFilter>().with(|f| f.0.clone()))
+                                    .on_change(|query: &str| {
+                                        global::<BranchFilter>()
+                                            .set(BranchFilter(query.to_owned()))
+                                    }),
+                            )
+                            .child(
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .child(action(
+                                        "在所有仓库新建…",
+                                        "branch-new-all",
+                                        p,
+                                        move || create(repos.clone()),
+                                    ))
+                                    .child(action("分支组合", "branch-presets", p, open_presets))
+                                    .child(action(
+                                        "全部回默认分支",
+                                        "branch-default-all",
+                                        p,
+                                        move || {
+                                            state::close_active_modal();
+                                            run(reset
+                                                .iter()
+                                                .cloned()
+                                                .map(|repo| (repo, None))
+                                                .collect());
+                                        },
+                                    )),
+                            ),
+                    )
+                    .child(scroll().flex_1().child(view().p(px(14.0)).child(matrix_rows()))),
             )
             .into_element()
     })
