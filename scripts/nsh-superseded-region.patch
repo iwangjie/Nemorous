@@ -1,0 +1,92 @@
+diff --git a/crates/nsh-core/src/core/views.rs b/crates/nsh-core/src/core/views.rs
+index ddd7d21..a025a19 100644
+--- a/crates/nsh-core/src/core/views.rs
++++ b/crates/nsh-core/src/core/views.rs
+@@ -23,7 +23,7 @@ use super::{
+ use crate::{
+     NodeId, Op, Tag, TextEngine,
+     element::{
+-        Attrs, BoundListConfig, ElNode, ListConfig, SharedString, StyleRefinement,
++        Attrs, BoundListConfig, ElNode, ListConfig, Owner, SharedString, StyleRefinement,
+         builder::BoundAttrs,
+         flow::{Region, RegionElement},
+         reactive::render_effect,
+@@ -53,6 +53,7 @@ pub(super) enum Patch {
+     /// A region's new elements.
+     Region {
+         region: u32,
++        run: Option<Owner>,
+         elements: Vec<RegionElement>,
+     },
+     /// A list's layout, its bound parts read again.
+@@ -357,9 +358,10 @@ impl<M: TextEngine> Core<M> {
+             },
+         );
+         let patches = self.components.patches.clone();
+-        region.bind(Rc::new(move |elements| {
++        region.bind(Rc::new(move |run, elements| {
+             patches.borrow_mut().push(Patch::Region {
+                 region: id,
++                run,
+                 elements,
+             });
+         }));
+@@ -509,7 +511,13 @@ impl<M: TextEngine> Core<M> {
+             return;
+         }
+         match patch {
+-            Patch::Region { region, elements } => self.reconcile_region(region, elements),
++            Patch::Region { region, run, elements } => {
++                // A replaced run's elements are dead. Applying them as an empty
++                // region would release live nodes before the new run can reuse them.
++                if run.is_none_or(|owner| owner.is_live()) {
++                    self.reconcile_region(region, elements);
++                }
++            }
+             Patch::Rows { list, count, keys } => self.set_list_rows(list, count, keys),
+             Patch::NestedAttrs { host, attrs } => {
+                 if self.is_host(host) {
+diff --git a/crates/nsh-core/src/element/flow.rs b/crates/nsh-core/src/element/flow.rs
+index 4170d65..c88ea0e 100644
+--- a/crates/nsh-core/src/element/flow.rs
++++ b/crates/nsh-core/src/element/flow.rs
+@@ -86,7 +86,7 @@ fn run_owner() -> Owner {
+ impl Region {
+     /// Makes the region a binding under the current owner: `show` gets its
+     /// elements now and each time they change.
+-    pub(crate) fn bind(&self, show: Rc<dyn Fn(Vec<RegionElement>)>) {
++    pub(crate) fn bind(&self, show: Rc<dyn Fn(Option<Owner>, Vec<RegionElement>)>) {
+         match self {
+             Region::Dynamic(f) => {
+                 let f = f.clone();
+@@ -98,7 +98,7 @@ impl Region {
+                         .into_iter()
+                         .map(|element| RegionElement::made(owner, element))
+                         .collect();
+-                    show(elements);
++                    show(Some(owner), elements);
+                 });
+             }
+             Region::If {
+@@ -122,10 +122,10 @@ impl Region {
+                             .into_iter()
+                             .map(|element| RegionElement::made(owner, element))
+                             .collect();
+-                    show(elements);
++                    show(Some(owner), elements);
+                 });
+             }
+-            Region::Each(rows) => rows.clone().bind(show),
++            Region::Each(rows) => rows.clone().bind(Rc::new(move |elements| show(None, elements))),
+             Region::Catch { view, fallback } => {
+                 let (view, fallback) = (view.clone(), fallback.clone());
+                 let failed = signal_with(None::<super::ComponentError>, SignalEquals::Never);
+@@ -148,7 +148,7 @@ impl Region {
+                     .into_iter()
+                     .map(|element| RegionElement::made(owner, element))
+                     .collect();
+-                    show(elements);
++                    show(Some(owner), elements);
+                 });
+             }
+         }
