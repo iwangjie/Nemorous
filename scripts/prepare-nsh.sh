@@ -21,7 +21,8 @@ for patch in \
     "$root/scripts/nsh-editor-scroll.patch" \
     "$root/scripts/nsh-editor-undo.patch" \
     "$root/scripts/nsh-editor-caret-timer.patch" \
-    "$root/scripts/nsh-background-test-keys.patch"; do
+    "$root/scripts/nsh-background-test-keys.patch" \
+    "$root/scripts/nsh-test-timing.patch"; do
     if ! git -C "$source_dir" apply --reverse --check "$patch" 2>/dev/null; then
         git -C "$source_dir" apply --check "$patch"
         git -C "$source_dir" apply "$patch"

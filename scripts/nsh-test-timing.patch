@@ -1,0 +1,44 @@
+diff --git a/crates/nsh-testing/src/headless/menus.rs b/crates/nsh-testing/src/headless/menus.rs
+index fccb5f1..7391c7a 100644
+--- a/crates/nsh-testing/src/headless/menus.rs
++++ b/crates/nsh-testing/src/headless/menus.rs
+@@ -9,7 +9,7 @@ use nsh_core::{
+     PayloadValue, PointerType, ROOT_ID, element::PropEnum, geometry::point, platform::Os,
+ };
+ 
+-use super::Headless;
++use super::{Headless, WAIT};
+ use crate::{menu, selector::Selector};
+ 
+ impl Headless {
+@@ -143,6 +143,13 @@ impl Headless {
+             self.choose_edit_menu_item(label)?;
+             return self.done();
+         }
++        // The press or right-click that opens the menu may still be queued
++        // in the engine: a step settles on rendered silence, which a busy
++        // app reaches before it handles the input. Wait for the menu as
++        // `waitFor` does instead of racing the engine's next batch.
++        if self.screen.menu().is_none() {
++            self.wait_until("a context menu opens", WAIT, |screen| screen.menu().is_some())?;
++        }
+         let items = self.screen.menu().ok_or("no context menu is open")?;
+         let action = menu::find(items, label)?;
+         let id = action.id;
+diff --git a/crates/nsh-testing/src/headless/mod.rs b/crates/nsh-testing/src/headless/mod.rs
+index 30622e0..40f9e23 100644
+--- a/crates/nsh-testing/src/headless/mod.rs
++++ b/crates/nsh-testing/src/headless/mod.rs
+@@ -88,7 +88,11 @@ use crate::{
+ 
+ /// How long [`Headless::wait_for`] and [`Headless::wait_until`] wait by
+ /// default, and a first render at most.
+-pub const WAIT: Duration = Duration::from_secs(5);
++///
++/// CI runners can stall for seconds on Git subprocesses and shell startup;
++/// waits return as soon as the expected view appears, so a larger budget
++/// only affects failing waits.
++pub const WAIT: Duration = Duration::from_secs(20);
+ /// How long the app must render nothing after a step for it to be done.
+ const QUIET: Duration = Duration::from_millis(100);
+ /// How long a step waits for the app to be quiet at most: an app with a
