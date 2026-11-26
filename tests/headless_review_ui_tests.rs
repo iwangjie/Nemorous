@@ -1612,7 +1612,12 @@ fn ui_local_history_empty_state_and_global_control_layout() {
     app.press_key("mod+shift+o").unwrap();
     app.type_text("id:review-picker-input", "README.md").unwrap();
     app.submit("id:review-picker-input").unwrap();
-    app.press("id:code-history-btn").unwrap();
+    app.wait_for("id:code-editor-view").unwrap();
+    for id in ["code-split-right-btn", "code-git-history-btn", "code-history-btn"] {
+        assert!(!app.screen().matches(&format!("id:{id}")).unwrap());
+    }
+    app.right_click("id:code-editor-view >> text:# Sample").unwrap();
+    app.choose_menu_item("本地历史 > 显示历史…").unwrap();
     app.wait_for("id:local-history-empty >> text:暂无快照").unwrap();
     for id in ["local-history-compare", "local-history-snapshot", "local-history-current"] {
         assert!(!app.screen().matches(&format!("id:{id}")).unwrap());
@@ -1672,7 +1677,8 @@ fn ui_local_history_restores_old_format_one_hunk_and_full_snapshot() {
     app.press_key("mod+shift+o").unwrap();
     app.type_text("id:review-picker-input", "README.md").unwrap();
     app.submit("id:review-picker-input").unwrap();
-    app.press("id:code-history-btn").unwrap();
+    app.right_click("id:code-editor-view >> text:new-a").unwrap();
+    app.choose_menu_item("本地历史 > 显示历史…").unwrap();
     app.wait_for("旧版快照").unwrap();
     app.wait_for("id:local-history-restore-hunk").unwrap();
     assert_button_centered(&app, "local-history-compare");
@@ -1686,7 +1692,8 @@ fn ui_local_history_restores_old_format_one_hunk_and_full_snapshot() {
     app.press_key("mod+c").unwrap();
     assert_eq!(app.screen().clipboard(), Some("old-a\nmiddle\nunchanged\nnew-z\n"));
 
-    app.press("id:code-history-btn").unwrap();
+    app.right_click("id:code-editor-view >> text:old-a").unwrap();
+    app.choose_menu_item("本地历史 > 显示历史…").unwrap();
     app.wait_for("id:local-history-restore-all").unwrap();
     app.press("id:local-history-restore-all").unwrap();
     app.wait_for("覆盖当前文件？").unwrap();
@@ -1726,7 +1733,8 @@ fn ui_local_history_reveals_late_changes_before_restoring_the_selected_hunk() {
     app.press_key("mod+shift+o").unwrap();
     app.type_text("id:review-picker-input", "README.md").unwrap();
     app.submit("id:review-picker-input").unwrap();
-    app.press("id:code-history-btn").unwrap();
+    app.right_click("id:code-editor-view >> text:current 001").unwrap();
+    app.choose_menu_item("本地历史 > 显示历史…").unwrap();
     app.wait_for("id:local-history-snapshot >> text:snapshot first").unwrap();
     app.wait_for("id:local-history-current >> text:current 115").unwrap();
     assert!(!app.screen().enabled("id:local-history-hunk-prev").unwrap());
@@ -2308,6 +2316,12 @@ fn ui_editor_split_shares_text_undo_and_distinct_tab_groups() {
     app.wait_for("文件历史：README.md").unwrap();
     app.press_key("mod+9").unwrap();
     app.wait_for_gone("id:git-file-history", Duration::from_secs(2)).unwrap();
+    app.press(left).unwrap();
+    app.right_click("text:line 2").unwrap();
+    app.choose_menu_item("本地历史 > 显示历史…").unwrap();
+    app.wait_for("本地历史 · README.md").unwrap();
+    app.press("id:local-history-close").unwrap();
+    app.wait_for_gone("id:local-history-modal", Duration::from_secs(2)).unwrap();
     app.press("id:split-code-merge").unwrap();
     app.wait_for_gone("id:split-editor-right", Duration::from_secs(2)).unwrap();
     app.wait_for("id:editor-tab-file-README.md").unwrap();
@@ -5577,8 +5591,8 @@ fn ui_revert_and_reflog_soft_reset_preserve_the_expected_git_state() {
     let index_tree = git(&["write-tree"]);
     fs::write(fx.repo_dir.join("README.md"), unstaged).unwrap();
 
-    app.press("id:top-git-advanced-btn").unwrap();
-    app.choose_menu_item("Reflog 与重置…").unwrap();
+    app.press("id:top-branch-button").unwrap();
+    app.choose_menu_item("Git 高级操作 > Reflog 与重置…").unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(4);
     let reset_item = loop {
         let target = app.menu().into_iter().flatten().find(|item| {
@@ -6123,8 +6137,8 @@ fn ui_repository_settings_distinguishes_git_lfs_from_repository_setup() {
     }
     let mut app = fx.start_headless(1440.0, 900.0);
     let open_repository_settings = |app: &mut Headless| {
-        app.press("id:top-git-advanced-btn").unwrap();
-        app.choose_menu_item("标签、远端、子模块与仓库配置…").unwrap();
+        app.press("id:top-branch-button").unwrap();
+        app.choose_menu_item("Git 高级操作 > 标签、远端、子模块与仓库配置…").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
         while app.menu().is_none() {
             assert!(std::time::Instant::now() < deadline, "repository settings menu did not open");
@@ -6191,6 +6205,7 @@ fn ui_branch_matrix_shortcut_filter_create_and_switch() {
     assert!(!app.screen().matches("id:branch-matrix").unwrap());
 
     app.press("id:top-branch-button").unwrap();
+    app.choose_menu_item("分支…").unwrap();
     app.press("id:branch-new-all").unwrap();
     app.wait_for("id:git-text-prompt").unwrap();
     app.type_text("id:git-text-prompt-input", "feature/local").unwrap();
@@ -6793,8 +6808,8 @@ fn ui_worktree_operations_target_the_selected_repository_and_preserve_dirty_file
 
     let mut app = fx.start_headless(1440.0, 900.0);
     let open_worktrees = |app: &mut Headless| {
-        app.press("id:top-git-advanced-btn").unwrap();
-        app.choose_menu_item("second-repo > 工作树…").unwrap();
+        app.press("id:top-branch-button").unwrap();
+        app.choose_menu_item("Git 高级操作 > second-repo > 工作树…").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
         while app.menu().is_none() {
             assert!(std::time::Instant::now() < deadline, "worktree menu did not open");
@@ -6918,8 +6933,8 @@ exec /usr/bin/git "$@"
     unsafe { std::env::set_var("PATH", path); }
 
     let mut app = fx.start_headless(1440.0, 900.0);
-    app.press("id:top-git-advanced-btn").unwrap();
-    app.choose_menu_item("工作树…").unwrap();
+    app.press("id:top-branch-button").unwrap();
+    app.choose_menu_item("Git 高级操作 > 工作树…").unwrap();
     let wait_for_file = |app: &mut Headless, name: &str| {
         let marker = fx.repo_dir.join(".git").join(name);
         let deadline = std::time::Instant::now() + Duration::from_secs(4);
@@ -7238,8 +7253,16 @@ fn ui_git_sync_reports_missing_remote_without_rolling_back_changes() {
     let fx = Fixture::new("remote-sync-report");
     let worktree = fs::read(fx.repo_dir.join("src/app.go")).unwrap();
     let mut app = fx.start_headless(1440.0, 900.0);
-    app.press("id:top-git-sync-btn").unwrap();
-    app.choose_menu_item("获取全部仓库").unwrap();
+    for id in ["top-git-advanced-btn", "top-git-sync-btn", "top-refresh-btn"] {
+        assert!(!app.screen().matches(&format!("id:{id}")).unwrap());
+    }
+    app.wait_for("id:top-search-btn").unwrap();
+    app.press("id:top-branch-button").unwrap();
+    app.choose_menu_item("获取").unwrap();
+    app.wait_for("sample-repo · 跳过").unwrap();
+    app.press("id:git-sync-close").unwrap();
+    app.press("id:top-branch-button").unwrap();
+    app.choose_menu_item("查看最近操作结果").unwrap();
     app.wait_for("sample-repo · 跳过").unwrap();
     app.press("id:git-sync-close").unwrap();
     assert_eq!(fs::read(fx.repo_dir.join("src/app.go")).unwrap(), worktree);

@@ -854,9 +854,12 @@ fn top_header_bar() -> impl IntoElement {
     let workspace = computed(|| app_signal().with(|s| {
         if s.cfg.workspace_path.is_empty() { "选择项目".to_owned() } else { basename(&s.cfg.workspace_path) }
     }));
-    let branch = computed(|| app_signal().with(|s| s.statuses.first()
-        .map(|status| status.branch.clone()).filter(|branch| !branch.is_empty())));
-    let refreshing = computed(|| app_signal().with(|s| s.is_refreshing()));
+    let branch = computed(|| app_signal().with(|s| {
+        s.statuses.first()
+            .map(|status| status.branch.clone())
+            .filter(|branch| !branch.is_empty())
+            .or_else(|| (!s.repos.is_empty()).then(|| "Git".to_owned()))
+    }));
     dynamic(move || {
         let p = current_palette();
         let bar = title_bar();
@@ -912,10 +915,10 @@ fn top_header_bar() -> impl IntoElement {
                             .rounded(px(6.0))
                             .bg(p.surface2)
                             .test_id("top-branch-button")
-                            .label("分支矩阵")
+                            .label("分支与 Git 操作")
                             .cursor(Cursor::Pointer)
                             .hover(move |s| s.bg(p.surface_hover))
-                            .on_press(branch_matrix::open)
+                            .on_press(project_menus::open_branch_menu)
                             .child(icons::icon(ICO_BRANCH, 13.0, p.accent))
                             .child(
                                 text(branch)
@@ -932,40 +935,6 @@ fn top_header_bar() -> impl IntoElement {
                     .items_center()
                     .gap(px(6.0))
                     .window_drag(false)
-                    .child(
-                        controls::button()
-                            .test_id("top-git-advanced-btn")
-                            .label("Git 高级操作")
-                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0)).cursor(Cursor::Pointer)
-                            .hover(move |s| s.bg(p.surface_hover))
-                            .on_press(git_advanced::open)
-                            .child(icons::icon(ICO_SETTINGS, 13.0, p.text_control)),
-                    )
-                    .child(
-                        controls::button()
-                            .test_id("top-git-sync-btn")
-                            .label("获取、拉取或推送")
-                            .px(px(6.0)).h(px(26.0)).rounded(px(5.0)).cursor(Cursor::Pointer)
-                            .hover(move |s| s.bg(p.surface_hover))
-                            .on_press(sync_dialog::open_menu)
-                            .child(text("同步").text_size(px(11.0)).text_color(p.text_control)),
-                    )
-                    .child(
-                        controls::button()
-                            .test_id("top-refresh-btn")
-                            .w(px(26.0))
-                            .h(px(26.0))
-                            .rounded(px(5.0))
-                            .cursor(Cursor::Pointer)
-                            .hover(move |s| s.bg(p.surface_hover))
-                            .label("刷新工作区 (⌘⌥Y)")
-                            .on_press(|| refresh_workspace_async(None))
-                            .child(dynamic(move || icons::icon(
-                                ICO_REFRESH,
-                                13.0,
-                                if refreshing.get() { p.accent } else { p.text_control },
-                            ))),
-                    )
                     .child(
                         controls::button()
                             .test_id("top-search-btn")

@@ -107,7 +107,7 @@ pub(crate) fn open_active() {
     }
 }
 
-fn open(file: WorkspaceFile) {
+pub(crate) fn open(file: WorkspaceFile) {
     let workspace = app_signal().with_untracked(|s| s.cfg.workspace_path.clone());
     let generation = signal().with_untracked(|s| s.generation.wrapping_add(1));
     signal().set(History {

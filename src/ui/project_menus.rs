@@ -247,6 +247,32 @@ fn show_log() {
     app_signal().update(|s| s.show_git_panel = true);
 }
 
+pub(super) fn open_branch_menu() {
+    let (repos, busy) = app_signal().with_untracked(|s| (s.repos.clone(), s.command_busy));
+    if repos.is_empty() {
+        return;
+    }
+    let keys = super::configured_keymap();
+    let mut items = vec![
+        menu_binding(item("分支…", false, branch_matrix::open), &keys, "branchMatrix"),
+        MenuItem::separator(),
+        sync_item(&repos, RemoteAction::Fetch, busy, &keys),
+        sync_item(&repos, RemoteAction::Pull, busy, &keys),
+        sync_item(&repos, RemoteAction::Push, busy, &keys),
+    ];
+    items.extend(sync_dialog::recent_result_item());
+    items.push(MenuItem::separator());
+    let advanced = if let [repo] = repos.as_slice() {
+        git_advanced::repo_items(repo.clone())
+    } else {
+        repos.into_iter()
+            .map(|repo| MenuItem::submenu(repo.label().to_owned(), git_advanced::repo_items(repo)))
+            .collect()
+    };
+    items.push(MenuItem::submenu("Git 高级操作", advanced).disabled(busy));
+    state::show_popup_menu(items);
+}
+
 pub(super) fn git(context: &Context, modal: bool, keys: &Keymap) -> MenuItem {
     let repos = &context.repos;
     let unavailable = modal || repos.is_empty();

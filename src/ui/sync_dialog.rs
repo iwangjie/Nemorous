@@ -130,13 +130,11 @@ pub(super) fn menu(repo: Option<RepoInfo>) -> Vec<MenuItem> {
         .collect()
 }
 
-pub(super) fn open_menu() {
-    let mut items = menu(None);
-    if global::<SyncDialog>().with_untracked(|dialog| dialog.state.is_some()) {
-        items.push(MenuItem::separator());
-        items.push(MenuItem::new("查看最近操作结果").on_select(show_existing));
-    }
-    state::show_popup_menu(items);
+pub(super) fn recent_result_item() -> Option<MenuItem> {
+    global::<SyncDialog>().with_untracked(|dialog| {
+        dialog.state.is_some()
+            .then(|| MenuItem::new("查看最近操作结果").on_select(show_existing))
+    })
 }
 
 fn button(label: &'static str, id: &'static str, handler: impl Fn() + 'static) -> impl IntoElement {

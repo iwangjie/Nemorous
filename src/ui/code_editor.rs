@@ -5,8 +5,7 @@ use nsh_core::element::desktop::MenuItem;
 use nsh_core::prelude::*;
 
 use crate::state::{
-    self, FocusZone, app_signal, current_palette, editor_refs_signal, open_local_history_for_active,
-    save_active_code_tab_now,
+    self, FocusZone, app_signal, current_palette, editor_refs_signal, save_active_code_tab_now,
 };
 use crate::ui::commit_pane::build_location_menu_items;
 use crate::ui::icons::{self, *};
@@ -44,6 +43,12 @@ pub(super) fn show_context_menu(ev: &EditorContextMenuEvent) {
                     .on_select(move || super::revision_picker::open(revision.clone())),
             ],
         ));
+        let local_history = f.clone();
+        items.push(MenuItem::submenu(
+            "本地历史",
+            [MenuItem::new("显示历史…")
+                .on_select(move || crate::history_runtime::open(local_history.clone()))],
+        ));
         items.extend(super::blame_view::menu_items(ev.position.line + 1));
         let breakpoint_file = f.clone();
         let line = ev.position.line + 1;
@@ -68,8 +73,13 @@ pub fn code_editor_pane() -> impl IntoElement {
     let ed_ref = component_ref::<Editor>();
     let find_input = element_ref();
     let split = computed(|| app_signal().with(|s| s.code_split.is_some()));
-    let editor_options = computed(|| app_signal().with(|s| {
-        (s.cfg.editor_soft_wrap, s.cfg.editor_font_size, s.cfg.format_on_save)
+    let file_status = computed(|| app_signal().with(|s| {
+        s.code_tabs.get(s.active_code_tab_idx).map(|tab| {
+            let disk_notice = tab.disk_state.notice();
+            let readonly_reason = (!tab.editable && disk_notice.is_none())
+                .then(|| tab.readonly_reason.clone().unwrap_or_else(|| "只读".to_owned()));
+            (tab.is_dirty(), disk_notice, readonly_reason)
+        })
     }));
     editor_refs_signal().update(|r| {
         r.code = Some(ed_ref);
@@ -142,17 +152,15 @@ pub fn code_editor_pane() -> impl IntoElement {
         .flex_col()
         .overflow_hidden()
         .bg(move || current_palette().surface)
-        // 顶栏
+        // 只在需要提示文件状态或保存时显示。
         .child(dynamic(move || {
-            let p = current_palette();
-            let tab = app_signal().with(|s| s.code_tabs.get(s.active_code_tab_idx).cloned());
-            let Some(tab) = tab else {
+            let Some((is_dirty, disk_notice, readonly_reason)) = file_status.get() else {
                 return view().h(px(0.0)).into_element();
             };
-            let is_dirty = tab.is_dirty();
-            let show_opts = app_signal().with(|s| s.show_code_options);
-            let wf = tab.file.clone();
-            let line_1 = tab.cursor.line + 1;
+            if !is_dirty && disk_notice.is_none() && readonly_reason.is_none() {
+                return view().h(px(0.0)).into_element();
+            }
+            let p = current_palette();
 
             view()
                 .h(px(38.0))
@@ -168,45 +176,6 @@ pub fn code_editor_pane() -> impl IntoElement {
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
-                        .overflow_hidden()
-                        .child(
-                            view()
-                                .px(px(6.0))
-                                .py(px(2.0))
-                                .rounded(px(4.0))
-                                .bg(p.accent_soft)
-                                .child(
-                                    text(wf.repo_name.clone())
-                                        .text_size(px(10.5))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(p.accent_soft_text),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .cursor(Cursor::Pointer)
-                                .on_context_menu({
-                                    let f = wf.clone();
-                                    move |e: &ContextMenuEvent| {
-                                        let items = build_location_menu_items(
-                                            f.repo_id.clone(),
-                                            f.repo_path.clone(),
-                                            f.rel_path.clone(),
-                                            f.abs_path.clone(),
-                                            line_1,
-                                            false,
-                                        );
-                                        crate::state::show_popup_menu_at(items, e.page_position);
-                                    }
-                                })
-                                .child(
-                                    text(wf.rel_path.clone())
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(p.text_primary)
-                                        .number_of_lines(1u32),
-                                ),
-                        )
                         .child(is_dirty.then(|| {
                             view()
                                 .test_id("code-dirty-badge")
@@ -221,7 +190,7 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         .text_color(p.amber),
                                 )
                         }))
-                        .child(tab.disk_state.notice().map(|notice| {
+                        .child(disk_notice.map(|notice| {
                             view()
                                 .test_id("code-disk-state")
                                 .px(px(6.0))
@@ -230,20 +199,14 @@ pub fn code_editor_pane() -> impl IntoElement {
                                 .bg(p.amber_soft)
                                 .child(text(notice).text_size(px(10.0)).text_color(p.amber))
                         }))
-                        .child((!tab.editable && tab.disk_state.notice().is_none()).then(|| {
+                        .child(readonly_reason.map(|reason| {
                             view()
                                 .px(px(6.0))
                                 .py(px(2.0))
                                 .rounded(px(4.0))
                                 .bg(p.surface2)
                                 .child(
-                                    text(
-                                        tab.readonly_reason
-                                            .clone()
-                                            .unwrap_or_else(|| "只读".to_string()),
-                                    )
-                                    .text_size(px(10.0))
-                                    .text_color(p.text_muted),
+                                    text(reason).text_size(px(10.0)).text_color(p.text_muted),
                                 )
                         })),
                 )
@@ -271,153 +234,9 @@ pub fn code_editor_pane() -> impl IntoElement {
                                         .text_color(p.accent_text),
                                 )
                         }))
-                        .child((!split.get()).then(|| {
-                            super::controls::button()
-                                .test_id("code-split-right-btn")
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded(px(5.0))
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .label("向右拆分")
-                                .on_press(crate::code_split_runtime::split_active)
-                                .child(icons::icon(ICO_COLUMNS, 13.0, p.text_control))
-                        }))
-                        .child(
-                            super::controls::button()
-                                .test_id("code-git-history-btn")
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded(px(5.0))
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .label("查看 Git 文件历史")
-                                .on_press(move || super::revision_picker::show_history(wf.clone()))
-                                .child(icons::icon(ICO_BRANCH, 13.0, p.text_control)),
-                        )
-                        .child(
-                            super::controls::button()
-                                .test_id("code-history-btn")
-                                .h(px(24.0))
-                                .px(px(8.0))
-                                .rounded(px(5.0))
-                                .bg(p.surface2)
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .on_press(open_local_history_for_active)
-                                .child(text("历史").text_size(px(11.0)).text_color(p.text_control)),
-                        )
-                        .child(
-                            super::controls::button()
-                                .w(px(24.0))
-                                .h(px(24.0))
-                                .rounded(px(5.0))
-                                .bg(if show_opts { p.accent_soft } else { transparent_black() })
-                                .cursor(Cursor::Pointer)
-                                .hover(move |s| s.bg(p.surface_hover))
-                                .label("显示选项")
-                                .on_press(|| {
-                                    app_signal().update(|s| s.show_code_options = !s.show_code_options);
-                                })
-                                .child(icons::icon(ICO_MORE, 13.0, p.text_control)),
-                        ),
                 )
                 .into_element()
         }))
-        // 显示选项折叠栏
-        .child(when(
-            move || app_signal().with(|s| s.show_code_options),
-            move || {
-                dynamic(move || {
-                    let p = current_palette();
-                    let (wrap, size, format_on_save) = editor_options.get();
-                    view()
-                        .h(px(32.0))
-                        .px(px(12.0))
-                        .gap(px(8.0))
-                        .flex_row()
-                        .items_center()
-                        .bg(p.rail_bg)
-                        .border_b_1()
-                        .border_color(p.border)
-                        .child(text("显示选项：").text_size(px(11.0)).text_color(p.text_muted))
-                        .child(
-                            super::controls::button()
-                                .test_id("code-format-on-save")
-                                .h(px(22.0))
-                                .px(px(8.0))
-                                .rounded(px(4.0))
-                                .bg(if format_on_save { p.accent_soft } else { p.surface2 })
-                                .cursor(Cursor::Pointer)
-                                .on_press(|| {
-                                    app_signal().update(|s| s.cfg.format_on_save = !s.cfg.format_on_save);
-                                    state::save_config_quiet();
-                                })
-                                .child(text("保存时格式化").text_size(px(11.0)).text_color(p.text_control)),
-                        )
-                        .child(
-                            super::controls::text_field(23.0, 11.0, 6.0)
-                                .test_id("code-format-command")
-                                .flex_1()
-                                .rounded(px(4.0))
-                                .bg(p.surface)
-                                .text_color(p.text_primary)
-                                .placeholder("格式化命令（留空按语言选择）")
-                                .value(|| app_signal().with(|s| s.cfg.format_command.clone()))
-                                .on_change(|value: &str| {
-                                    app_signal().update(|s| s.cfg.format_command = value.to_string());
-                                })
-                                .on_focus(|| state::set_text_input_focused(true))
-                                .on_blur(|| {
-                                    state::set_text_input_focused(false);
-                                    state::save_config_quiet();
-                                })
-                                .on_submit(|_: &str| state::save_config_quiet()),
-                        )
-                        .child(
-                            super::controls::button()
-                                .h(px(22.0))
-                                .px(px(8.0))
-                                .rounded(px(4.0))
-                                .bg(p.surface2)
-                                .cursor(Cursor::Pointer)
-                                .on_press(|| {
-                                    app_signal().update(|s| {
-                                        s.cfg.editor_soft_wrap = !s.cfg.editor_soft_wrap;
-                                    });
-                                    state::save_config_quiet();
-                                })
-                                .child(
-                                    text(if wrap { "自动换行：开" } else { "自动换行：关" })
-                                        .text_size(px(11.0))
-                                        .text_color(p.text_control),
-                                ),
-                        )
-                        .child(
-                            super::controls::button()
-                                .h(px(22.0))
-                                .px(px(8.0))
-                                .rounded(px(4.0))
-                                .bg(p.surface2)
-                                .cursor(Cursor::Pointer)
-                                .on_press(|| {
-                                    app_signal().update(|s| {
-                                        s.cfg.editor_font_size += 1.0;
-                                        if s.cfg.editor_font_size > 17.0 {
-                                            s.cfg.editor_font_size = 12.0;
-                                        }
-                                    });
-                                    state::save_config_quiet();
-                                })
-                                .child(
-                                    text(format!("字号：{:.0}pt", size))
-                                        .text_size(px(11.0))
-                                        .text_color(p.text_control),
-                                ),
-                        )
-                })
-            },
-        ))
         // 查找与替换条（保持输入框实例稳定，避免打字重建丢失焦点！）
         .child(when(
             move || app_signal().with(|s| s.code_find_open),

@@ -549,7 +549,6 @@ pub struct AppState {
     pub working_diff: Option<WorkingDiffSession>,
     pub(crate) parked_working_diff_undo: Vec<ParkedWorkingDiffUndo>,
     pub commit_diff: Option<CommitDiffSession>,
-    pub show_code_options: bool,
 
     // 查找替换条状态
     pub diff_find_open: bool,
@@ -780,7 +779,6 @@ impl AppState {
             working_diff: None,
             parked_working_diff_undo: Vec::new(),
             commit_diff: None,
-            show_code_options: false,
             diff_find_open: false,
             diff_search: EditorSearch::default(),
             diff_find_side: DiffSide::New,

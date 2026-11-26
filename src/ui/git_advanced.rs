@@ -1016,17 +1016,3 @@ pub(super) fn repo_items(repo: RepoInfo) -> Vec<MenuItem> {
             .on_select(move || inspect_admin(admin.clone())),
     ]
 }
-
-pub(super) fn open() {
-    let repos = app_signal().with_untracked(|s| s.repos.clone());
-    if let [repo] = repos.as_slice() {
-        state::show_popup_menu(repo_items(repo.clone()));
-    } else {
-        state::show_popup_menu(
-            repos
-                .into_iter()
-                .map(|repo| MenuItem::submenu(repo.label().to_owned(), repo_items(repo)))
-                .collect(),
-        );
-    }
-}

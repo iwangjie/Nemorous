@@ -345,7 +345,7 @@ mod macos {
         pump(120);
     }
 
-    fn choose_diff_context_item(window: &NSWindow, editor: &NSView, label: &'static str) {
+    fn choose_context_item(window: &NSWindow, editor: &NSView, label: &'static str) {
         choose_native_menu_item(label, || {
             let bounds = editor.bounds();
             let y = if editor.isFlipped() {
@@ -354,7 +354,7 @@ mod macos {
                 bounds.size.height - 9.0
             };
             let point = editor.convertPoint_toView(
-                NSPoint::new(bounds.origin.x + 96.0, bounds.origin.y + y),
+                NSPoint::new(bounds.origin.x + 96.0_f64.min(bounds.size.width / 2.0), bounds.origin.y + y),
                 None,
             );
             for (kind, pressure) in [(NSEventType::RightMouseDown, 1.0), (NSEventType::RightMouseUp, 0.0)] {
@@ -670,7 +670,7 @@ mod macos {
         println!("BATCH2_NATIVE_KEYBOARD double-Shift Control-release Action-Search Recent-Files ok");
 
         assert!(view_with_id(root, "code-editor-view").is_some_and(|editor| a11y_contains(&editor, "editing selection")));
-        click("code-split-right-btn", 1);
+        choose_context_item(window, &view_with_id(root, "editor-tab-file-tracked.txt").unwrap(), "向右拆分");
         wait("split-editor-left");
         wait("split-editor-right");
         click("split-tab-right-file::repo::tracked.txt", 1);
@@ -695,7 +695,7 @@ mod macos {
         wait("code-editor-view");
         println!("BATCH2_NATIVE_SPLIT_SHARED_UNDO ok");
 
-        click("code-git-history-btn", 1);
+        choose_context_item(window, &view_with_id(root, "code-editor-view").unwrap(), "查看文件历史");
         wait("git-bottom-pane");
         wait("git-file-history");
         wait("git-commit-file-tracked.txt");
@@ -745,7 +745,7 @@ mod macos {
         wait(editor);
         assert!(view_with_id(root, "diff-stage-hunk").is_none());
         assert!(view_with_id(root, "diff-include-hunk").is_none());
-        choose_diff_context_item(window, &view_with_id(root, editor).unwrap(), "暂存此块");
+        choose_context_item(window, &view_with_id(root, editor).unwrap(), "暂存此块");
         wait_until("only the selected hunk entered the real index", Duration::from_secs(6), || {
             let staged = git_run(repo, &["show", ":batch3-ticket.txt"]);
             staged.contains("edited first") && !staged.contains("edited last")
@@ -759,7 +759,7 @@ mod macos {
             view_with_id(root, "diff-old-pane-bar").is_some_and(|view| a11y_contains(&view, "HEAD"))
         });
         wait(editor);
-        choose_diff_context_item(window, &view_with_id(root, editor).unwrap(), "取消暂存此块");
+        choose_context_item(window, &view_with_id(root, editor).unwrap(), "取消暂存此块");
         wait_until("selected staged hunk was reverted from the index", Duration::from_secs(6), || {
             !git_run(repo, &["show", ":batch3-ticket.txt"]).contains("edited first")
         });
@@ -959,7 +959,7 @@ mod macos {
         });
         assert!(view_with_id(root, "code-return-diff-btn").is_none());
         assert!(view_with_id(root, "code-language-tools").is_none());
-        click("code-git-history-btn");
+        choose_context_item(window, &view_with_id(root, "code-editor-view").unwrap(), "查看文件历史");
         wait_until("file history opened", Duration::from_secs(6), || {
             view_with_id(root, "git-file-history").is_some()
                 && view_with_id(root, "git-file-view-options").is_some()
@@ -1381,7 +1381,7 @@ exec /usr/bin/git "$@"
         println!("NATIVE_FILE_PICKER_SHORTCUT_SCOPE PASS");
 
         let revision_row = wait("git-commit-file-config/development/application.yml");
-        choose_diff_context_item(window, &revision_row, "打开仓库版本");
+        choose_context_item(window, &revision_row, "打开仓库版本");
         wait_until("repository version opened read-only", Duration::from_secs(6), || {
             view_with_id(root, "code-editor-view").is_some_and(|editor| a11y_contains(&editor, "review: true"))
                 && a11y_contains(root, "为只读视图")
@@ -1448,7 +1448,7 @@ exec /usr/bin/git "$@"
 
         send_click(window, &wait("diff-jump-source-btn"), 1);
         let source = wait("code-editor-view");
-        choose_diff_context_item(window, &source, "显示整文件 Git Blame");
+        choose_context_item(window, &source, "显示整文件 Git Blame");
         wait("blame-line-1");
         let last_visible_blame_line = || {
             let mut ids = Vec::new();
@@ -1800,7 +1800,7 @@ exec /usr/bin/git "$@"
         send_key(app, window, "d", "d", 2, command);
         wait_for_marker("working-diff-unified-editor", "+ new B");
         let unified = wait("working-diff-unified-editor");
-        choose_diff_context_item(window, &unified, "暂存选中行");
+        choose_context_item(window, &unified, "暂存选中行");
         wait("change-row-staged-line-staging.txt");
         assert_eq!(git_run(repo, &["show", ":line-staging.txt"]), "new A\nold B\ncontext\nlast");
         assert_eq!(fs::read_to_string(&line_path).unwrap(), working_lines);
@@ -1811,7 +1811,7 @@ exec /usr/bin/git "$@"
                 a11y_contains(&editor, "+ new A") && !a11y_contains(&editor, "+ new B")
             })
         });
-        choose_diff_context_item(window, &wait("working-diff-unified-editor"), "取消暂存选中行");
+        choose_context_item(window, &wait("working-diff-unified-editor"), "取消暂存选中行");
         wait_until("line is unstaged", Duration::from_secs(6), || {
             view_with_id(root, "change-row-staged-line-staging.txt").is_none()
         });
@@ -1824,7 +1824,7 @@ exec /usr/bin/git "$@"
         wait_for_marker("working-diff-unified-editor", "+ FIRST_LAYOUT_CHANGE");
         send_key(app, window, "\u{F707}", "\u{F707}", 118, NSEventModifierFlags::Function);
         let editor = wait("code-editor-view");
-        choose_diff_context_item(window, &editor, "与修订版本比较…");
+        choose_context_item(window, &editor, "与修订版本比较…");
         send_click(window, &wait(&format!("file-revision-{layout_commit}")), 2);
         wait_for_marker("comparison-right-editor", "FIRST_LAYOUT_CHANGE");
         wait_for_marker("comparison-change-count", "1/2");
@@ -1854,7 +1854,7 @@ exec /usr/bin/git "$@"
         let snapshot = nemorous::local_history::LocalHistoryStore::default_store()
             .record(&repo_id, filename, "Snapshot for late changes", baseline.as_bytes())
             .unwrap();
-        send_click(window, &wait("code-history-btn"), 1);
+        choose_context_item(window, &wait("code-editor-view"), "显示历史…");
         if let Some(snapshot) = snapshot {
             send_click(window, &wait(&format!("local-history-entry-{}", snapshot.id)), 1);
         }
@@ -1907,7 +1907,7 @@ exec /usr/bin/git "$@"
         git_run(repo, &["add", "a-native-scope.txt", tail_file, "z-native-scope.txt"]);
         git_run(repo, &["commit", "--only", "-m", "Review three files in native history", "--", "a-native-scope.txt", tail_file, "z-native-scope.txt"]);
         let history_commit = git_run(repo, &["rev-parse", "--short", "HEAD"]);
-        choose_diff_context_item(window, &source, "查看文件历史");
+        choose_context_item(window, &source, "查看文件历史");
         wait("git-file-history");
         send_click(window, &wait(&format!("git-commit-row-{history_commit}")), 1);
         wait("git-commit-file-native-tail.txt");
@@ -2610,11 +2610,7 @@ exec /usr/bin/git "$@"
             click("find-results-hide", 1);
 
             let open_history = || {
-                click("code-history-btn", 1);
-                pump(160);
-                if view_with_id(&root, "local-history-modal").is_none() {
-                    click("code-history-btn", 1);
-                }
+                choose_context_item(&window, &view_with_id(&root, "code-editor-view").unwrap(), "显示历史…");
                 wait_until("local history opens", Duration::from_secs(4), || {
                     view_with_id(&root, "local-history-modal").is_some()
                 });
@@ -2789,7 +2785,7 @@ exec /usr/bin/git "$@"
         }
 
         click("diff-jump-source-btn", 1);
-        click("code-history-btn", 1);
+        choose_context_item(&window, &view_with_id(&root, "code-editor-view").unwrap(), "显示历史…");
         click(&snapshot_row, 1);
         expect("local-history-current", "CRISP_FIRST_CHANGE");
         expect("local-history-change-count", "1 / 2");
